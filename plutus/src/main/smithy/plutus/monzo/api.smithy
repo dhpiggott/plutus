@@ -2,10 +2,10 @@ $version: "2"
 
 namespace plutus.monzo
 
+use alloy#jsonUnknown
 use alloy#simpleRestJson
 
 // TODO: Add doc strings from https://docs.monzo.com/?
-
 @httpBearerAuth
 @simpleRestJson
 service Api {
@@ -35,12 +35,17 @@ operation WhoAmI {
     output := {
         @required
         authenticated: Authenticated
+
         @required
         @jsonName("client_id")
         clientId: ClientId
+
         @required
         @jsonName("user_id")
         userId: UserId
+
+        @jsonUnknown
+        unknown: UnknownProperties
     }
 }
 
@@ -51,6 +56,9 @@ operation ListAccounts {
     output := {
         @required
         accounts: Accounts
+
+        @jsonUnknown
+        unknown: UnknownProperties
     }
 }
 
@@ -63,17 +71,24 @@ operation GetBalance {
         @httpQuery("account_id")
         accountId: AccountId
     }
+
     output := {
         @required
         balance: Amount
+
         @required
         @jsonName("total_balance")
         totalBalance: Amount
+
         @required
         currency: Currency
+
         @required
         @jsonName("spend_today")
         spendToday: Amount
+
+        @jsonUnknown
+        unknown: UnknownProperties
     }
 }
 
@@ -85,16 +100,23 @@ operation ListTransactions {
         @required
         @httpQuery("account_id")
         accountId: AccountId
+
         @httpQuery("since")
         since: Since
+
         @httpQuery("before")
         before: Before
+
         @httpQuery("limit")
         limit: Limit
     }
+
     output := {
         @required
         transactions: Transactions
+
+        @jsonUnknown
+        unknown: UnknownProperties
     }
 }
 
@@ -112,51 +134,79 @@ list Transactions {
 structure Account {
     @required
     id: AccountId
+
     @required
     description: Description
+
     @required
     created: Created
-    closed: Boolean,
-    owners: Document,
-    @required
+
+    closed: Boolean
+
+    // TODO: Define a struct with UnknownProperties.
+    owners: Document
+
     @jsonName("sort_code")
     sortCode: String
-    currency: String,
-    type: String,
+
+    currency: String
+
+    type: String
+
+    // TODO: Define a struct with UnknownProperties.
     @jsonName("payment_details")
-    paymentDetails: Document,
-    @required
+    paymentDetails: Document
+
     @jsonName("account_number")
-    accountNumber: String,
+    accountNumber: String
+
     @jsonName("country_code")
     countryCode: String
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 structure Transaction {
     counterparty: Counterparty
+
     @required
     amount: Amount
+
     @jsonName("decline_reason")
     declineReason: DeclineReason
+
     @required
     created: Created
+
     @required
     currency: Currency
+
     @required
     description: Description
+
     @required
     id: TransactionId
+
     merchant: Merchant
+
     @required
     metadata: Metadata
+
     @required
     notes: Notes
+
     @required
     @jsonName("is_load")
     isLoad: IsLoad
+
     settled: Settled
+
     @required
     category: Category
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 string AccountId
@@ -173,29 +223,40 @@ string Description
 structure Counterparty {
     @jsonName("account_number")
     accountNumber: String
+
     @jsonName("account_id")
     accountId: String
+
     name: String
+
     @jsonName("preferred_name")
     preferredName: String
+
     @jsonName("sort_code")
     sortCode: String
+
     @jsonName("user_id")
     userId: String
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 bigInteger Amount
 
 enum DeclineReason {
-    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
-    CARD_INACTIVE = "CARD_INACTIVE"
+    AUTHENTICATION_REJECTED_BY_CARDHOLDER = "AUTHENTICATION_REJECTED_BY_CARDHOLDER"
     CARD_BLOCKED = "CARD_BLOCKED"
+    CARD_INACTIVE = "CARD_INACTIVE"
+    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
     INVALID_CVC = "INVALID_CVC"
+    INVALID_EXPIRY_DATE = "INVALID_EXPIRY_DATE"
     PIN_REQUIRED = "PIN_REQUIRED"
-    SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT = "SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT"
     OTHER = "OTHER"
+    SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT = "SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT"
 }
 
+@timestampFormat("date-time")
 timestamp Created
 
 string Currency
@@ -205,17 +266,33 @@ string TransactionId
 // TODO: Refine this (named types, required hints).
 structure Merchant {
     groupId: String
+
     name: String
+
     suggestedTags: String
+
     emoji: String
+
     atm: Boolean
+
     disableFeedback: Boolean
+
     online: Boolean
+
     logo: String
+
     id: String
+
+    // TODO: Define a struct with UnknownProperties.
     address: Document
+
     category: String
+
+    // TODO: Define a struct with UnknownProperties?
     metadata: Document
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 document Metadata
@@ -229,3 +306,8 @@ boolean IsLoad
 string Settled
 
 string Category
+
+map UnknownProperties {
+    key: String
+    value: Document
+}

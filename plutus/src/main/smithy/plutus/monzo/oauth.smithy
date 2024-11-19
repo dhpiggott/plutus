@@ -3,13 +3,13 @@ $version: "2"
 namespace plutus.monzo
 
 use alloy#simpleRestJson
+use alloy#urlFormName
 
 // TODO: Add doc strings from https://docs.monzo.com/?
-
 @simpleRestJson
 service AuthorizationCodeReceiver {
     operations: [
-       ReceiveAuthorizationCode
+        ReceiveAuthorizationCode
     ]
 }
 
@@ -21,6 +21,7 @@ operation ReceiveAuthorizationCode {
         @required
         @httpQuery("code")
         code: AuthorizationCode
+
         @required
         @httpQuery("state")
         state: State
@@ -45,25 +46,60 @@ service TokenApi {
     ]
 }
 
+@protocolDefinition(
+    traits: [
+        smithy.api#default
+        smithy.api#error
+        smithy.api#required
+        smithy.api#pattern
+        smithy.api#range
+        smithy.api#length
+        smithy.api#http
+        smithy.api#httpError
+        smithy.api#httpHeader
+        smithy.api#httpLabel
+        smithy.api#httpPayload
+        smithy.api#httpPrefixHeaders
+        smithy.api#httpQuery
+        smithy.api#httpQueryParams
+        smithy.api#jsonName
+        smithy.api#timestampFormat
+        alloy#uncheckedExamples
+        alloy#untagged
+        alloy#urlFormFlattened
+        alloy#urlFormName
+        alloy#uuidFormat
+        alloy#discriminated
+    ]
+)
+@trait(selector: "service [trait]")
+structure tokenExchange {}
+
 @externalDocumentation(url: "https://docs.monzo.com/?shell#acquire-an-access-token")
 @http(method: "POST", uri: "/oauth2/token")
 operation CreateAccessToken {
     input := {
         @required
-        @queryName("grant_type")
+        @urlFormName("grant_type")
         grantType: GrantType
+
         @required
-        @queryName("client_id")
+        @urlFormName("client_id")
         clientId: ClientId
+
         @required
-        @queryName("client_secret")
+        @urlFormName("client_secret")
         clientSecret: ClientSecret
-        @queryName("redirect_uri")
+
+        @urlFormName("redirect_uri")
         redirectUri: RedirectUri
+
         code: AuthorizationCode
-        @queryName("refresh_token")
+
+        @urlFormName("refresh_token")
         refreshToken: RefreshToken
     }
+
     output: CreateAccessTokenOutput
 }
 
@@ -71,42 +107,27 @@ structure CreateAccessTokenOutput {
     @required
     @jsonName("access_token")
     accessToken: AccessToken
+
     @required
     @jsonName("client_id")
     clientId: ClientId
+
     @required
     @jsonName("expires_in")
     expiresIn: ExpiresIn
+
     @required
     @jsonName("refresh_token")
     refreshToken: RefreshToken
+
     @required
     @jsonName("token_type")
     tokenType: TokenType
+
     @required
     @jsonName("user_id")
     userId: UserId
 }
-
-@protocolDefinition
-@trait(selector: "service")
-structure tokenExchange {}
-
-/// Unwraps the values of a list, set, or map into the containing
-/// structure/union.
-@trait(
-    selector: ":is(structure, union) > :test(member > :test(list, map))",
-    breakingChanges: [{change: "any"}]
-)
-structure queryFlattened {}
-
-/// The queryName trait allows a serialized form key to differ from a structure
-/// member name used in the model.
-@trait(
-    selector: ":is(structure, union) > member",
-    breakingChanges: [{change: "any"}]
-)
-string queryName
 
 enum GrantType {
     AUTHORIZATION_CODE = "authorization_code"

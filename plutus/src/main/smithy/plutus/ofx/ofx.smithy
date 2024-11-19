@@ -3,36 +3,39 @@ $version: "2"
 namespace plutus.ofx
 
 // TODO: Add doc strings from https://financialdataexchange.org/common/Uploaded%20files/OFX%20files/OFX%20Banking%20Specification%20v2.3.pdf?
-
 // TODO: Header?
 @suppress(["UnreferencedShape"])
 @xmlName("OFX")
 structure Ofx {
     @required
+    @xmlName("SIGNONMSGSRSV1")
     signonMessageSetResponse: SignonMessageSetResponse
+
     @required
+    @xmlName("BANKMSGSRSV1")
     bankMessageSetResponse: BankMessageSetResponse
 }
 
-@xmlName("SIGNONMSGSRSV1")
 structure SignonMessageSetResponse {
     @required
+    @xmlName("SONRS")
     signonResponse: SignonResponse
 }
 
-@xmlName("SONRS")
 structure SignonResponse {
     @required
+    @xmlName("STATUS")
     status: Status
+
     @required
     @xmlName("DTSERVER")
     dateServer: Datetime
+
     @required
     @xmlName("LANGUAGE")
     language: Language
 }
 
-@xmlName("BANKMSGSRSV1")
 structure BankMessageSetResponse {
     @required
     @xmlFlattened
@@ -42,60 +45,69 @@ structure BankMessageSetResponse {
 
 list StatementTransactionsResponses {
     member: StatementTransactionsResponse
-} 
+}
 
 structure StatementTransactionsResponse {
     @required
     @xmlName("TRNUID")
     transactionUniqueId: TransactionUniqueId
+
     @required
+    @xmlName("STATUS")
     status: Status
+
     @required
+    @xmlName("STMTRS")
     statementResponse: StatementResponse
 }
 
-@xmlName("STATUS")
 structure Status {
     @required
     @xmlName("CODE")
     code: Code
+
     @required
     @xmlName("SEVERITY")
     severity: Severity
 }
 
-@xmlName("STMTRS")
 structure StatementResponse {
     @required
     @xmlName("CURDEF")
     currencyDefault: DefaultCurrency
+
     @required
+    @xmlName("BANKACCTFROM")
     bankAccountFrom: BankAccountFrom
+
     @required
+    @xmlName("BANKTRANLIST")
     bankTransactionList: BankTransactionList
 }
 
-@xmlName("BANKACCTFROM")
 structure BankAccountFrom {
     @required
     @xmlName("BANKID")
     bankId: BankId
+
     @required
     @xmlName("ACCTID")
     accountId: AccountId
+
     @required
     @xmlName("ACCTTYPE")
     accountType: AccountType
 }
 
-@xmlName("BANKTRANLIST")
 structure BankTransactionList {
     @required
     @xmlName("DTSTART")
     dateStart: Datetime
+
     @required
     @xmlName("DTEND")
     dateEnd: Datetime
+
     @required
     @xmlFlattened
     @xmlName("STMTTRN")
@@ -110,18 +122,23 @@ structure StatementTransaction {
     @required
     @xmlName("TRNTYPE")
     transactionType: TransactionType
+
     @required
     @xmlName("DTPOSTED")
     datePosted: Datetime
+
     @required
     @xmlName("TRNAMT")
     transactionAmount: TransactionAmount
+
     @required
     @xmlName("FITID")
     financialInstitutionId: FinancialInstitutionId
+
     @required
     @xmlName("NAME")
     name: Name
+
     @xmlName("MEMO")
     memo: Memo
 }

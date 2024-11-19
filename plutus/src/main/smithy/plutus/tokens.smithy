@@ -9,6 +9,7 @@ structure StoredTokens {
     @required
     @jsonName("create_access_token_output")
     createAccessTokenOutput: CreateAccessTokenOutput
+
     @required
     @jsonName("created_at")
     createdAt: CreatedAt
