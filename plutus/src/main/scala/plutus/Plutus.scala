@@ -298,6 +298,10 @@ object Plutus extends ZIOAppDefault:
       now: Instant,
       accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
   ): ofx.Ofx =
+    val (bankAccountsAndTransactions, creditCardAccountsAndTransactions) =
+      accountsAndTransactions.partition { case (account, _) =>
+        !account._type.contains("uk_monzo_flex")
+      }
     ofx.Ofx(
       signonMessageSetResponse = ofx.SignonMessageSetResponse(
         signonResponse = ofx.SignonResponse(
@@ -312,7 +316,7 @@ object Plutus extends ZIOAppDefault:
       bankMessageSetResponse = ofx.BankMessageSetResponse(
         statementTransactionsResponses =
           for
-            accountAndTransactions <- accountsAndTransactions
+            accountAndTransactions <- bankAccountsAndTransactions
             (account, transactions) = accountAndTransactions
             dateStartTimestamp = since.value
             dateStart = toOfxDatetime(
@@ -331,6 +335,7 @@ object Plutus extends ZIOAppDefault:
               )
             )
           yield ofx.StatementTransactionsResponse(
+            // TODO: Make this actually unique? GnuCash doesn't care though...
             transactionUniqueId = ofx.TransactionUniqueId(1),
             status = ofx.Status(
               code = ofx.Code(0),
@@ -339,6 +344,45 @@ object Plutus extends ZIOAppDefault:
             statementResponse = ofx.StatementResponse(
               currencyDefault = ofx.DefaultCurrency("GBP"),
               bankAccountFrom = toOfxBankAccountFrom(account),
+              bankTransactionList = ofx.BankTransactionList(
+                dateStart,
+                dateEnd,
+                statementTransactions = transactions
+                  .map(toOfxStatementTransaction)
+              )
+            )
+          )
+      ),
+      creditCardMessageSetResponse = ofx.CreditCardMessageSetResponse(
+        creditCardStatementTransactionsResponses =
+          for
+            accountAndTransactions <- creditCardAccountsAndTransactions
+            (account, transactions) = accountAndTransactions
+            dateStartTimestamp = since.value
+            dateStart = toOfxDatetime(
+              Instant.ofEpochSecond(
+                dateStartTimestamp.epochSecond,
+                dateStartTimestamp.nano
+              )
+            )
+            dateEndTimestamp = transactions.lastOption
+              .map(_.created.value)
+              .getOrElse(since.value)
+            dateEnd = toOfxDatetime(
+              Instant.ofEpochSecond(
+                dateEndTimestamp.epochSecond,
+                dateEndTimestamp.nano
+              )
+            )
+          yield ofx.CreditCardStatementTransactionsResponse(
+            transactionUniqueId = ofx.TransactionUniqueId(1),
+            status = ofx.Status(
+              code = ofx.Code(0),
+              severity = ofx.Severity.INFO
+            ),
+            creditCardStatementResponse = ofx.CreditCardStatementResponse(
+              currencyDefault = ofx.DefaultCurrency("GBP"),
+              creditCardAccountFrom = toOfxCreditCardAccountFrom(account),
               bankTransactionList = ofx.BankTransactionList(
                 dateStart,
                 dateEnd,
@@ -358,6 +402,13 @@ object Plutus extends ZIOAppDefault:
       bankId = ofx.BankId(account.sortCode.getOrElse("")),
       accountId = ofx.AccountId(account.accountNumber.getOrElse("")),
       accountType = ofx.AccountType.CHECKING
+    )
+
+  private def toOfxCreditCardAccountFrom(
+      account: monzo.Account
+  ): ofx.CreditCardAccountFrom =
+    ofx.CreditCardAccountFrom(
+      accountId = ofx.AccountId(account.id.value)
     )
 
   private def toOfxStatementTransaction(

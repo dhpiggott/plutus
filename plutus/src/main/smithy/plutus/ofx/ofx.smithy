@@ -14,6 +14,10 @@ structure Ofx {
     @required
     @xmlName("BANKMSGSRSV1")
     bankMessageSetResponse: BankMessageSetResponse
+
+    @required
+    @xmlName("CREDITCARDMSGSRSV1")
+    creditCardMessageSetResponse: CreditCardMessageSetResponse
 }
 
 structure SignonMessageSetResponse {
@@ -43,8 +47,19 @@ structure BankMessageSetResponse {
     statementTransactionsResponses: StatementTransactionsResponses
 }
 
+structure CreditCardMessageSetResponse {
+    @required
+    @xmlFlattened
+    @xmlName("CCSTMTTRNRS")
+    creditCardStatementTransactionsResponses: CreditCardStatementTransactionsResponses
+}
+
 list StatementTransactionsResponses {
     member: StatementTransactionsResponse
+}
+
+list CreditCardStatementTransactionsResponses {
+    member: CreditCardStatementTransactionsResponse
 }
 
 structure StatementTransactionsResponse {
@@ -59,6 +74,20 @@ structure StatementTransactionsResponse {
     @required
     @xmlName("STMTRS")
     statementResponse: StatementResponse
+}
+
+structure CreditCardStatementTransactionsResponse {
+    @required
+    @xmlName("TRNUID")
+    transactionUniqueId: TransactionUniqueId
+
+    @required
+    @xmlName("STATUS")
+    status: Status
+
+    @required
+    @xmlName("CCSTMTRS")
+    creditCardStatementResponse: CreditCardStatementResponse
 }
 
 structure Status {
@@ -85,6 +114,20 @@ structure StatementResponse {
     bankTransactionList: BankTransactionList
 }
 
+structure CreditCardStatementResponse {
+    @required
+    @xmlName("CURDEF")
+    currencyDefault: DefaultCurrency
+
+    @required
+    @xmlName("CCACCTFROM")
+    creditCardAccountFrom: CreditCardAccountFrom
+
+    @required
+    @xmlName("BANKTRANLIST")
+    bankTransactionList: BankTransactionList
+}
+
 structure BankAccountFrom {
     @required
     @xmlName("BANKID")
@@ -97,6 +140,12 @@ structure BankAccountFrom {
     @required
     @xmlName("ACCTTYPE")
     accountType: AccountType
+}
+
+structure CreditCardAccountFrom {
+    @required
+    @xmlName("ACCTID")
+    accountId: AccountId
 }
 
 structure BankTransactionList {
