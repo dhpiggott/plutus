@@ -1,6 +1,5 @@
 package plutus
 
-import fs2.{Chunk as _, *}
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
@@ -15,12 +14,9 @@ import smithy4s.schema.*
 import smithy4s.xml.*
 import zio.*
 import zio.interop.catz.*
-import zio.nio.channels.*
-import zio.nio.file.*
 import zio.stream.interop.fs2z.io.*
 
 import java.lang.Runtime
-import java.nio.file.StandardOpenOption
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -192,52 +188,34 @@ object Plutus extends ZIOAppDefault:
     .env(name)
     .someOrFail(Error(s"$name must be set."))
 
-  private lazy val readTokens: Task[Option[StoredTokens]] = ZIO.scoped(
-    for
-      maybeFileChannel <- AsynchronousFileChannel
-        .open(
-          tokensFilePath,
-          StandardOpenOption.CREATE,
-          StandardOpenOption.READ
+  private lazy val readTokens: Task[Option[StoredTokens]] =
+    fs2.io.file
+      .Files[Task]
+      .readAll(tokensFilePath)
+      .through(fs2.text.utf8.decode)
+      .compile
+      .string
+      .flatMap(storedTokens =>
+        ZIO.fromEither(
+          Json.read[StoredTokens](Blob(storedTokens))
         )
-        .option
-      maybeStoredTokens <- maybeFileChannel match
-        case None =>
-          ZIO.none
-
-        case Some(fileChannel) =>
-          for
-            size <- fileChannel.size.map(_.toInt)
-            chunk <- fileChannel.readChunk(
-              capacity = size,
-              position = 0L
-            )
-            storedTokens <- ZIO.fromEither(
-              Json.read[StoredTokens](Blob(chunk.toArray))
-            )
-          yield Some(storedTokens)
-    yield maybeStoredTokens
-  )
+      )
+      .option
 
   private def writeTokens(storedTokens: StoredTokens): Task[Unit] =
-    ZIO.scoped(
-      for
-        fileChannel <- AsynchronousFileChannel.open(
-          tokensFilePath,
-          StandardOpenOption.CREATE,
-          StandardOpenOption.WRITE,
-          StandardOpenOption.TRUNCATE_EXISTING
-        )
-        _ <- fileChannel.writeChunk(
-          Chunk.fromArray(
-            Json.writeBlob(storedTokens).toArray
-          ),
-          position = 0L
-        )
-      yield ()
-    )
+    fs2
+      .Stream(Json.writePrettyString(storedTokens))
+      .through(fs2.text.utf8.encode)
+      .through(
+        fs2.io.file
+          .Files[Task]
+          .writeAll(tokensFilePath)
+      )
+      .compile
+      .drain
 
-  private lazy val tokensFilePath: Path = Path("tokens.json")
+  private lazy val tokensFilePath: fs2.io.file.Path =
+    fs2.io.file.Path("tokens.json")
 
   private trait Show[-A]:
     def apply(a: A, indent: Int = 0): String
@@ -452,31 +430,20 @@ object Plutus extends ZIOAppDefault:
     )
 
   private def writeOfx[A](a: A)(implicit schema: Schema[A]): Task[Unit] =
-    ZIO.scoped(
-      for
-        fileChannel <- AsynchronousFileChannel.open(
-          Path("monzo-export.ofx"),
-          StandardOpenOption.CREATE,
-          StandardOpenOption.WRITE,
-          StandardOpenOption.TRUNCATE_EXISTING
-        )
-        _ <- fileChannel.writeChunk(
-          toXmlBytes(a),
-          position = 0L
-        )
-      yield ()
-    )
-
-  private def toXmlBytes[A](
-      a: A
-  )(implicit schema: Schema[A]): Chunk[Byte] =
     XmlDocument.documentEventifier
       .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
       // TODO: Fix special char escaping.
       .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4))
       .through(fs2.text.utf8.encode)
+      .through(
+        fs2.io.file
+          .Files[Task]
+          .writeAll(
+            fs2.io.file.Path("monzo-export.ofx")
+          )
+      )
       .compile
-      .to(Chunk)
+      .drain
 
   private def exchangeAuthCode(
       monzoTokenApi: monzo.TokenApi[Task],
