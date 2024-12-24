@@ -1,162 +1,172 @@
 package plutus
 
+import cats.syntax.all.*
+import cats.effect.*
+import cats.effect.std.*
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.*
 import org.http4s.implicits.*
+import scala.jdk.DurationConverters.*
 import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
+import scala.language.experimental.betterFors
 import smithy4s.schema.*
 import smithy4s.xml.*
-import zio.*
-import zio.interop.catz.*
-import zio.stream.interop.fs2z.io.*
 
 import java.lang.Runtime
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.time.Duration
+import java.time.Period
 
-object Plutus extends ZIOAppDefault:
+object Plutus extends IOApp:
 
-  override def run: RIO[ZIOAppArgs, Unit] =
-    program.provideSome[ZIOAppArgs](
-      ZLayer.scoped(
-        EmberClientBuilder
-          .default[Task]
-          .build
-          .toScopedZIO
-          // .map(
-          //   org.http4s.client.middleware.Logger.colored(
-          //     logHeaders = true,
-          //     logBody = true
-          //   )
-          // )
+  override def run(args: List[String]): IO[ExitCode] =
+    EmberClientBuilder
+      .default[IO]
+      .build
+      // .map(
+      //   org.http4s.client.middleware.Logger.colored(
+      //     logHeaders = true,
+      //     logBody = true
+      //   )
+      // )
+      .use(client =>
+        program(
+          client,
+          args
+        )
+          .as(ExitCode.Success)
       )
-    )
 
-  private lazy val program: RIO[ZIOAppArgs & Client[Task], Unit] =
-    ZIO.scoped(
-      for
-        zioAppArgs <- ZIOAppArgs.getArgs
-        sinceString <- ZIO
-          .fromOption(zioAppArgs.headOption)
-          .mapError(_ => Error("Since timestamp must be given."))
-        sinceTimestamp <- ZIO
-          .fromOption(
-            Timestamp.parse(
-              string = sinceString,
-              format = TimestampFormat.DATE_TIME
-            )
+  private def program(client: Client[IO], args: List[String]): IO[Unit] =
+    for
+      sinceString <- IO
+        .fromOption(args.headOption)(
+          Error("Since timestamp must be given.")
+        )
+      sinceTimestamp <- IO
+        .fromOption(
+          Timestamp.parse(
+            string = sinceString,
+            format = TimestampFormat.DATE_TIME
           )
-          .mapError(_ => Error(s"${sinceString} is not a valid timestamp."))
-        since = monzo.Since(sinceTimestamp)
-        sinceInstant = Instant.ofEpochSecond(
-          sinceTimestamp.epochSecond,
-          sinceTimestamp.nano
+        )(Error(s"${sinceString} is not a valid timestamp."))
+      since = monzo.Since(sinceTimestamp)
+      sinceInstant = Instant.ofEpochSecond(
+        sinceTimestamp.epochSecond,
+        sinceTimestamp.nano
+      )
+      now <- Clock[IO].realTime.map(finiteDuration =>
+        Instant.ofEpochMilli(finiteDuration.toMillis)
+      )
+      accessToken <- accessToken(
+        client,
+        // From https://docs.monzo.com/?shell#list-transactions:
+        //
+        // Strong Customer Authentication
+        //
+        // After a user has authenticated, your client can fetch all of their
+        // transactions, and after 5 minutes, it can only sync the last 90
+        // days of transactions. If you need the user’s entire transaction
+        // history, you should consider fetching and storing it right after
+        // authentication.
+        requireLessThanFiveMinutesOld =
+          sinceInstant.isBefore(now.minus(Period.ofDays(90)))
+      )
+      _ <- SimpleRestJsonBuilder(monzo.Api)
+        .client(client)
+        .uri(monzoApiUri)
+        .middleware(BearerAuthMiddleware(accessToken.value))
+        .resource
+        .use(monzoApi =>
+          for
+            whoAmIOutput <- monzoApi.whoAmI()
+            _ <- Console[IO].println(show(whoAmIOutput))
+            _ <- exportTransactions(monzoApi, since)
+          yield ()
         )
-        now <- Clock.instant
-        accessToken <- accessToken(
-          // From https://docs.monzo.com/?shell#list-transactions:
-          //
-          // Strong Customer Authentication
-          //
-          // After a user has authenticated, your client can fetch all of their
-          // transactions, and after 5 minutes, it can only sync the last 90
-          // days of transactions. If you need the user’s entire transaction
-          // history, you should consider fetching and storing it right after
-          // authentication.
-          requireLessThanFiveMinutesOld =
-            sinceInstant.isBefore(now.minus(90.days.asJava))
-        )
-        client <- ZIO.service[Client[Task]]
-        monzoApi <- SimpleRestJsonBuilder(monzo.Api)
-          .client(client)
-          .uri(monzoApiUri)
-          .middleware(BearerAuthMiddleware(accessToken.value))
-          .resource
-          .toScopedZIO
-        whoAmIOutput <- monzoApi.whoAmI()
-        _ <- Console.printLine(show(whoAmIOutput))
-        _ <- exportTransactions(monzoApi, since)
-      yield ()
-    )
+    yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
   private def accessToken(
+      client: Client[IO],
       requireLessThanFiveMinutesOld: Boolean
-  ): RIO[Client[Task], monzo.AccessToken] = ZIO.scoped(
-    for
-      client <- ZIO.service[Client[Task]]
-      monzoTokenApi <- TokenExchangeBuilder(monzo.TokenApi)
-        .client(client)
-        .uri(monzoApiUri)
-        .resource
-        .toScopedZIO
-      clientId <- envParam("CLIENT_ID").map(monzo.ClientId(_))
-      clientSecret <- envParam("CLIENT_SECRET").map(monzo.ClientSecret(_))
-      now <- Clock.instant
-      createAndWriteTokens = (createTokens: Task[
-        monzo.CreateAccessTokenOutput
-      ]) =>
+  ): IO[monzo.AccessToken] =
+    TokenExchangeBuilder(monzo.TokenApi)
+      .client(client)
+      .uri(monzoApiUri)
+      .resource
+      .use(monzoTokenApi =>
         for
-          createAccessTokenOutput <- createTokens
-          _ <- writeTokens(
-            StoredTokens(
-              createAccessTokenOutput,
-              createdAt = CreatedAt(
-                Timestamp(
-                  epochSecond = now.getEpochSecond(),
-                  nano = now.getNano()
+          clientId <- envParam("CLIENT_ID").map(monzo.ClientId(_))
+          clientSecret <- envParam("CLIENT_SECRET").map(monzo.ClientSecret(_))
+          now <- Clock[IO].realTime.map(finiteDuration =>
+            Instant.ofEpochMilli(finiteDuration.toMillis)
+          )
+          createAndWriteTokens = (createTokens: IO[
+            monzo.CreateAccessTokenOutput
+          ]) =>
+            for
+              createAccessTokenOutput <- createTokens
+              _ <- writeTokens(
+                StoredTokens(
+                  createAccessTokenOutput,
+                  createdAt = CreatedAt(
+                    Timestamp(
+                      epochSecond = now.getEpochSecond(),
+                      nano = now.getNano()
+                    )
+                  )
                 )
               )
-            )
-          )
-        yield createAccessTokenOutput.accessToken
-      maybeStoredTokens <- readTokens
-      accessToken <- maybeStoredTokens match
-        case None =>
-          createAndWriteTokens(
-            exchangeAuthCode(
-              monzoTokenApi,
-              clientId,
-              clientSecret
-            )
-          )
+            yield createAccessTokenOutput.accessToken
+          maybeStoredTokens <- readTokens
+          accessToken <- maybeStoredTokens match
+            case None =>
+              createAndWriteTokens(
+                exchangeAuthCode(
+                  monzoTokenApi,
+                  clientId,
+                  clientSecret
+                )
+              )
 
-        case Some(storedTokens)
-            if requireLessThanFiveMinutesOld && !lessThanFiveMinutesOld(
-              storedTokens,
-              now
-            ) =>
-          createAndWriteTokens(
-            exchangeAuthCode(
-              monzoTokenApi,
-              clientId,
-              clientSecret
-            )
-          )
+            case Some(storedTokens)
+                if requireLessThanFiveMinutesOld && !lessThanFiveMinutesOld(
+                  storedTokens,
+                  now
+                ) =>
+              createAndWriteTokens(
+                exchangeAuthCode(
+                  monzoTokenApi,
+                  clientId,
+                  clientSecret
+                )
+              )
 
-        case Some(storedTokens) if requiresRefresh(storedTokens, now) =>
-          createAndWriteTokens(
-            monzoTokenApi.createAccessToken(
-              grantType = monzo.GrantType.REFRESH_TOKEN,
-              clientId = clientId,
-              clientSecret = clientSecret,
-              refreshToken =
-                Some(storedTokens.createAccessTokenOutput.refreshToken)
-            )
-          )
+            case Some(storedTokens) if requiresRefresh(storedTokens, now) =>
+              createAndWriteTokens(
+                monzoTokenApi.createAccessToken(
+                  grantType = monzo.GrantType.REFRESH_TOKEN,
+                  clientId = clientId,
+                  clientSecret = clientSecret,
+                  refreshToken =
+                    Some(storedTokens.createAccessTokenOutput.refreshToken)
+                )
+              )
 
-        case Some(storedTokens) =>
-          ZIO.succeed(storedTokens.createAccessTokenOutput.accessToken)
-    yield accessToken
-  )
+            case Some(storedTokens) =>
+              IO.pure(storedTokens.createAccessTokenOutput.accessToken)
+        yield accessToken
+      )
 
   private def lessThanFiveMinutesOld(
       storedTokens: StoredTokens,
@@ -166,8 +176,8 @@ object Plutus extends ZIOAppDefault:
       storedTokens.createdAt.value.epochSecond,
       storedTokens.createdAt.value.nano
     )
-    val fiveMinutesAgo = now.minus(5.minutes)
-    val leeway = 10.seconds.asJava
+    val fiveMinutesAgo = now.minus(Duration.ofMinutes(5))
+    val leeway = Duration.ofSeconds(10)
     createdAt.plus(leeway).isAfter(fiveMinutesAgo)
 
   private def requiresRefresh(
@@ -178,37 +188,40 @@ object Plutus extends ZIOAppDefault:
       storedTokens.createdAt.value.epochSecond,
       storedTokens.createdAt.value.nano
     )
-    val expiresAt = createdAt.plusSeconds(
-      storedTokens.createAccessTokenOutput.expiresIn.value
+    val expiresAt = createdAt.plus(
+      Duration.ofSeconds(
+        storedTokens.createAccessTokenOutput.expiresIn.value
+      )
     )
-    val leeway = 10.seconds.asJava
+    val leeway = Duration.ofSeconds(10)
     expiresAt.minus(leeway).isAfter(now)
 
-  private def envParam(name: String): Task[String] = System
-    .env(name)
-    .someOrFail(Error(s"$name must be set."))
+  private def envParam(name: String): IO[String] = for
+    maybeValue <- Env[IO].get(name)
+    value <- IO.fromOption(maybeValue)(Error(s"$name must be set."))
+  yield value
 
-  private lazy val readTokens: Task[Option[StoredTokens]] =
+  private lazy val readTokens: IO[Option[StoredTokens]] =
     fs2.io.file
-      .Files[Task]
+      .Files[IO]
       .readAll(tokensFilePath)
       .through(fs2.text.utf8.decode)
       .compile
       .string
       .flatMap(storedTokens =>
-        ZIO.fromEither(
+        IO.fromEither(
           Json.read[StoredTokens](Blob(storedTokens))
         )
       )
       .option
 
-  private def writeTokens(storedTokens: StoredTokens): Task[Unit] =
+  private def writeTokens(storedTokens: StoredTokens): IO[Unit] =
     fs2
       .Stream(Json.writePrettyString(storedTokens))
       .through(fs2.text.utf8.encode)
       .through(
         fs2.io.file
-          .Files[Task]
+          .Files[IO]
           .writeAll(tokensFilePath)
       )
       .compile
@@ -429,7 +442,7 @@ object Plutus extends ZIOAppDefault:
         .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss.SSS"))
     )
 
-  private def writeOfx[A](a: A)(implicit schema: Schema[A]): Task[Unit] =
+  private def writeOfx[A](a: A)(implicit schema: Schema[A]): IO[Unit] =
     XmlDocument.documentEventifier
       .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
       // TODO: Fix special char escaping.
@@ -437,7 +450,7 @@ object Plutus extends ZIOAppDefault:
       .through(fs2.text.utf8.encode)
       .through(
         fs2.io.file
-          .Files[Task]
+          .Files[IO]
           .writeAll(
             fs2.io.file.Path("monzo-export.ofx")
           )
@@ -446,64 +459,70 @@ object Plutus extends ZIOAppDefault:
       .drain
 
   private def exchangeAuthCode(
-      monzoTokenApi: monzo.TokenApi[Task],
+      monzoTokenApi: monzo.TokenApi[IO],
       clientId: monzo.ClientId,
       clientSecret: monzo.ClientSecret
-  ): Task[monzo.CreateAccessTokenOutput] = ZIO.scoped(
+  ): IO[monzo.CreateAccessTokenOutput] =
     for
-      authorizationCodeAndStatePromise <- Promise
-        .make[
-          Nothing,
-          (monzo.AuthorizationCode, monzo.State)
-        ]
-      authorizationCodeReceiverRoute <- ZIO.fromEither(
+      authorizationCodeAndStateDeferred <- Deferred[
+        IO,
+        (monzo.AuthorizationCode, monzo.State)
+      ]
+      authorizationCodeReceiverRoute <- IO.fromEither(
         SimpleRestJsonBuilder
           .routes(
-            AuthorizationCodeReceiverImpl(authorizationCodeAndStatePromise)
+            AuthorizationCodeReceiverImpl(authorizationCodeAndStateDeferred)
           )
           .make
       )
-      server <- EmberServerBuilder
-        .default[Task]
+      createAccessTokenOutput <- EmberServerBuilder
+        .default[IO]
         .withHttpApp(
           // org.http4s.server.middleware.Logger.httpApp(
           //   logHeaders = true,
           //   logBody = true
           // )(
-          authorizationCodeReceiverRoute.orNotFound
-            // )
+            authorizationCodeReceiverRoute.orNotFound
+          // )
         )
-        .withShutdownTimeout(0.seconds.asScala)
+        .withShutdownTimeout(Duration.ZERO.toScala)
         .build
-        .toScopedZIO
-      redirectUri = monzo.RedirectUri("http://localhost:8080/oauth/callback")
-      generatedState <- redirectUserToMonzo(clientId, redirectUri)
-      authorizationCodeAndReceivedState <-
-        authorizationCodeAndStatePromise.await
-      (authorizationCode, receivedState) = authorizationCodeAndReceivedState
-      _ <- ZIO.unless(generatedState == receivedState)(
-        ZIO.fail(
-          Error(
-            s"generatedState != receivedState ($generatedState != $receivedState)"
-          )
+        .use(server =>
+          for
+            redirectUri = monzo
+              .RedirectUri("http://localhost:8080/oauth/callback")
+            generatedState <- redirectUserToMonzo(clientId, redirectUri)
+            authorizationCodeAndReceivedState <-
+              authorizationCodeAndStateDeferred.get
+            (authorizationCode, receivedState) =
+              authorizationCodeAndReceivedState
+            _ <- IO.unlessA(generatedState == receivedState)(
+              IO.raiseError(
+                Error(
+                  s"generatedState != receivedState ($generatedState != $receivedState)"
+                )
+              )
+            )
+            createAccessTokenOutput <- monzoTokenApi.createAccessToken(
+              grantType = monzo.GrantType.AUTHORIZATION_CODE,
+              clientId = clientId,
+              clientSecret = clientSecret,
+              redirectUri = Some(redirectUri),
+              code = Some(authorizationCode)
+            )
+            _ <- Console[IO].print(
+              "Complete SCA in app, then press enter to continue"
+            )
+            _ <- Console[IO].readLine
+          yield createAccessTokenOutput
         )
-      )
-      createAccessTokenOutput <- monzoTokenApi.createAccessToken(
-        grantType = monzo.GrantType.AUTHORIZATION_CODE,
-        clientId = clientId,
-        clientSecret = clientSecret,
-        redirectUri = Some(redirectUri),
-        code = Some(authorizationCode)
-      )
-      _ <- Console.readLine("Complete SCA in app, then press enter to continue")
     yield createAccessTokenOutput
-  )
 
   private def redirectUserToMonzo(
       clientId: monzo.ClientId,
       redirectUri: monzo.RedirectUri
-  ): Task[monzo.State] = for
-    state <- Random.nextUUID.map(uuid => monzo.State(uuid.toString()))
+  ): IO[monzo.State] = for
+    state <- UUIDGen[IO].randomUUID.map(uuid => monzo.State(uuid.toString()))
     monzoAuthEndpoint = uri"https://auth.monzo.com".withQueryParams(
       Map(
         "client_id" -> clientId.value,
@@ -512,27 +531,27 @@ object Plutus extends ZIOAppDefault:
         "state" -> state.value
       )
     )
-    _ <- ZIO.attempt(
+    _ <- IO(
       Runtime.getRuntime().exec(Array("open", monzoAuthEndpoint.toString))
     )
   yield state
 
   private class AuthorizationCodeReceiverImpl(
-      promise: Promise[
-        Nothing,
+      deferred: Deferred[
+        IO,
         (monzo.AuthorizationCode, monzo.State)
       ]
-  ) extends monzo.AuthorizationCodeReceiver[Task]:
+  ) extends monzo.AuthorizationCodeReceiver[IO]:
     override def receiveAuthorizationCode(
         code: monzo.AuthorizationCode,
         state: monzo.State
-    ): Task[Unit] = promise.succeed(code -> state).unit
+    ): IO[Unit] = deferred.complete(code -> state).void
 
   private object BearerAuthMiddleware:
-    def apply(bearerToken: String): ClientEndpointMiddleware[Task] =
-      new ClientEndpointMiddleware.Simple[Task]:
-        val middleware = (client: Client[Task]) =>
-          Client[Task](request =>
+    def apply(bearerToken: String): ClientEndpointMiddleware[IO] =
+      new ClientEndpointMiddleware.Simple[IO]:
+        val middleware = (client: Client[IO]) =>
+          Client[IO](request =>
             client.run(
               request.withHeaders(
                 Authorization(Credentials.Token(AuthScheme.Bearer, bearerToken))
@@ -542,7 +561,7 @@ object Plutus extends ZIOAppDefault:
         override def prepareWithHints(
             serviceHints: Hints,
             endpointHints: Hints
-        ): Client[Task] => Client[Task] =
+        ): Client[IO] => Client[IO] =
           serviceHints.get[smithy.api.HttpBearerAuth] match
             case None => identity
             case Some(_) =>
@@ -551,66 +570,72 @@ object Plutus extends ZIOAppDefault:
                 case _                                  => middleware
 
   private def exportTransactions(
-      monzoApi: monzo.Api[Task],
+      monzoApi: monzo.Api[IO],
       since: monzo.Since
-  ): Task[Unit] = for
+  ): IO[Unit] = for
     listAccountsOutput <- monzoApi.listAccounts()
-    accountsAndTransactions <- ZIO.foreach(
-      listAccountsOutput.accounts.filter(_.closed.contains(false))
-    )(account =>
-      for
-        _ <- Console.printLine(show(account))
-        transactions <- listTransactions(
-          monzoApi,
-          since,
-          account.id
-        )
-        formatter = java.text.NumberFormat.getCurrencyInstance
-        _ = formatter.setCurrency(
-          java.util.Currency.getInstance(java.util.Locale.UK)
-        )
-        _ <- ZIO.foldLeft(
-          transactions
-            .filterNot(_.notes.value == "Active card check")
-            .filterNot(_.declineReason.isDefined)
-            .sortBy(_.created.value.epochSecond)
-        )(
-          BigDecimal(0)
-        ) { case (balance, transaction) =>
-          for _ <- Console.printLine(
-              transaction.created.value.toString.padTo(30, ' ') + " " +
-                s"${name(transaction)} (${transaction.notes.value})"
-                  .padTo(45, ' ') + " " +
-                formatter
-                  .format(BigDecimal(transaction.amount.value) / 100)
-                  .padTo(10, ' ') + " " +
-                formatter.format(
-                  (balance + BigDecimal(transaction.amount.value)) / 100
-                )
+    accountsAndTransactions <-
+      listAccountsOutput.accounts
+        .filter(_.closed.contains(false))
+        .traverse(account =>
+          for
+            _ <- Console[IO].println(show(account))
+            transactions <- listTransactions(
+              monzoApi,
+              since,
+              account.id
             )
-          yield balance + BigDecimal(transaction.amount.value)
-        }
-        balance <- monzoApi.getBalance(account.id)
-        _ <- Console.printLine(show(balance))
-      yield (
-        account,
-        transactions
-          .filterNot(_.notes.value == "Active card check")
-          .filterNot(_.declineReason.isDefined)
-      )
+            formatter = java.text.NumberFormat.getCurrencyInstance
+            _ = formatter.setCurrency(
+              java.util.Currency.getInstance(java.util.Locale.UK)
+            )
+            _ <- transactions
+              .filterNot(_.notes.value == "Active card check")
+              .filterNot(_.declineReason.isDefined)
+              .sortBy(_.created.value.epochSecond)
+              .foldLeft(
+                IO.pure(BigDecimal(0))
+              ) { case (balance, transaction) =>
+                for
+                  balance <- balance
+                  _ <- Console[IO].println(
+                    transaction.created.value.toString.padTo(30, ' ') + " " +
+                      s"${name(transaction)} (${transaction.notes.value})"
+                        .padTo(45, ' ') + " " +
+                      formatter
+                        .format(BigDecimal(transaction.amount.value) / 100)
+                        .padTo(10, ' ') + " " +
+                      formatter.format(
+                        (balance + BigDecimal(transaction.amount.value)) / 100
+                      )
+                  )
+                yield balance + BigDecimal(transaction.amount.value)
+              }
+            balance <- monzoApi.getBalance(account.id)
+            _ <- Console[IO].println(show(balance))
+          yield (
+            account,
+            transactions
+              .filterNot(_.notes.value == "Active card check")
+              .filterNot(_.declineReason.isDefined)
+          )
+        )
+    now <- Clock[IO].realTime.map(finiteDuration =>
+      Instant.ofEpochMilli(finiteDuration.toMillis)
     )
-    now <- Clock.instant
     _ <- writeOfx(
       toOfx(since, now, accountsAndTransactions)
     )
   yield ()
 
   private def listTransactions(
-      monzoApi: monzo.Api[Task],
+      monzoApi: monzo.Api[IO],
       since: monzo.Since,
       accountId: monzo.AccountId
-  ): Task[List[monzo.Transaction]] = for
-    now <- Clock.instant
+  ): IO[List[monzo.Transaction]] = for
+    now <- Clock[IO].realTime.map(finiteDuration =>
+      Instant.ofEpochMilli(finiteDuration.toMillis)
+    )
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
     maxPermittedBeforeInstant = Instant
@@ -618,7 +643,7 @@ object Plutus extends ZIOAppDefault:
         since.value.epochSecond,
         since.value.nano
       )
-      .plus(8760.hours)
+      .plus(Duration.ofHours(8760))
     transactions <-
       if now.isBefore(maxPermittedBeforeInstant) then
         monzoApi

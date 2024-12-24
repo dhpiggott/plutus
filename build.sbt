@@ -18,10 +18,6 @@ lazy val plutus = project
       "com.disneystreaming.smithy4s" %% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %% "smithy4s-http4s" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %% "smithy4s-xml" % smithy4sVersion.value,
-      // TODO: Switch to Cats Effect?
-      "dev.zio" %% "zio" % "2.1.14",
-      "dev.zio" %% "zio-interop-cats" % "23.1.0.3",
-      "dev.zio" %% "zio-stacktracer" % "2.1.14",
       "org.gnieh" %% "fs2-data-xml" % "1.11.2",
       "org.http4s" %% "http4s-client" % "0.23.30",
       "org.http4s" %% "http4s-core" % "0.23.30",
