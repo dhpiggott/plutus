@@ -30,7 +30,7 @@ lazy val plutus = project
       "org.http4s" %% "http4s-ember-client" % "0.23.30",
       "org.http4s" %% "http4s-ember-server" % "0.23.30",
       "org.http4s" %% "http4s-server" % "0.23.30",
-      "org.typelevel" %% "cats-core" % "2.11.0",
+      "org.typelevel" %% "cats-core" % "2.12.0",
       "org.typelevel" %% "cats-effect" % "3.5.7",
       "org.typelevel" %% "cats-effect-kernel" % "3.5.7",
       "org.typelevel" %% "cats-effect-std" % "3.5.7",
