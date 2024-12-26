@@ -1,29 +1,29 @@
 package plutus
 
-import cats.syntax.all.*
 import cats.effect.*
 import cats.effect.std.*
+import cats.syntax.all.*
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.*
 import org.http4s.implicits.*
-import scala.jdk.DurationConverters.*
 import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
-import scala.language.experimental.betterFors
 import smithy4s.schema.*
 import smithy4s.xml.*
 
 import java.lang.Runtime
+import java.time.Duration
 import java.time.Instant
+import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.Duration
-import java.time.Period
+import scala.jdk.DurationConverters.*
+import scala.language.experimental.betterFors
 
 object Plutus extends IOApp:
 
@@ -482,8 +482,8 @@ object Plutus extends IOApp:
           //   logHeaders = true,
           //   logBody = true
           // )(
-            authorizationCodeReceiverRoute.orNotFound
-          // )
+          authorizationCodeReceiverRoute.orNotFound
+            // )
         )
         .withShutdownTimeout(Duration.ZERO.toScala)
         .build
@@ -584,40 +584,15 @@ object Plutus extends IOApp:
               monzoApi,
               since,
               account.id
-            )
-            formatter = java.text.NumberFormat.getCurrencyInstance
-            _ = formatter.setCurrency(
-              java.util.Currency.getInstance(java.util.Locale.UK)
+            ).map(
+              _.filterNot(_.notes.value == "Active card check")
+                .filterNot(_.declineReason.isDefined)
             )
             _ <- transactions
-              .filterNot(_.notes.value == "Active card check")
-              .filterNot(_.declineReason.isDefined)
-              .sortBy(_.created.value.epochSecond)
-              .foldLeft(
-                IO.pure(BigDecimal(0))
-              ) { case (balance, transaction) =>
-                for
-                  balance <- balance
-                  _ <- Console[IO].println(
-                    transaction.created.value.toString.padTo(30, ' ') + " " +
-                      s"${name(transaction)} (${transaction.notes.value})"
-                        .padTo(45, ' ') + " " +
-                      formatter
-                        .format(BigDecimal(transaction.amount.value) / 100)
-                        .padTo(10, ' ') + " " +
-                      formatter.format(
-                        (balance + BigDecimal(transaction.amount.value)) / 100
-                      )
-                  )
-                yield balance + BigDecimal(transaction.amount.value)
-              }
-            balance <- monzoApi.getBalance(account.id)
-            _ <- Console[IO].println(show(balance))
+              .traverse(transaction => Console[IO].println(show(transaction)))
           yield (
             account,
             transactions
-              .filterNot(_.notes.value == "Active card check")
-              .filterNot(_.declineReason.isDefined)
           )
         )
     now <- Clock[IO].realTime.map(finiteDuration =>
