@@ -5,7 +5,7 @@ namespace plutus.monzo
 use alloy#jsonUnknown
 use alloy#simpleRestJson
 
-// TODO: Add doc strings from https://docs.monzo.com/?
+@externalDocumentation(url: "https://docs.monzo.com/?shell#introduction")
 @httpBearerAuth
 @simpleRestJson
 service Api {

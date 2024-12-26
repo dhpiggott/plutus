@@ -2,8 +2,7 @@ $version: "2"
 
 namespace plutus.ofx
 
-// TODO: Add doc strings from https://financialdataexchange.org/common/Uploaded%20files/OFX%20files/OFX%20Banking%20Specification%20v2.3.pdf?
-// TODO: Header?
+@externalDocumentation(url: "https://financialdataexchange.org/common/Uploaded%20files/OFX%20files/OFX%20Banking%20Specification%20v2.3.pdf")
 @suppress(["UnreferencedShape"])
 @xmlName("OFX")
 structure Ofx {

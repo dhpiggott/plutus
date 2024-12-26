@@ -5,7 +5,7 @@ namespace plutus.monzo
 use alloy#simpleRestJson
 use alloy#urlFormName
 
-// TODO: Add doc strings from https://docs.monzo.com/?
+@externalDocumentation(url: "https://docs.monzo.com/?shell#acquire-an-access-token")
 @simpleRestJson
 service AuthorizationCodeReceiver {
     operations: [

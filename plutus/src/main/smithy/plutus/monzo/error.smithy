@@ -2,7 +2,6 @@ $version: "2"
 
 namespace plutus.monzo
 
-// TODO: Add doc strings from https://docs.monzo.com/?
 @error("client")
 @httpError(400)
 structure BadRequest {}
