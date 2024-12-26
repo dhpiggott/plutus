@@ -37,5 +37,7 @@ lazy val plutus = project
       "org.typelevel" %% "case-insensitive" % "1.4.2",
       "org.slf4j" % "slf4j-simple" % "2.0.16" % Runtime
     ),
+    missinglinkIgnoreDestinationPackages += IgnoredPackage("jnr.unixsocket"),
+    missinglinkIgnoreSourcePackages += IgnoredPackage("org.slf4j"),
     run / connectInput := true
   )
