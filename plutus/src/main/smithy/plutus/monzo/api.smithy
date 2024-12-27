@@ -10,9 +10,7 @@ use alloy#simpleRestJson
 @simpleRestJson
 service Api {
     operations: [
-        WhoAmI
         ListAccounts
-        GetBalance
         ListTransactions
     ]
     errors: [
@@ -28,27 +26,6 @@ service Api {
     ]
 }
 
-@externalDocumentation(url: "https://docs.monzo.com/?shell#authenticating-requests")
-@readonly
-@http(method: "GET", uri: "/ping/whoami")
-operation WhoAmI {
-    output := {
-        @required
-        authenticated: Authenticated
-
-        @required
-        @jsonName("client_id")
-        clientId: ClientId
-
-        @required
-        @jsonName("user_id")
-        userId: UserId
-
-        @jsonUnknown
-        unknown: UnknownProperties
-    }
-}
-
 @externalDocumentation(url: "https://docs.monzo.com/?shell#list-accounts")
 @readonly
 @http(method: "GET", uri: "/accounts")
@@ -56,36 +33,6 @@ operation ListAccounts {
     output := {
         @required
         accounts: Accounts
-
-        @jsonUnknown
-        unknown: UnknownProperties
-    }
-}
-
-@externalDocumentation(url: "https://docs.monzo.com/#balance")
-@readonly
-@http(method: "GET", uri: "/balance")
-operation GetBalance {
-    input := {
-        @required
-        @httpQuery("account_id")
-        accountId: AccountId
-    }
-
-    output := {
-        @required
-        balance: Amount
-
-        @required
-        @jsonName("total_balance")
-        totalBalance: Amount
-
-        @required
-        currency: Currency
-
-        @required
-        @jsonName("spend_today")
-        spendToday: Amount
 
         @jsonUnknown
         unknown: UnknownProperties
@@ -120,8 +67,6 @@ operation ListTransactions {
     }
 }
 
-boolean Authenticated
-
 list Accounts {
     member: Account
 }
@@ -149,7 +94,7 @@ structure Account {
     @jsonName("sort_code")
     sortCode: String
 
-    currency: String
+    currency: Currency
 
     type: String
 
@@ -286,10 +231,10 @@ structure Merchant {
     // TODO: Define a struct with UnknownProperties.
     address: Document
 
-    category: String
+    category: Category
 
     // TODO: Define a struct with UnknownProperties?
-    metadata: Document
+    metadata: Metadata
 
     @jsonUnknown
     unknown: UnknownProperties

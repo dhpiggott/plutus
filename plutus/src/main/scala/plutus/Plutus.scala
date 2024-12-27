@@ -85,13 +85,7 @@ object Plutus extends IOApp:
         .uri(monzoApiUri)
         .middleware(BearerAuthMiddleware(accessToken.value))
         .resource
-        .use(monzoApi =>
-          for
-            whoAmIOutput <- monzoApi.whoAmI()
-            _ <- Console[IO].println(show(whoAmIOutput))
-            _ <- exportTransactions(monzoApi, since)
-          yield ()
-        )
+        .use(exportTransactions(_, since))
     yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
