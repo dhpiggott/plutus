@@ -13,7 +13,6 @@ import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
-import smithy4s.schema.*
 import smithy4s.xml.*
 
 import java.lang.Runtime
@@ -223,60 +222,6 @@ object Plutus extends IOApp:
 
   private lazy val tokensFilePath: fs2.io.file.Path =
     fs2.io.file.Path("tokens.json")
-
-  private trait Show[-A]:
-    def apply(a: A, indent: Int = 0): String
-
-  // TODO: Compare to
-  // https://github.com/disneystreaming/smithy4s/blob/e369dd40850690cb38efd385c1cb16ed3d09a192/modules/cats/src/smithy4s/interopcats/SchemaVisitorShow.scala#L38.
-  // TODO: Special case for UnknownProperties?
-  private object SchemaVisitorShowCodec
-      extends SchemaVisitor.Cached[Show]
-      with SchemaVisitor.Default[Show]:
-
-    override protected val cache: CompilationCache[Show] =
-      CompilationCache.make[Show]
-
-    override def default[A]: Show[A] = (a, _) => a.toString()
-
-    override def struct[S](
-        shapeId: ShapeId,
-        hints: Hints,
-        fields: Vector[Field[S, ?]],
-        make: IndexedSeq[Any] => S
-    ): Show[S] = (struct: S, indent: Int) =>
-      val longestLabel = fields.map(_.label.length()).max
-      val sep = "\n" + (" " * indent)
-      val start = sep
-      fields
-        .map(field =>
-          showField(
-            field,
-            paddedLabel = field.label.padTo(longestLabel, ' '),
-            struct,
-            indent
-          )
-        )
-        .mkString(start, sep, "")
-
-    override def option[A](schema: Schema[A]): Show[Option[A]] =
-      (option: Option[A], indent: Int) =>
-        val show = apply(schema)
-        option match
-          case None        => "n/a"
-          case Some(value) => s"${show(value, indent + 2)}"
-
-    private def showField[S, A](
-        field: Field[S, A],
-        paddedLabel: String,
-        struct: S,
-        indent: Int
-    ): String =
-      val show = apply(field.schema)
-      s"$paddedLabel : ${show(field.get(struct), indent + 2)}"
-
-  private def show[A](a: A)(implicit schema: Schema[A]): String =
-    SchemaVisitorShowCodec(schema)(a)
 
   private def toOfx(
       since: monzo.Since,
@@ -573,7 +518,9 @@ object Plutus extends IOApp:
         .filter(_.closed.contains(false))
         .traverse(account =>
           for
-            _ <- Console[IO].println(show(account))
+            _ <- Console[IO].println(
+              Json.writePrettyString(account)
+            )
             transactions <- listTransactions(
               monzoApi,
               since,
@@ -583,7 +530,11 @@ object Plutus extends IOApp:
                 .filterNot(_.declineReason.isDefined)
             )
             _ <- transactions
-              .traverse(transaction => Console[IO].println(show(transaction)))
+              .traverse(transaction =>
+                Console[IO].println(
+                  Json.writePrettyString(transaction)
+                )
+              )
           yield (
             account,
             transactions
