@@ -7,13 +7,13 @@ use plutus.monzo#CreateAccessTokenOutput
 @suppress(["UnreferencedShape"])
 structure StoredTokens {
     @required
-    @jsonName("create_access_token_output")
-    createAccessTokenOutput: CreateAccessTokenOutput
+    @jsonName("authorized_at")
+    authorizedAt: AuthorizedAt
 
     @required
-    @jsonName("created_at")
-    createdAt: CreatedAt
+    @jsonName("create_access_token_output")
+    createAccessTokenOutput: CreateAccessTokenOutput
 }
 
 @timestampFormat("epoch-seconds")
-timestamp CreatedAt
+timestamp AuthorizedAt

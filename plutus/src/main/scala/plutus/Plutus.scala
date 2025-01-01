@@ -65,6 +65,7 @@ object Plutus extends IOApp:
       now <- Clock[IO].realTime.map(finiteDuration =>
         Instant.ofEpochMilli(finiteDuration.toMillis)
       )
+      leeway = Duration.ofSeconds(10)
       accessToken <- accessToken(
         client,
         now,
@@ -77,8 +78,8 @@ object Plutus extends IOApp:
         // days of transactions. If you need the user’s entire transaction
         // history, you should consider fetching and storing it right after
         // authentication.
-        requireLessThanFiveMinutesOld =
-          sinceInstant.isBefore(now.minus(Period.ofDays(90)))
+        requireStrongCustomerAuthentication =
+          sinceInstant.isBefore(now.minus(Period.ofDays(90)).plus(leeway))
       )
       _ <- SimpleRestJsonBuilder(monzo.Api)
         .client(client)
@@ -93,7 +94,7 @@ object Plutus extends IOApp:
   private def accessToken(
       client: Client[IO],
       now: Instant,
-      requireLessThanFiveMinutesOld: Boolean
+      requireStrongCustomerAuthentication: Boolean
   ): IO[monzo.AccessToken] =
     TokenExchangeBuilder(monzo.TokenApi)
       .client(client)
@@ -103,97 +104,73 @@ object Plutus extends IOApp:
         for
           clientId <- envParam("CLIENT_ID").map(monzo.ClientId(_))
           clientSecret <- envParam("CLIENT_SECRET").map(monzo.ClientSecret(_))
-          createAndWriteTokens = (createTokens: IO[
-            monzo.CreateAccessTokenOutput
-          ]) =>
-            for
-              createAccessTokenOutput <- createTokens
-              _ <- writeTokens(
-                StoredTokens(
-                  createAccessTokenOutput,
-                  createdAt = CreatedAt(
-                    Timestamp(
-                      epochSecond = now.getEpochSecond(),
-                      nano = now.getNano()
-                    )
+          maybeStoredTokens <- loadTokens
+          exchangeAuthCodeAndStoreTokens = for
+            createAccessTokenOutput <- exchangeAuthCode(
+              monzoTokenApi,
+              clientId,
+              clientSecret
+            )
+            _ <- storeTokens(
+              StoredTokens(
+                authorizedAt = AuthorizedAt(
+                  Timestamp(
+                    epochSecond = now.getEpochSecond(),
+                    nano = now.getNano()
                   )
-                )
+                ),
+                createAccessTokenOutput
               )
-            yield createAccessTokenOutput.accessToken
-          maybeStoredTokens <- readTokens
+            )
+          yield createAccessTokenOutput.accessToken
           accessToken <- maybeStoredTokens match
             case None =>
-              createAndWriteTokens(
-                exchangeAuthCode(
-                  monzoTokenApi,
-                  clientId,
-                  clientSecret
-                )
-              )
+              exchangeAuthCodeAndStoreTokens
 
             case Some(storedTokens)
-                if requireLessThanFiveMinutesOld && !lessThanFiveMinutesOld(
-                  storedTokens,
+                if requireStrongCustomerAuthentication && !lessThanFiveMinutesAgo(
+                  storedTokens.authorizedAt,
                   now
                 ) =>
-              createAndWriteTokens(
-                exchangeAuthCode(
-                  monzoTokenApi,
-                  clientId,
-                  clientSecret
-                )
-              )
+              exchangeAuthCodeAndStoreTokens
 
-            case Some(storedTokens) if requiresRefresh(storedTokens, now) =>
-              createAndWriteTokens(
-                monzoTokenApi.createAccessToken(
+            case Some(storedTokens) =>
+              for
+                createAccessTokenOutput <- monzoTokenApi.createAccessToken(
                   grantType = monzo.GrantType.REFRESH_TOKEN,
                   clientId = clientId,
                   clientSecret = clientSecret,
                   refreshToken =
                     Some(storedTokens.createAccessTokenOutput.refreshToken)
                 )
-              )
-
-            case Some(storedTokens) =>
-              IO.pure(storedTokens.createAccessTokenOutput.accessToken)
+                _ <- storeTokens(
+                  StoredTokens(
+                    authorizedAt = storedTokens.authorizedAt,
+                    createAccessTokenOutput
+                  )
+                )
+              yield createAccessTokenOutput.accessToken
         yield accessToken
       )
 
-  private def lessThanFiveMinutesOld(
-      storedTokens: StoredTokens,
+  private def lessThanFiveMinutesAgo(
+      authorizedAt: AuthorizedAt,
       now: Instant
   ): Boolean =
-    val createdAt = Instant.ofEpochSecond(
-      storedTokens.createdAt.value.epochSecond,
-      storedTokens.createdAt.value.nano
+    val authorizedAtInstant = Instant.ofEpochSecond(
+      authorizedAt.value.epochSecond,
+      authorizedAt.value.nano
     )
     val fiveMinutesAgo = now.minus(Duration.ofMinutes(5))
     val leeway = Duration.ofSeconds(10)
-    createdAt.plus(leeway).isAfter(fiveMinutesAgo)
-
-  private def requiresRefresh(
-      storedTokens: StoredTokens,
-      now: Instant
-  ): Boolean =
-    val createdAt = Instant.ofEpochSecond(
-      storedTokens.createdAt.value.epochSecond,
-      storedTokens.createdAt.value.nano
-    )
-    val expiresAt = createdAt.plus(
-      Duration.ofSeconds(
-        storedTokens.createAccessTokenOutput.expiresIn.value
-      )
-    )
-    val leeway = Duration.ofSeconds(10)
-    expiresAt.minus(leeway).isAfter(now)
+    authorizedAtInstant.plus(leeway).isAfter(fiveMinutesAgo)
 
   private def envParam(name: String): IO[String] = for
     maybeValue <- Env[IO].get(name)
     value <- IO.fromOption(maybeValue)(Error(s"$name must be set."))
   yield value
 
-  private lazy val readTokens: IO[Option[StoredTokens]] =
+  private lazy val loadTokens: IO[Option[StoredTokens]] =
     fs2.io.file
       .Files[IO]
       .readAll(tokensFilePath)
@@ -207,7 +184,7 @@ object Plutus extends IOApp:
       )
       .option
 
-  private def writeTokens(storedTokens: StoredTokens): IO[Unit] =
+  private def storeTokens(storedTokens: StoredTokens): IO[Unit] =
     fs2
       .Stream(Json.writePrettyString(storedTokens))
       .through(fs2.text.utf8.encode)
@@ -479,6 +456,7 @@ object Plutus extends IOApp:
         (monzo.AuthorizationCode, monzo.State)
       ]
   ) extends monzo.AuthorizationCodeReceiver[IO]:
+    // TODO: Render a confirmation message.
     override def receiveAuthorizationCode(
         code: monzo.AuthorizationCode,
         state: monzo.State
