@@ -67,6 +67,7 @@ object Plutus extends IOApp:
       )
       accessToken <- accessToken(
         client,
+        now,
         // From https://docs.monzo.com/?shell#list-transactions:
         //
         // Strong Customer Authentication
@@ -84,13 +85,14 @@ object Plutus extends IOApp:
         .uri(monzoApiUri)
         .middleware(BearerAuthMiddleware(accessToken.value))
         .resource
-        .use(exportTransactions(_, since))
+        .use(exportTransactions(_, since, now))
     yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
   private def accessToken(
       client: Client[IO],
+      now: Instant,
       requireLessThanFiveMinutesOld: Boolean
   ): IO[monzo.AccessToken] =
     TokenExchangeBuilder(monzo.TokenApi)
@@ -101,9 +103,6 @@ object Plutus extends IOApp:
         for
           clientId <- envParam("CLIENT_ID").map(monzo.ClientId(_))
           clientSecret <- envParam("CLIENT_SECRET").map(monzo.ClientSecret(_))
-          now <- Clock[IO].realTime.map(finiteDuration =>
-            Instant.ofEpochMilli(finiteDuration.toMillis)
-          )
           createAndWriteTokens = (createTokens: IO[
             monzo.CreateAccessTokenOutput
           ]) =>
@@ -384,7 +383,6 @@ object Plutus extends IOApp:
   private def writeOfx[A](a: A)(implicit schema: Schema[A]): IO[Unit] =
     XmlDocument.documentEventifier
       .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
-      // TODO: Fix special char escaping.
       .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4))
       .through(fs2.text.utf8.encode)
       .through(
@@ -510,7 +508,8 @@ object Plutus extends IOApp:
 
   private def exportTransactions(
       monzoApi: monzo.Api[IO],
-      since: monzo.Since
+      since: monzo.Since,
+      now: Instant
   ): IO[Unit] = for
     listAccountsOutput <- monzoApi.listAccounts()
     accountsAndTransactions <-
@@ -524,6 +523,7 @@ object Plutus extends IOApp:
             transactions <- listTransactions(
               monzoApi,
               since,
+              now,
               account.id
             ).map(
               _.filterNot(_.notes.value == "Active card check")
@@ -540,9 +540,6 @@ object Plutus extends IOApp:
             transactions
           )
         )
-    now <- Clock[IO].realTime.map(finiteDuration =>
-      Instant.ofEpochMilli(finiteDuration.toMillis)
-    )
     _ <- writeOfx(
       toOfx(since, now, accountsAndTransactions)
     )
@@ -551,11 +548,9 @@ object Plutus extends IOApp:
   private def listTransactions(
       monzoApi: monzo.Api[IO],
       since: monzo.Since,
+      now: Instant,
       accountId: monzo.AccountId
   ): IO[List[monzo.Transaction]] = for
-    now <- Clock[IO].realTime.map(finiteDuration =>
-      Instant.ofEpochMilli(finiteDuration.toMillis)
-    )
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
     maxPermittedBeforeInstant = Instant
@@ -592,6 +587,7 @@ object Plutus extends IOApp:
           otherPages <- listTransactions(
             monzoApi,
             monzo.Since(maxPermittedBefore.value),
+            now,
             accountId
           )
         yield firstPage ++ otherPages
