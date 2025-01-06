@@ -2,18 +2,26 @@ name := "plutus"
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
+addCommandAlias("fmtCheck", "all scalafmtSbtCheck scalafmtCheckAll")
+addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
+addCommandAlias("fixCheck", "scalafixAll --check")
+addCommandAlias("fix", "scalafixAll")
+addCommandAlias(
+  "check",
+  "fmtCheck; fixCheck; undeclaredCompileDependenciesTest; unusedCompileDependenciesTest; missinglinkCheck; dependencyUpdates"
+)
+
 inThisBuild(
   Seq(
     scalaVersion := "3.6.2",
     semanticdbEnabled := true
   )
 )
-addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
-addCommandAlias("fix", "scalafixAll")
 
 lazy val plutus = project
   .enablePlugins(Smithy4sCodegenPlugin)
   .settings(
+    dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
       "co.fs2" %% "fs2-core" % "3.11.0",
       "co.fs2" %% "fs2-io" % "3.11.0",
@@ -39,5 +47,6 @@ lazy val plutus = project
     ),
     missinglinkIgnoreDestinationPackages += IgnoredPackage("jnr.unixsocket"),
     missinglinkIgnoreSourcePackages += IgnoredPackage("org.slf4j"),
-    run / connectInput := true
+    Compile / run / connectInput := true,
+    Compile / run / fork := true
   )

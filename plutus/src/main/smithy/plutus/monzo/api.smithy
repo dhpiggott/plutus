@@ -13,17 +13,6 @@ service Api {
         ListAccounts
         ListTransactions
     ]
-    errors: [
-        BadRequest
-        Unauthorized
-        Forbidden
-        MethodNotAllowed
-        PageNotFound
-        NotAcceptable
-        TooManyRequests
-        InternalServerError
-        GatewayTimeout
-    ]
 }
 
 @externalDocumentation(url: "https://docs.monzo.com/?shell#list-accounts")
@@ -75,44 +64,29 @@ list Transactions {
     member: Transaction
 }
 
-// TODO: Refine this (named types, required hints).
 structure Account {
     @required
     id: AccountId
 
     @required
-    description: Description
-
-    @required
-    created: Created
-
     closed: Boolean
 
-    // TODO: Define a struct with UnknownProperties.
-    owners: Document
-
     @jsonName("sort_code")
-    sortCode: String
+    sortCode: SortCode
 
-    currency: Currency
-
-    type: String
-
-    // TODO: Define a struct with UnknownProperties.
-    @jsonName("payment_details")
-    paymentDetails: Document
+    @required
+    @jsonName("is_flex")
+    isFlex: Boolean
 
     @jsonName("account_number")
-    accountNumber: String
-
-    @jsonName("country_code")
-    countryCode: String
+    accountNumber: AccountNumber
 
     @jsonUnknown
     unknown: UnknownProperties
 }
 
 structure Transaction {
+    @required
     counterparty: Counterparty
 
     @required
@@ -125,9 +99,6 @@ structure Transaction {
     created: Created
 
     @required
-    currency: Currency
-
-    @required
     description: Description
 
     @required
@@ -136,19 +107,7 @@ structure Transaction {
     merchant: Merchant
 
     @required
-    metadata: Metadata
-
-    @required
     notes: Notes
-
-    @required
-    @jsonName("is_load")
-    isLoad: IsLoad
-
-    settled: Settled
-
-    @required
-    category: Category
 
     @jsonUnknown
     unknown: UnknownProperties
@@ -156,32 +115,18 @@ structure Transaction {
 
 string AccountId
 
+string SortCode
+
+string AccountNumber
+
 timestamp Since
 
 timestamp Before
 
 integer Limit
 
-string Description
-
-// TODO: Refine this (named types, required hints).
 structure Counterparty {
-    @jsonName("account_number")
-    accountNumber: String
-
-    @jsonName("account_id")
-    accountId: String
-
-    name: String
-
-    @jsonName("preferred_name")
-    preferredName: String
-
-    @jsonName("sort_code")
-    sortCode: String
-
-    @jsonName("user_id")
-    userId: String
+    name: Name
 
     @jsonUnknown
     unknown: UnknownProperties
@@ -189,68 +134,26 @@ structure Counterparty {
 
 bigInteger Amount
 
-enum DeclineReason {
-    AUTHENTICATION_REJECTED_BY_CARDHOLDER = "AUTHENTICATION_REJECTED_BY_CARDHOLDER"
-    CARD_BLOCKED = "CARD_BLOCKED"
-    CARD_INACTIVE = "CARD_INACTIVE"
-    INSUFFICIENT_FUNDS = "INSUFFICIENT_FUNDS"
-    INVALID_CVC = "INVALID_CVC"
-    INVALID_EXPIRY_DATE = "INVALID_EXPIRY_DATE"
-    PIN_REQUIRED = "PIN_REQUIRED"
-    OTHER = "OTHER"
-    SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT = "SCA_NOT_AUTHENTICATED_CARD_NOT_PRESENT"
-}
+string DeclineReason
 
 @timestampFormat("date-time")
 timestamp Created
 
-string Currency
+string Description
 
 string TransactionId
 
-// TODO: Refine this (named types, required hints).
 structure Merchant {
-    groupId: String
-
-    name: String
-
-    suggestedTags: String
-
-    emoji: String
-
-    atm: Boolean
-
-    disableFeedback: Boolean
-
-    online: Boolean
-
-    logo: String
-
-    id: String
-
-    // TODO: Define a struct with UnknownProperties.
-    address: Document
-
-    category: Category
-
-    // TODO: Define a struct with UnknownProperties?
-    metadata: Metadata
+    @required
+    name: Name
 
     @jsonUnknown
     unknown: UnknownProperties
 }
 
-document Metadata
-
 string Notes
 
-boolean IsLoad
-
-/// This should be a timestamp, but there are cases when we get empty
-/// string... which of course fails to parse as one.
-string Settled
-
-string Category
+string Name
 
 map UnknownProperties {
     key: String

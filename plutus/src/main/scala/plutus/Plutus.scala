@@ -74,9 +74,9 @@ object Plutus extends IOApp:
         // Strong Customer Authentication
         //
         // After a user has authenticated, your client can fetch all of their
-        // transactions, and after 5 minutes, it can only sync the last 90
-        // days of transactions. If you need the user’s entire transaction
-        // history, you should consider fetching and storing it right after
+        // transactions, and after 5 minutes, it can only sync the last 90 days
+        // of transactions. If you need the user’s entire transaction history,
+        // you should consider fetching and storing it right after
         // authentication.
         requireStrongCustomerAuthentication =
           sinceInstant.isBefore(now.minus(Period.ofDays(90)).plus(leeway))
@@ -196,6 +196,7 @@ object Plutus extends IOApp:
       .compile
       .drain
 
+  // TODO: Use a more appropriate path.
   private lazy val tokensFilePath: fs2.io.file.Path =
     fs2.io.file.Path("tokens.json")
 
@@ -206,7 +207,7 @@ object Plutus extends IOApp:
   ): ofx.Ofx =
     val (bankAccountsAndTransactions, creditCardAccountsAndTransactions) =
       accountsAndTransactions.partition { case (account, _) =>
-        !account._type.contains("uk_monzo_flex")
+        !account.isFlex
       }
     ofx.Ofx(
       signonMessageSetResponse = ofx.SignonMessageSetResponse(
@@ -305,8 +306,12 @@ object Plutus extends IOApp:
   ): ofx.BankAccountFrom =
     ofx.BankAccountFrom(
       // TODO: What if they're empty?
-      bankId = ofx.BankId(account.sortCode.getOrElse("")),
-      accountId = ofx.AccountId(account.accountNumber.getOrElse("")),
+      bankId = ofx.BankId(
+        account.sortCode.map(_.value).getOrElse("")
+      ),
+      accountId = ofx.AccountId(
+        account.accountNumber.map(_.value).getOrElse("")
+      ),
       accountType = ofx.AccountType.CHECKING
     )
 
@@ -342,9 +347,9 @@ object Plutus extends IOApp:
     )
 
   private def name(transaction: monzo.Transaction): String =
-    transaction.counterparty
-      .flatMap(_.name)
-      .orElse(transaction.merchant.flatMap(_.name))
+    transaction.counterparty.name
+      .orElse(transaction.merchant.map(_.name))
+      .map(_.value)
       .getOrElse(transaction.description.value)
 
   // TODO: Add refinement to ofx.Datetime?
@@ -424,7 +429,7 @@ object Plutus extends IOApp:
               redirectUri = Some(redirectUri),
               code = Some(authorizationCode)
             )
-            _ <- Console[IO].print(
+            _ <- Console[IO].println(
               "Complete SCA in app, then press enter to continue"
             )
             _ <- Console[IO].readLine
@@ -456,11 +461,16 @@ object Plutus extends IOApp:
         (monzo.AuthorizationCode, monzo.State)
       ]
   ) extends monzo.AuthorizationCodeReceiver[IO]:
-    // TODO: Render a confirmation message.
     override def receiveAuthorizationCode(
         code: monzo.AuthorizationCode,
         state: monzo.State
-    ): IO[Unit] = deferred.complete(code -> state).void
+    ): IO[monzo.ReceiveAuthorizationCodeOutput] = deferred
+      .complete(code -> state)
+      .as(
+        monzo.ReceiveAuthorizationCodeOutput(body =
+          monzo.Body("Return to Plutus.")
+        )
+      )
 
   private object BearerAuthMiddleware:
     def apply(bearerToken: String): ClientEndpointMiddleware[IO] =
@@ -492,7 +502,7 @@ object Plutus extends IOApp:
     listAccountsOutput <- monzoApi.listAccounts()
     accountsAndTransactions <-
       listAccountsOutput.accounts
-        .filter(_.closed.contains(false))
+        .filter(!_.closed)
         .traverse(account =>
           for
             _ <- Console[IO].println(

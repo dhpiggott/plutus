@@ -2,6 +2,7 @@ $version: "2"
 
 namespace plutus.monzo
 
+use alloy#jsonUnknown
 use alloy#simpleRestJson
 use alloy#urlFormName
 
@@ -26,23 +27,19 @@ operation ReceiveAuthorizationCode {
         @httpQuery("state")
         state: State
     }
+
+    output := {
+        @required
+        // TODO: Make this render as text.
+        @httpPayload
+        body: Body
+    }
 }
 
 @tokenExchange
 service TokenApi {
     operations: [
         CreateAccessToken
-    ]
-    errors: [
-        BadRequest
-        Unauthorized
-        Forbidden
-        MethodNotAllowed
-        PageNotFound
-        NotAcceptable
-        TooManyRequests
-        InternalServerError
-        GatewayTimeout
     ]
 }
 
@@ -103,31 +100,11 @@ operation CreateAccessToken {
     output: CreateAccessTokenOutput
 }
 
-structure CreateAccessTokenOutput {
-    @required
-    @jsonName("access_token")
-    accessToken: AccessToken
+string AuthorizationCode
 
-    @required
-    @jsonName("client_id")
-    clientId: ClientId
+string State
 
-    @required
-    @jsonName("expires_in")
-    expiresIn: ExpiresIn
-
-    @required
-    @jsonName("refresh_token")
-    refreshToken: RefreshToken
-
-    @required
-    @jsonName("token_type")
-    tokenType: TokenType
-
-    @required
-    @jsonName("user_id")
-    userId: UserId
-}
+string Body
 
 enum GrantType {
     AUTHORIZATION_CODE = "authorization_code"
@@ -138,20 +115,26 @@ string ClientId
 
 string ClientSecret
 
-long ExpiresIn
-
 string RedirectUri
 
-string AuthorizationCode
+structure CreateAccessTokenOutput {
+    @required
+    @jsonName("access_token")
+    accessToken: AccessToken
 
-string State
+    @required
+    @jsonName("refresh_token")
+    refreshToken: RefreshToken
+
+    @jsonUnknown
+    unknown: UnknownProperties
+}
 
 string AccessToken
 
 string RefreshToken
 
-enum TokenType {
-    BEARER = "Bearer"
+map UnknownProperties {
+    key: String
+    value: Document
 }
-
-string UserId
