@@ -196,9 +196,9 @@ object Plutus extends IOApp:
       .compile
       .drain
 
-  // TODO: Use a more appropriate path.
   private lazy val tokensFilePath: fs2.io.file.Path =
-    fs2.io.file.Path("tokens.json")
+    fs2.io.file.Path(System.getProperty("user.home")) /
+      "Library" / "Application Support" / "plutus" / "tokens.json"
 
   private def toOfx(
       since: monzo.Since,

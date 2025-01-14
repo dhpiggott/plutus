@@ -4,5 +4,4 @@
 .smithy.lsp.log
 metals.sbt
 target/
-tokens.json
 *.ofx
