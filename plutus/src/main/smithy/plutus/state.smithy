@@ -2,17 +2,17 @@ $version: "2"
 
 namespace plutus
 
-use plutus.monzo#CreateAccessTokenOutput
+use plutus.monzo#RefreshToken
 
 @suppress(["UnreferencedShape"])
-structure StoredTokens {
+structure State {
     @required
     @jsonName("authorized_at")
     authorizedAt: AuthorizedAt
 
     @required
-    @jsonName("create_access_token_output")
-    createAccessTokenOutput: CreateAccessTokenOutput
+    @jsonName("refresh_token")
+    refreshToken: RefreshToken
 }
 
 @timestampFormat("epoch-seconds")

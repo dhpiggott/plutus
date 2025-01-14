@@ -6,35 +6,13 @@ use alloy#jsonUnknown
 use alloy#simpleRestJson
 use alloy#urlFormName
 
-@externalDocumentation(url: "https://docs.monzo.com/?shell#acquire-an-access-token")
-@simpleRestJson
-service AuthorizationCodeReceiver {
-    operations: [
-        ReceiveAuthorizationCode
-    ]
-}
+string ClientId
 
-@externalDocumentation(url: "https://docs.monzo.com/?shell#acquire-an-access-token")
-@readonly
-@http(method: "GET", uri: "/oauth/callback")
-operation ReceiveAuthorizationCode {
-    input := {
-        @required
-        @httpQuery("code")
-        code: AuthorizationCode
+string RedirectUri
 
-        @required
-        @httpQuery("state")
-        state: State
-    }
+string State
 
-    output := {
-        @required
-        // TODO: Make this render as text.
-        @httpPayload
-        body: Body
-    }
-}
+string AuthorizationCode
 
 @tokenExchange
 service TokenApi {
@@ -97,42 +75,30 @@ operation CreateAccessToken {
         refreshToken: RefreshToken
     }
 
-    output: CreateAccessTokenOutput
+    output := {
+        @required
+        @jsonName("access_token")
+        accessToken: AccessToken
+
+        @required
+        @jsonName("refresh_token")
+        refreshToken: RefreshToken
+
+        @jsonUnknown
+        unknown: UnknownProperties
+    }
 }
 
-string AuthorizationCode
-
-string State
-
-string Body
+string RefreshToken
 
 enum GrantType {
     AUTHORIZATION_CODE = "authorization_code"
     REFRESH_TOKEN = "refresh_token"
 }
 
-string ClientId
-
 string ClientSecret
 
-string RedirectUri
-
-structure CreateAccessTokenOutput {
-    @required
-    @jsonName("access_token")
-    accessToken: AccessToken
-
-    @required
-    @jsonName("refresh_token")
-    refreshToken: RefreshToken
-
-    @jsonUnknown
-    unknown: UnknownProperties
-}
-
 string AccessToken
-
-string RefreshToken
 
 map UnknownProperties {
     key: String

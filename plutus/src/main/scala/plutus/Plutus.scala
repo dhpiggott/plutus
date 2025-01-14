@@ -3,13 +3,16 @@ package plutus
 import cats.effect.*
 import cats.effect.std.*
 import cats.syntax.all.*
+import com.monovore.decline.*
+import com.monovore.decline.effect.*
+import com.monovore.decline.time.*
 import org.http4s.*
 import org.http4s.client.Client
+import org.http4s.dsl.io.*
 import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.*
 import org.http4s.implicits.*
-import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
@@ -21,52 +24,57 @@ import java.time.Instant
 import java.time.Period
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import scala.jdk.DurationConverters.*
+import scala.concurrent.duration.*
 import scala.language.experimental.betterFors
 
-object Plutus extends IOApp:
+object Plutus
+    extends CommandIOApp(
+      name = "plutus",
+      header = "Monzo to OFX export tool."
+    ):
 
-  override def run(args: List[String]): IO[ExitCode] =
-    EmberClientBuilder
-      .default[IO]
-      .build
-      // .map(
-      //   org.http4s.client.middleware.Logger.colored(
-      //     logHeaders = true,
-      //     logBody = true
-      //   )
-      // )
-      .use(client =>
-        program(
-          client,
-          args
-        )
-          .as(ExitCode.Success)
+  private val verboseOpts: Opts[Boolean] =
+    Opts
+      .flag(
+        "verbose",
+        help = "Log HTTP requests and responses."
       )
+      .orFalse
 
-  private def program(client: Client[IO], args: List[String]): IO[Unit] =
+  private val sinceOpts: Opts[Instant] =
+    Opts.option[Instant](
+      "since",
+      help = "Timestamp to export transactions from."
+    )
+
+  override def main: Opts[IO[ExitCode]] =
+    (verboseOpts, sinceOpts).mapN { (verbose, since) =>
+      EmberClientBuilder
+        .default[IO]
+        .build
+        .map(
+          if verbose then
+            org.http4s.client.middleware.Logger.colored(
+              logHeaders = true,
+              logBody = true
+            )
+          else identity
+        )
+        .use(program(verbose, since, _).as(ExitCode.Success))
+    }
+
+  private def program(
+      verbose: Boolean,
+      since: Instant,
+      client: Client[IO]
+  ): IO[Unit] =
     for
-      sinceString <- IO
-        .fromOption(args.headOption)(
-          Error("Since timestamp must be given.")
-        )
-      sinceTimestamp <- IO
-        .fromOption(
-          Timestamp.parse(
-            string = sinceString,
-            format = TimestampFormat.DATE_TIME
-          )
-        )(Error(s"${sinceString} is not a valid timestamp."))
-      since = monzo.Since(sinceTimestamp)
-      sinceInstant = Instant.ofEpochSecond(
-        sinceTimestamp.epochSecond,
-        sinceTimestamp.nano
-      )
       now <- Clock[IO].realTime.map(finiteDuration =>
         Instant.ofEpochMilli(finiteDuration.toMillis)
       )
       leeway = Duration.ofSeconds(10)
       accessToken <- accessToken(
+        verbose,
         client,
         now,
         // From https://docs.monzo.com/?shell#list-transactions:
@@ -79,19 +87,26 @@ object Plutus extends IOApp:
         // you should consider fetching and storing it right after
         // authentication.
         requireStrongCustomerAuthentication =
-          sinceInstant.isBefore(now.minus(Period.ofDays(90)).plus(leeway))
+          since.isBefore(now.minus(Period.ofDays(90)).plus(leeway))
       )
       _ <- SimpleRestJsonBuilder(monzo.Api)
         .client(client)
         .uri(monzoApiUri)
         .middleware(BearerAuthMiddleware(accessToken.value))
         .resource
-        .use(exportTransactions(_, since, now))
+        .use(
+          exportTransactions(
+            _,
+            since = monzo.Since(Timestamp.fromEpochMilli(since.toEpochMilli)),
+            now
+          )
+        )
     yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
   private def accessToken(
+      verbose: Boolean,
       client: Client[IO],
       now: Instant,
       requireStrongCustomerAuthentication: Boolean
@@ -104,49 +119,48 @@ object Plutus extends IOApp:
         for
           clientId <- envParam("CLIENT_ID").map(monzo.ClientId(_))
           clientSecret <- envParam("CLIENT_SECRET").map(monzo.ClientSecret(_))
-          maybeStoredTokens <- loadTokens
+          maybeState <- loadState
           exchangeAuthCodeAndStoreTokens = for
             createAccessTokenOutput <- exchangeAuthCode(
+              verbose,
               monzoTokenApi,
               clientId,
               clientSecret
             )
-            _ <- storeTokens(
-              StoredTokens(
+            _ <- saveState(
+              State(
                 authorizedAt = AuthorizedAt(
                   Timestamp(
                     epochSecond = now.getEpochSecond(),
                     nano = now.getNano()
                   )
                 ),
-                createAccessTokenOutput
+                refreshToken = createAccessTokenOutput.refreshToken
               )
             )
           yield createAccessTokenOutput.accessToken
-          accessToken <- maybeStoredTokens match
+          accessToken <- maybeState match
             case None =>
               exchangeAuthCodeAndStoreTokens
 
-            case Some(storedTokens)
+            case Some(state)
                 if requireStrongCustomerAuthentication && !lessThanFiveMinutesAgo(
-                  storedTokens.authorizedAt,
+                  state.authorizedAt,
                   now
                 ) =>
               exchangeAuthCodeAndStoreTokens
 
-            case Some(storedTokens) =>
+            case Some(state) =>
               for
                 createAccessTokenOutput <- monzoTokenApi.createAccessToken(
                   grantType = monzo.GrantType.REFRESH_TOKEN,
                   clientId = clientId,
                   clientSecret = clientSecret,
-                  refreshToken =
-                    Some(storedTokens.createAccessTokenOutput.refreshToken)
+                  refreshToken = Some(state.refreshToken)
                 )
-                _ <- storeTokens(
-                  StoredTokens(
-                    authorizedAt = storedTokens.authorizedAt,
-                    createAccessTokenOutput
+                _ <- saveState(
+                  state.copy(
+                    refreshToken = createAccessTokenOutput.refreshToken
                   )
                 )
               yield createAccessTokenOutput.accessToken
@@ -170,35 +184,35 @@ object Plutus extends IOApp:
     value <- IO.fromOption(maybeValue)(Error(s"$name must be set."))
   yield value
 
-  private lazy val loadTokens: IO[Option[StoredTokens]] =
+  private lazy val loadState: IO[Option[State]] =
     fs2.io.file
       .Files[IO]
-      .readAll(tokensFilePath)
+      .readAll(stateFilePath)
       .through(fs2.text.utf8.decode)
       .compile
       .string
-      .flatMap(storedTokens =>
+      .flatMap(state =>
         IO.fromEither(
-          Json.read[StoredTokens](Blob(storedTokens))
+          Json.read[State](Blob(state))
         )
       )
       .option
 
-  private def storeTokens(storedTokens: StoredTokens): IO[Unit] =
+  private def saveState(state: State): IO[Unit] =
     fs2
-      .Stream(Json.writePrettyString(storedTokens))
+      .Stream(Json.writePrettyString(state))
       .through(fs2.text.utf8.encode)
       .through(
         fs2.io.file
           .Files[IO]
-          .writeAll(tokensFilePath)
+          .writeAll(stateFilePath)
       )
       .compile
       .drain
 
-  private lazy val tokensFilePath: fs2.io.file.Path =
+  private lazy val stateFilePath: fs2.io.file.Path =
     fs2.io.file.Path(System.getProperty("user.home")) /
-      "Library" / "Application Support" / "plutus" / "tokens.json"
+      "Library" / "Application Support" / "plutus" / "state.json"
 
   private def toOfx(
       since: monzo.Since,
@@ -352,7 +366,6 @@ object Plutus extends IOApp:
       .map(_.value)
       .getOrElse(transaction.description.value)
 
-  // TODO: Add refinement to ofx.Datetime?
   private def toOfxDatetime(
       instant: Instant
   ): ofx.Datetime =
@@ -378,6 +391,7 @@ object Plutus extends IOApp:
       .drain
 
   private def exchangeAuthCode(
+      verbose: Boolean,
       monzoTokenApi: monzo.TokenApi[IO],
       clientId: monzo.ClientId,
       clientSecret: monzo.ClientSecret
@@ -387,24 +401,27 @@ object Plutus extends IOApp:
         IO,
         (monzo.AuthorizationCode, monzo.State)
       ]
-      authorizationCodeReceiverRoute <- IO.fromEither(
-        SimpleRestJsonBuilder
-          .routes(
-            AuthorizationCodeReceiverImpl(authorizationCodeAndStateDeferred)
-          )
-          .make
-      )
       createAccessTokenOutput <- EmberServerBuilder
         .default[IO]
         .withHttpApp(
-          // org.http4s.server.middleware.Logger.httpApp(
-          //   logHeaders = true,
-          //   logBody = true
-          // )(
-          authorizationCodeReceiverRoute.orNotFound
-            // )
+          (if verbose then
+             org.http4s.server.middleware.Logger.httpApp[IO](
+               logHeaders = true,
+               logBody = true
+             )
+           else identity[HttpApp[IO]]) (
+            HttpRoutes
+              .of[IO] {
+                case GET -> Root / "oauth" / "callback" :?
+                    AuthorizationCodeQueryParamMatcher(code) +&
+                    StateQueryParamMatcher(state) =>
+                  authorizationCodeAndStateDeferred.complete(code -> state) >>
+                    Ok("Authorization code received. Return to Plutus.")
+              }
+              .orNotFound
+          )
         )
-        .withShutdownTimeout(Duration.ZERO.toScala)
+        .withShutdownTimeout(0.seconds)
         .build
         .use(server =>
           for
@@ -430,12 +447,25 @@ object Plutus extends IOApp:
               code = Some(authorizationCode)
             )
             _ <- Console[IO].println(
-              "Complete SCA in app, then press enter to continue"
+              "Complete SCA in app, then press enter to continue."
             )
             _ <- Console[IO].readLine
           yield createAccessTokenOutput
         )
     yield createAccessTokenOutput
+
+  private implicit val authorizationCodeQueryParamDecoder
+      : QueryParamDecoder[monzo.AuthorizationCode] =
+    QueryParamDecoder[String].map(monzo.AuthorizationCode(_))
+
+  private implicit val stateQueryParamDecoder: QueryParamDecoder[monzo.State] =
+    QueryParamDecoder[String].map(monzo.State(_))
+
+  private object AuthorizationCodeQueryParamMatcher
+      extends QueryParamDecoderMatcher[monzo.AuthorizationCode]("code")
+
+  private object StateQueryParamMatcher
+      extends QueryParamDecoderMatcher[monzo.State]("state")
 
   private def redirectUserToMonzo(
       clientId: monzo.ClientId,
@@ -454,23 +484,6 @@ object Plutus extends IOApp:
       Runtime.getRuntime().exec(Array("open", monzoAuthEndpoint.toString))
     )
   yield state
-
-  private class AuthorizationCodeReceiverImpl(
-      deferred: Deferred[
-        IO,
-        (monzo.AuthorizationCode, monzo.State)
-      ]
-  ) extends monzo.AuthorizationCodeReceiver[IO]:
-    override def receiveAuthorizationCode(
-        code: monzo.AuthorizationCode,
-        state: monzo.State
-    ): IO[monzo.ReceiveAuthorizationCodeOutput] = deferred
-      .complete(code -> state)
-      .as(
-        monzo.ReceiveAuthorizationCodeOutput(body =
-          monzo.Body("Return to Plutus.")
-        )
-      )
 
   private object BearerAuthMiddleware:
     def apply(bearerToken: String): ClientEndpointMiddleware[IO] =
