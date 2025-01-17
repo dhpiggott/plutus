@@ -3,7 +3,6 @@ $version: "2"
 namespace plutus.monzo
 
 use alloy#jsonUnknown
-use alloy#simpleRestJson
 use alloy#urlFormName
 
 string ClientId

@@ -2,8 +2,10 @@ $version: "2"
 
 namespace plutus.monzo
 
+use alloy#discriminated
 use alloy#jsonUnknown
 use alloy#simpleRestJson
+use smithy4s.meta#adt
 
 @externalDocumentation(url: "https://docs.monzo.com/?shell#introduction")
 @httpBearerAuth
@@ -64,25 +66,46 @@ list Transactions {
     member: Transaction
 }
 
-structure Account {
+@adt
+@discriminated("type")
+union Account {
+    @jsonName("uk_retail")
+    ukRetail: UkRetailAccount
+
+    @jsonName("uk_retail_joint")
+    ukRetailJoint: UkRetailJointAccount
+
+    @jsonName("uk_monzo_flex")
+    ukMonzoFlex: UkMonzoFlexAccount
+}
+
+@mixin
+structure AccountMixin {
     @required
     id: AccountId
 
-    @required
-    closed: Boolean
+    @jsonUnknown
+    unknown: UnknownProperties
+}
 
+@mixin
+structure UkRetailAccountMixin with [AccountMixin] {
+    @required
     @jsonName("sort_code")
     sortCode: SortCode
 
     @required
-    @jsonName("is_flex")
-    isFlex: Boolean
-
     @jsonName("account_number")
     accountNumber: AccountNumber
+}
 
-    @jsonUnknown
-    unknown: UnknownProperties
+structure UkRetailAccount with [UkRetailAccountMixin] {
+}
+
+structure UkRetailJointAccount with [UkRetailAccountMixin] {
+}
+
+structure UkMonzoFlexAccount with [AccountMixin] {
 }
 
 structure Transaction {
