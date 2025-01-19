@@ -215,129 +215,58 @@ object Plutus
       "Library" / "Application Support" / "plutus" / "state.json"
 
   private def toOfx(
-      since: monzo.Since,
-      now: Instant,
-      bankAccountsAndTransactions: List[
-        (monzo.Account.UkRetailAccount, List[monzo.Transaction])
-      ],
-      creditCardAccountsAndTransactions: List[
-        (monzo.Account.UkMonzoFlexAccount, List[monzo.Transaction])
+      accountsIdsAndTransactions: List[
+        (monzo.AccountId, List[monzo.Transaction])
       ]
-  ): ofx.Ofx =
-    val status = ofx.Status(
-      code = ofx.Code(0),
-      severity = ofx.Severity.INFO
-    )
-    def toOfxDatetime(instant: Instant): ofx.Datetime =
-      ofx.Datetime(
-        instant
-          .atZone(ZoneId.of("GMT"))
-          .format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss.SSS"))
-      )
-    val dateStartTimestamp = since.value
-    val dateStart = toOfxDatetime(
-      Instant.ofEpochSecond(
-        dateStartTimestamp.epochSecond,
-        dateStartTimestamp.nano
-      )
-    )
-    def dateEnd(transactions: List[monzo.Transaction]): ofx.Datetime =
-      val dateEndTimestamp = transactions.lastOption
-        .map(_.created.value)
-        .getOrElse(since.value)
-      toOfxDatetime(
-        Instant.ofEpochSecond(
-          dateEndTimestamp.epochSecond,
-          dateEndTimestamp.nano
-        )
-      )
-    def toOfxStatementTransactions(
-        transactions: List[monzo.Transaction]
-    ): List[ofx.StatementTransaction] =
-      transactions.map(transaction =>
-        ofx.StatementTransaction(
-          transactionType =
-            if transaction.amount.value.signum == 1 then
-              ofx.TransactionType.CREDIT
-            else ofx.TransactionType.DEBIT,
-          datePosted = toOfxDatetime(
-            Instant.ofEpochSecond(
-              transaction.created.value.epochSecond,
-              transaction.created.value.nano
-            )
-          ),
-          transactionAmount =
-            ofx.TransactionAmount(BigDecimal(transaction.amount.value) / 100),
-          financialInstitutionId =
-            ofx.FinancialInstitutionId(transaction.id.value),
-          name = ofx.Name(
-            transaction.counterparty.name
-              .orElse(transaction.merchant.map(_.name))
-              .map(_.value)
-              .getOrElse(transaction.description.value)
-          ),
-          memo = Some(
-            ofx.Memo(
-              transaction.notes.value
+  ): ofx.Ofx = ofx.Ofx(
+    bankMessageSetResponse = ofx.BankMessageSetResponse(
+      statementTransactionsResponses =
+        accountsIdsAndTransactions.map { (accountId, transactions) =>
+          ofx.StatementTransactionsResponse(
+            statementResponse = ofx.StatementResponse(
+              bankAccountFrom = ofx.BankAccountFrom(
+                accountId = ofx.AccountId(accountId.value)
+              ),
+              bankTransactionList = ofx.BankTransactionList(
+                statementTransactions = transactions.map(transaction =>
+                  ofx.StatementTransaction(
+                    datePosted = ofx.Datetime(
+                      Instant
+                        .ofEpochSecond(
+                          transaction.created.value.epochSecond,
+                          transaction.created.value.nano
+                        )
+                        .atZone(ZoneId.of("GMT"))
+                        .format(
+                          DateTimeFormatter.ofPattern("yyyyMMddHHmmss.SSS")
+                        )
+                    ),
+                    transactionAmount = ofx.TransactionAmount(
+                      BigDecimal(transaction.amount.value) / 100
+                    ),
+                    financialInstitutionId =
+                      ofx.FinancialInstitutionId(transaction.id.value),
+                    // TODO: Can we make this easier to reason about?
+                    name = ofx.Name(
+                      transaction.counterparty.name
+                        .orElse(transaction.merchant.map(_.name))
+                        .map(_.value)
+                        .getOrElse(transaction.description.value)
+                    ),
+                    // TODO: Can we make this easier to reason about?
+                    memo = Some(
+                      ofx.Memo(
+                        transaction.notes.value
+                      )
+                    )
+                  )
+                )
+              )
             )
           )
-        )
-      )
-    ofx.Ofx(
-      signonMessageSetResponse = ofx.SignonMessageSetResponse(
-        signonResponse = ofx.SignonResponse(
-          status,
-          dateServer = toOfxDatetime(now),
-          language = ofx.Language("ENG")
-        )
-      ),
-      bankMessageSetResponse = ofx.BankMessageSetResponse(
-        statementTransactionsResponses =
-          bankAccountsAndTransactions.map { (account, transactions) =>
-            ofx.StatementTransactionsResponse(
-              // TODO: Make this actually unique? GnuCash doesn't care though...
-              transactionUniqueId = ofx.TransactionUniqueId(1),
-              status,
-              statementResponse = ofx.StatementResponse(
-                currencyDefault = ofx.DefaultCurrency("GBP"),
-                bankAccountFrom = ofx.BankAccountFrom(
-                  bankId = ofx.BankId(account.sortCode.value),
-                  accountId = ofx.AccountId(account.accountNumber.value),
-                  accountType = ofx.AccountType.CHECKING
-                ),
-                bankTransactionList = ofx.BankTransactionList(
-                  dateStart,
-                  dateEnd(transactions),
-                  statementTransactions =
-                    toOfxStatementTransactions(transactions)
-                )
-              )
-            )
-          }
-      ),
-      creditCardMessageSetResponse = ofx.CreditCardMessageSetResponse(
-        creditCardStatementTransactionsResponses =
-          creditCardAccountsAndTransactions.map { (account, transactions) =>
-            ofx.CreditCardStatementTransactionsResponse(
-              // TODO: Make this actually unique? GnuCash doesn't care though...
-              transactionUniqueId = ofx.TransactionUniqueId(1),
-              status,
-              creditCardStatementResponse = ofx.CreditCardStatementResponse(
-                currencyDefault = ofx.DefaultCurrency("GBP"),
-                creditCardAccountFrom = ofx.CreditCardAccountFrom(
-                  accountId = ofx.AccountId(account.id.value)
-                ),
-                bankTransactionList = ofx.BankTransactionList(
-                  dateStart,
-                  dateEnd(transactions),
-                  statementTransactions =
-                    toOfxStatementTransactions(transactions)
-                )
-              )
-            )
-          }
-      )
+        }
     )
+  )
 
   private def writeOfx[A](a: A)(implicit schema: Schema[A]): IO[Unit] =
     XmlDocument.documentEventifier
@@ -476,16 +405,16 @@ object Plutus
       since: monzo.Since,
       now: Instant
   ): IO[Unit] =
-    def collect[A <: monzo.Account](
+    def collect(
         listAccountsOutput: monzo.ListAccountsOutput,
-        pf: PartialFunction[monzo.Account, (A, monzo.AccountId)]
-    ): IO[List[(A, List[monzo.Transaction])]] =
+        pf: PartialFunction[monzo.Account, (monzo.Account, monzo.AccountId)]
+    ): IO[List[(monzo.AccountId, List[monzo.Transaction])]] =
       listAccountsOutput.accounts
         .collect(pf)
         .traverse { (account, accountId) =>
           for
             _ <- Console[IO].println(
-              Json.writePrettyString(account.widen)
+              Json.writePrettyString(account)
             )
             transactions <- listTransactions(
               monzoApi,
@@ -501,17 +430,17 @@ object Plutus
                 Json.writePrettyString(transaction)
               )
             )
-          yield account -> transactions
+          yield accountId -> transactions
         }
     for
       listAccountsOutput <- monzoApi.listAccounts()
-      bankAccountsAndTransactions <- collect(
+      bankAccountIdsAndTransactions <- collect(
         listAccountsOutput,
         { case account: monzo.Account.UkRetailAccount =>
           account -> account.id
         }
       )
-      creditCardAccountsAndTransactions <- collect(
+      creditCardAccountIdsAndTransactions <- collect(
         listAccountsOutput,
         { case account: monzo.Account.UkMonzoFlexAccount =>
           account -> account.id
@@ -519,10 +448,7 @@ object Plutus
       )
       _ <- writeOfx(
         toOfx(
-          since,
-          now,
-          bankAccountsAndTransactions,
-          creditCardAccountsAndTransactions
+          bankAccountIdsAndTransactions ++ creditCardAccountIdsAndTransactions
         )
       )
     yield ()

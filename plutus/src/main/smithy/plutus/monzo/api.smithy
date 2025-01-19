@@ -90,13 +90,6 @@ structure AccountMixin {
 
 @mixin
 structure UkRetailAccountMixin with [AccountMixin] {
-    @required
-    @jsonName("sort_code")
-    sortCode: SortCode
-
-    @required
-    @jsonName("account_number")
-    accountNumber: AccountNumber
 }
 
 structure UkRetailAccount with [UkRetailAccountMixin] {
