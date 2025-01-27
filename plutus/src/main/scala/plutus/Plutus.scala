@@ -269,9 +269,10 @@ object Plutus
   )
 
   private def writeOfx[A](a: A)(implicit schema: Schema[A]): IO[Unit] =
-    XmlDocument.documentEventifier
-      .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
-      .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4))
+    (fs2.Stream("ENCODING:UTF-8\n") ++
+      XmlDocument.documentEventifier
+        .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
+        .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4)))
       .through(fs2.text.utf8.encode)
       .through(
         fs2.io.file
