@@ -13,6 +13,7 @@ import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.*
 import org.http4s.implicits.*
+import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
@@ -94,13 +95,7 @@ object Plutus
         .uri(monzoApiUri)
         .middleware(BearerAuthMiddleware(accessToken.value))
         .resource
-        .use(
-          exportTransactions(
-            _,
-            since = monzo.Since(Timestamp.fromEpochMilli(since.toEpochMilli)),
-            now
-          )
-        )
+        .use(exportTransactions(_, since, before = now))
     yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
@@ -403,8 +398,8 @@ object Plutus
 
   private def exportTransactions(
       monzoApi: monzo.Api[IO],
-      since: monzo.Since,
-      now: Instant
+      since: Instant,
+      before: Instant
   ): IO[Unit] =
     def collect(
         listAccountsOutput: monzo.ListAccountsOutput,
@@ -419,8 +414,8 @@ object Plutus
             )
             transactions <- listTransactions(
               monzoApi,
-              since,
-              now,
+              since = Since.Timestamp(since),
+              before,
               accountId
             ).map(
               _.filterNot(_.notes.value == "Active card check")
@@ -454,50 +449,69 @@ object Plutus
       )
     yield ()
 
+  private enum Since:
+    case Timestamp(instant: Instant)
+    case Transaction(transaction: monzo.Transaction)
+
   private def listTransactions(
+      // TODO: Refine grouping and order, here and elsewhere.
       monzoApi: monzo.Api[IO],
-      since: monzo.Since,
-      now: Instant,
+      since: Since,
+      before: Instant,
       accountId: monzo.AccountId
-  ): IO[List[monzo.Transaction]] = for
+  ): IO[List[monzo.Transaction]] =
+    val sinceInstant = since match
+      case Since.Timestamp(instant) =>
+        instant
+
+      case Since.Transaction(transaction) =>
+        Instant.ofEpochSecond(
+          transaction.created.value.epochSecond,
+          transaction.created.value.nano
+        )
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
-    maxPermittedBeforeInstant = Instant
-      .ofEpochSecond(
-        since.value.epochSecond,
-        since.value.nano
+    val maxPermittedThisPageBefore = sinceInstant.plus(Duration.ofHours(8760))
+    val mustPaginate = before.isAfter(maxPermittedThisPageBefore)
+    val thisPageBefore =
+      if mustPaginate then maxPermittedThisPageBefore else before
+    def toTimestamp(instant: Instant): Timestamp =
+      Timestamp(
+        instant.getEpochSecond,
+        instant.getNano
       )
-      .plus(Duration.ofHours(8760))
-    transactions <-
-      if now.isBefore(maxPermittedBeforeInstant) then
-        monzoApi
-          .listTransactions(
-            accountId = accountId,
-            since = Some(since),
-            limit = Some(monzo.Limit(100))
-          )
-          .map(_.transactions)
-      else
-        val maxPermittedBefore = monzo.Before(
-          Timestamp(
-            maxPermittedBeforeInstant.getEpochSecond,
-            maxPermittedBeforeInstant.getNano
-          )
+    for
+      thisPage <- monzoApi
+        .listTransactions(
+          accountId,
+          since = Some(monzo.Since(since match
+            case Since.Timestamp(instant) =>
+              toTimestamp(instant).format(TimestampFormat.DATE_TIME)
+
+            case Since.Transaction(transaction) =>
+              transaction.id.value
+          )),
+          before = Some(monzo.Before(toTimestamp(thisPageBefore))),
+          limit = Some(monzo.Limit(100))
         )
-        for
-          firstPage <- monzoApi
-            .listTransactions(
-              accountId = accountId,
-              since = Some(since),
-              before = Some(maxPermittedBefore),
-              limit = Some(monzo.Limit(100))
+        .map(_.transactions)
+      otherPages <- thisPage.lastOption match
+        case None =>
+          val haveRequestedAllPages = thisPageBefore == before
+          if haveRequestedAllPages then IO.pure(List.empty)
+          else
+            listTransactions(
+              monzoApi,
+              since = Since.Timestamp(thisPageBefore),
+              before,
+              accountId
             )
-            .map(_.transactions)
-          otherPages <- listTransactions(
+
+        case Some(transaction) =>
+          listTransactions(
             monzoApi,
-            monzo.Since(maxPermittedBefore.value),
-            now,
+            since = Since.Transaction(transaction),
+            before,
             accountId
           )
-        yield firstPage ++ otherPages
-  yield transactions
+    yield thisPage ++ otherPages
