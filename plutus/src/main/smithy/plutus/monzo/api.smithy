@@ -157,6 +157,16 @@ list Accounts {
     member: Account
 }
 
+string AccountId
+
+/// This can be a date-time string or a transaction ID. Ideally we'd model it as
+/// a union, but because it's a query parameter, we can't.
+string Since
+
+timestamp Before
+
+integer Limit
+
 list Transactions {
     member: Transaction
 }
@@ -174,6 +184,37 @@ union Account {
     ukMonzoFlex: UkMonzoFlexAccount
 }
 
+@adt
+@discriminated("scheme")
+union Transaction {
+    @jsonName("bacs")
+    bacsTransaction: BacsTransaction
+
+    @jsonName("payport_faster_payments")
+    payportFasterPaymentsTransaction: PayportFasterPaymentsTransaction
+
+    @jsonName("international-payments")
+    internationalPaymentsTransaction: InternationalPaymentsTransaction
+
+    @jsonName("mastercard")
+    mastercardTransaction: MastercardTransaction
+
+    @jsonName("3dsecure")
+    d3secureTransaction: D3secureTransaction
+
+    @jsonName("monzo_paid")
+    monzoPaidTransaction: MonzoPaidTransaction
+
+    @jsonName("monzo_flex")
+    monzoFlexTransaction: MonzoFlexTransaction
+}
+
+structure UkRetailAccount with [AccountMixin] {}
+
+structure UkRetailJointAccount with [AccountMixin] {}
+
+structure UkMonzoFlexAccount with [AccountMixin] {}
+
 @mixin
 structure AccountMixin {
     @required
@@ -183,18 +224,27 @@ structure AccountMixin {
     unknown: UnknownProperties
 }
 
+structure BacsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
+
+structure PayportFasterPaymentsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
+
+structure InternationalPaymentsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
+
+structure MastercardTransaction with [TransactionMixin, TransactionWithMerchantMixin] {}
+
+structure D3secureTransaction with [TransactionMixin, TransactionWithMerchantMixin] {}
+
+structure MonzoPaidTransaction with [TransactionMixin] {}
+
+structure MonzoFlexTransaction with [TransactionMixin] {}
+
 @mixin
-structure UkRetailAccountMixin with [AccountMixin] {}
-
-structure UkRetailAccount with [UkRetailAccountMixin] {}
-
-structure UkRetailJointAccount with [UkRetailAccountMixin] {}
-
-structure UkMonzoFlexAccount with [AccountMixin] {}
-
-structure Transaction {
+structure TransactionMixin {
     @required
-    counterparty: Counterparty
+    id: TransactionId
+
+    @required
+    created: Created
 
     @required
     amount: Amount
@@ -203,15 +253,7 @@ structure Transaction {
     declineReason: DeclineReason
 
     @required
-    created: Created
-
-    @required
     description: Description
-
-    @required
-    id: TransactionId
-
-    merchant: Merchant
 
     @required
     notes: Notes
@@ -220,37 +262,38 @@ structure Transaction {
     unknown: UnknownProperties
 }
 
-string AccountId
-
-string SortCode
-
-string AccountNumber
-
-/// This can be a date-time string or a transaction ID. Ideally we'd model it as
-/// a union, but because it's a query parameter, we can't.
-string Since
-
-timestamp Before
-
-integer Limit
-
-structure Counterparty {
-    name: Name
-
-    @jsonUnknown
-    unknown: UnknownProperties
+@mixin
+structure TransactionWithCounterpartyMixin {
+    @required
+    counterparty: Counterparty
 }
+
+@mixin
+structure TransactionWithMerchantMixin {
+    @required
+    merchant: Merchant
+}
+
+string TransactionId
+
+@timestampFormat("date-time")
+timestamp Created
 
 bigInteger Amount
 
 string DeclineReason
 
-@timestampFormat("date-time")
-timestamp Created
-
 string Description
 
-string TransactionId
+string Notes
+
+structure Counterparty {
+    @required
+    name: Name
+
+    @jsonUnknown
+    unknown: UnknownProperties
+}
 
 structure Merchant {
     @required
@@ -259,8 +302,6 @@ structure Merchant {
     @jsonUnknown
     unknown: UnknownProperties
 }
-
-string Notes
 
 string Name
 
