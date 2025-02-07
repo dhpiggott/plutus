@@ -40,6 +40,14 @@ object Plutus
       help = "Timestamp to export transactions from."
     )
 
+  private val beforeOpts: Opts[Option[Instant]] =
+    Opts
+      .option[Instant](
+        "before",
+        help = "Timestamp to export transactions to."
+      )
+      .orNone
+
   private val verboseOpts: Opts[Boolean] =
     Opts
       .flag(
@@ -49,7 +57,7 @@ object Plutus
       .orFalse
 
   override def main: Opts[IO[ExitCode]] =
-    (sinceOpts, verboseOpts).mapN: (since, verbose) =>
+    (sinceOpts, beforeOpts, verboseOpts).mapN: (since, before, verbose) =>
       EmberClientBuilder
         .default[IO]
         .build
@@ -61,12 +69,13 @@ object Plutus
               logBody = true
             )
           else identity
-        .use(program(_, verbose, since).as(ExitCode.Success))
+        .use(program(_, verbose, since, before).as(ExitCode.Success))
 
   private def program(
       client: Client[IO],
       verbose: Boolean,
-      since: Instant
+      since: Instant,
+      before: Option[Instant]
   ): IO[Unit] = for
     now <- Clock[IO].realTime.map: finiteDuration =>
       Instant.ofEpochMilli(finiteDuration.toMillis)
@@ -92,7 +101,9 @@ object Plutus
       .uri(monzoApiUri)
       .middleware(BearerAuthMiddleware(accessToken.value))
       .resource
-      .use(exportTransactions(_, verbose, since, before = now))
+      .use(
+        exportTransactions(_, verbose, since, before = before.getOrElse(now))
+      )
   yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
@@ -219,25 +230,6 @@ object Plutus
               ),
               ofx.BankTransactionList(
                 transactions.map: transaction =>
-                  // TODO: Use description in some cases?
-                  val (name, memo) = transaction match
-                    case transaction: monzo.TransactionWithCounterpartyMixin =>
-                      (
-                        ofx.Name(transaction.counterparty.name.value),
-                        ofx.Memo(transaction.notes.value)
-                      )
-
-                    case transaction: monzo.TransactionWithMerchantMixin =>
-                      (
-                        ofx.Name(transaction.merchant.name.value),
-                        ofx.Memo(transaction.notes.value)
-                      )
-
-                    case transaction: monzo.TransactionMixin =>
-                      (
-                        ofx.Name(transaction.description.value),
-                        ofx.Memo(transaction.notes.value)
-                      )
                   ofx.StatementTransaction(
                     datePosted = ofx.Datetime(
                       Instant
@@ -255,8 +247,14 @@ object Plutus
                     ),
                     financialInstitutionId =
                       ofx.FinancialInstitutionId(transaction.id.value),
-                    name,
-                    memo = Some(memo)
+                    name = ofx.Name(
+                      transaction.merchant
+                        .map(_.name)
+                        .orElse(transaction.counterparty.name)
+                        .map(_.value)
+                        .getOrElse(transaction.description.value)
+                    ),
+                    memo = Some(ofx.Memo(transaction.notes.value))
                   )
               )
             )
@@ -430,8 +428,10 @@ object Plutus
       toOfx(
         accountsAndTransactions.map: (account, transactions) =>
           account.id -> transactions.filterNot: transaction =>
-            // TODO: Can this be better expressed?
-            transaction.declineReason.isDefined || transaction.notes.value == "Active card check"
+            // Active card check.
+            transaction.amount.value == 0 ||
+              // What it says.
+              transaction.declineReason.isDefined
       )
     )
   yield ()

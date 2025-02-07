@@ -2,11 +2,9 @@ $version: "2"
 
 namespace plutus.monzo
 
-use alloy#discriminated
 use alloy#jsonUnknown
 use alloy#simpleRestJson
 use alloy#urlFormName
-use smithy4s.meta#adt
 
 string ClientId
 
@@ -171,52 +169,7 @@ list Transactions {
     member: Transaction
 }
 
-@adt
-@discriminated("type")
-union Account {
-    @jsonName("uk_retail")
-    ukRetail: UkRetailAccount
-
-    @jsonName("uk_retail_joint")
-    ukRetailJoint: UkRetailJointAccount
-
-    @jsonName("uk_monzo_flex")
-    ukMonzoFlex: UkMonzoFlexAccount
-}
-
-@adt
-@discriminated("scheme")
-union Transaction {
-    @jsonName("bacs")
-    bacsTransaction: BacsTransaction
-
-    @jsonName("payport_faster_payments")
-    payportFasterPaymentsTransaction: PayportFasterPaymentsTransaction
-
-    @jsonName("international-payments")
-    internationalPaymentsTransaction: InternationalPaymentsTransaction
-
-    @jsonName("mastercard")
-    mastercardTransaction: MastercardTransaction
-
-    @jsonName("3dsecure")
-    d3secureTransaction: D3secureTransaction
-
-    @jsonName("monzo_paid")
-    monzoPaidTransaction: MonzoPaidTransaction
-
-    @jsonName("monzo_flex")
-    monzoFlexTransaction: MonzoFlexTransaction
-}
-
-structure UkRetailAccount with [AccountMixin] {}
-
-structure UkRetailJointAccount with [AccountMixin] {}
-
-structure UkMonzoFlexAccount with [AccountMixin] {}
-
-@mixin
-structure AccountMixin {
+structure Account {
     @required
     id: AccountId
 
@@ -224,22 +177,7 @@ structure AccountMixin {
     unknown: UnknownProperties
 }
 
-structure BacsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
-
-structure PayportFasterPaymentsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
-
-structure InternationalPaymentsTransaction with [TransactionMixin, TransactionWithCounterpartyMixin] {}
-
-structure MastercardTransaction with [TransactionMixin, TransactionWithMerchantMixin] {}
-
-structure D3secureTransaction with [TransactionMixin, TransactionWithMerchantMixin] {}
-
-structure MonzoPaidTransaction with [TransactionMixin] {}
-
-structure MonzoFlexTransaction with [TransactionMixin] {}
-
-@mixin
-structure TransactionMixin {
+structure Transaction {
     @required
     id: TransactionId
 
@@ -252,6 +190,11 @@ structure TransactionMixin {
     @jsonName("decline_reason")
     declineReason: DeclineReason
 
+    merchant: Merchant
+
+    @required
+    counterparty: Counterparty
+
     @required
     description: Description
 
@@ -260,18 +203,6 @@ structure TransactionMixin {
 
     @jsonUnknown
     unknown: UnknownProperties
-}
-
-@mixin
-structure TransactionWithCounterpartyMixin {
-    @required
-    counterparty: Counterparty
-}
-
-@mixin
-structure TransactionWithMerchantMixin {
-    @required
-    merchant: Merchant
 }
 
 string TransactionId
@@ -288,7 +219,6 @@ string Description
 string Notes
 
 structure Counterparty {
-    @required
     name: Name
 
     @jsonUnknown
