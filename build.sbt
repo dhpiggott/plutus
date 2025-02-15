@@ -51,5 +51,6 @@ lazy val plutus = project
     missinglinkIgnoreDestinationPackages += IgnoredPackage("jnr.unixsocket"),
     missinglinkIgnoreSourcePackages += IgnoredPackage("org.slf4j"),
     Compile / run / connectInput := true,
-    Compile / run / fork := true
+    Compile / run / fork := true,
+    Compile / run / outputStrategy := Some(StdoutOutput)
   )
