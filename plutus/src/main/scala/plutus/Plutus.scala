@@ -35,48 +35,11 @@ object Plutus
       header = "Monzo OFX exporter."
     ):
 
-  // TODO: Split this into multiple flags or levels and add informative printlns
-  // for higher verbosity levels.
-  private val verboseOpt: Opts[Boolean] =
-    Opts
-      .flag(
-        "verbose",
-        help = "Log HTTP requests/responses and account/transaction entities."
-      )
-      .orFalse
-
-  private val sinceOpt: Opts[Option[Instant]] =
-    Opts
-      .option[Instant](
-        "since",
-        help =
-          "Timestamp to export transactions from. If not specified defaults to the last recorded transaction ID for each account, unless there is no last recorded transaction for that account, in which case no transactions will be exported for it."
-      )
-      .orNone
-
-  private val beforeOpt: Opts[Option[Instant]] =
-    Opts
-      .option[Instant](
-        "before",
-        help =
-          "Timestamp to export transactions to. If not specified defaults to now."
-      )
-      .orNone
-
-  private val outputOpt: Opts[Option[Path]] =
-    Opts
-      .option[Path](
-        "output",
-        help =
-          "Path to write OFX file to. If not specified defaults to monzo.ofx in the current directory."
-      )
-      .orNone
-
   override def main: Opts[IO[ExitCode]] =
-    (verboseOpt, sinceOpt, beforeOpt, outputOpt)
-      .mapN: (verbose, since, before, output) =>
+    (verbosityOpt, sinceOpt, beforeOpt, outputOpt)
+      .mapN: (verbosity, since, before, output) =>
         program(
-          verbose,
+          verbosity,
           since,
           before,
           output = output
@@ -86,8 +49,67 @@ object Plutus
         )
           .as(ExitCode.Success)
 
+  private lazy val verbosityOpt: Opts[Verbosity] =
+    silentOpt orElse verboseOpt orElse debugOpt withDefault Verbosity.DEFAULT
+
+  private lazy val silentOpt: Opts[Verbosity] =
+    Opts
+      .flag("silent", help = "Don't log anything.")
+      .as(Verbosity.SILENT)
+
+  private lazy val verboseOpt: Opts[Verbosity] =
+    Opts
+      .flag(
+        "verbose",
+        help =
+          "Log decoded account and transaction entities. This includes default logging."
+      )
+      .as(Verbosity.VERBOSE)
+
+  private lazy val debugOpt: Opts[Verbosity] =
+    Opts
+      .flag(
+        "debug",
+        help =
+          "Log raw HTTP requests and responses. This includes --verbose logging."
+      )
+      .as(Verbosity.DEBUG)
+
+  private enum Verbosity:
+    case SILENT
+    case DEFAULT
+    case VERBOSE
+    case DEBUG
+
+  private lazy val sinceOpt: Opts[Option[Instant]] =
+    Opts
+      .option[Instant](
+        "since",
+        help =
+          "Timestamp to export transactions from. If not specified defaults to the last recorded transaction ID for each account, unless there is no last recorded transaction for that account, in which case no transactions will be exported for it."
+      )
+      .orNone
+
+  private lazy val beforeOpt: Opts[Option[Instant]] =
+    Opts
+      .option[Instant](
+        "before",
+        help =
+          "Timestamp to export transactions to. If not specified defaults to now."
+      )
+      .orNone
+
+  private lazy val outputOpt: Opts[Option[Path]] =
+    Opts
+      .option[Path](
+        "output",
+        help =
+          "Path to write OFX file to. If not specified defaults to monzo.ofx in the current directory."
+      )
+      .orNone
+
   private def program(
-      verbose: Boolean,
+      verbosity: Verbosity,
       since: Option[Instant],
       before: Option[Instant],
       output: fs2.io.file.Path
@@ -103,7 +125,7 @@ object Plutus
             s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
           )
         )
-    maybeState <- loadState
+    maybeState <- loadState(verbosity)
     now <- Clock[IO].realTime.map: finiteDuration =>
       Instant.ofEpochMilli(finiteDuration.toMillis)
     // From https://docs.monzo.com/?shell#list-transactions:
@@ -137,7 +159,7 @@ object Plutus
       .default[IO]
       .build
       .map:
-        if verbose
+        if verbosity.ordinal >= Verbosity.DEBUG.ordinal
         then
           org.http4s.client.middleware.Logger.colored(
             logHeaders = true,
@@ -149,7 +171,7 @@ object Plutus
           (state, accessToken) <- accessToken(
             client,
             maybeState,
-            verbose,
+            verbosity,
             now,
             requireStrongCustomerAuthentication
           )
@@ -162,7 +184,7 @@ object Plutus
               exportTransactions(
                 _,
                 state,
-                verbose,
+                verbosity,
                 since match
                   case None =>
                     ExportTransactionsSince
@@ -174,7 +196,7 @@ object Plutus
                 output
               )
         yield updatedState
-    _ <- saveState(updatedState)
+    _ <- saveState(updatedState, verbosity)
   yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
@@ -182,7 +204,7 @@ object Plutus
   private def accessToken(
       client: Client[IO],
       maybeState: Option[State],
-      verbose: Boolean,
+      verbosity: Verbosity,
       now: Instant,
       requireStrongCustomerAuthentication: Boolean
   ): IO[(State, monzo.AccessToken)] =
@@ -208,7 +230,7 @@ object Plutus
           exchangeAuthCodeAndCreateOrUpdateState = for
             createAccessTokenOutput <- exchangeAuthCode(
               monzoTokenApi,
-              verbose,
+              verbosity,
               clientId,
               clientSecret
             )
@@ -234,17 +256,32 @@ object Plutus
           yield (state, createAccessTokenOutput.accessToken)
           (state, accessToken) <- maybeState match
             case None =>
-              exchangeAuthCodeAndCreateOrUpdateState
+              Console[IO]
+                .println(
+                  "No valid state file found, requesting authorization..."
+                )
+                .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
+                exchangeAuthCodeAndCreateOrUpdateState
 
             case Some(state)
                 if requireStrongCustomerAuthentication && !lessThanFiveMinutesAgo(
                   state.authorizedAt,
                   now
                 ) =>
-              exchangeAuthCodeAndCreateOrUpdateState
+              Console[IO]
+                .println(
+                  "Strong authentication required, requesting authorization..."
+                )
+                .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
+                exchangeAuthCodeAndCreateOrUpdateState
 
             case Some(state) =>
               for
+                _ <- Console[IO]
+                  .println(
+                    "Existing refresh token found, exchanging for tokens..."
+                  )
+                  .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
                 createAccessTokenOutput <- monzoTokenApi.createAccessToken(
                   grantType = monzo.GrantType.REFRESH_TOKEN,
                   clientId = clientId,
@@ -269,7 +306,7 @@ object Plutus
     val leeway = Duration.ofSeconds(10)
     authorizedAtInstant.plus(leeway).isAfter(fiveMinutesAgo)
 
-  private lazy val loadState: IO[Option[State]] =
+  private def loadState(verbosity: Verbosity): IO[Option[State]] =
     fs2.io.file
       .Files[IO]
       .readAll(stateFilePath)
@@ -279,8 +316,16 @@ object Plutus
       .flatMap: state =>
         IO.fromEither(Json.read[State](Blob(state)))
       .option
+      .flatTap: maybeState =>
+        Console[IO]
+          .println(
+            if maybeState.isDefined then
+              s"Loaded state file from $stateFilePath."
+            else s"Couldn't load state file from $stateFilePath."
+          )
+          .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
 
-  private def saveState(state: State): IO[Unit] =
+  private def saveState(state: State, verbosity: Verbosity): IO[Unit] =
     fs2
       .Stream(Json.writePrettyString(state))
       .through(fs2.text.utf8.encode)
@@ -290,7 +335,10 @@ object Plutus
           .writeAll(stateFilePath)
       )
       .compile
-      .drain
+      .drain *>
+      Console[IO]
+        .println(s"Saved state file to $stateFilePath.")
+        .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
 
   private lazy val stateFilePath: fs2.io.file.Path =
     fs2.io.file.Path(System.getProperty("user.home")) /
@@ -298,7 +346,7 @@ object Plutus
 
   private def exchangeAuthCode(
       monzoTokenApi: monzo.TokenApi[IO],
-      verbose: Boolean,
+      verbosity: Verbosity,
       clientId: monzo.ClientId,
       clientSecret: monzo.ClientSecret
   ): IO[monzo.CreateAccessTokenOutput] = for
@@ -309,7 +357,7 @@ object Plutus
     createAccessTokenOutput <- EmberServerBuilder
       .default[IO]
       .withHttpApp(
-        (if verbose
+        (if verbosity.ordinal >= Verbosity.DEBUG.ordinal
          then
            org.http4s.server.middleware.Logger.httpApp[IO](
              logHeaders = true,
@@ -321,7 +369,10 @@ object Plutus
               case GET -> Root / "oauth" / "callback" :?
                   AuthorizationCodeQueryParamMatcher(code) +&
                   StateQueryParamMatcher(state) =>
-                authorizationCodeAndStateDeferred.complete(code -> state) >>
+                authorizationCodeAndStateDeferred.complete(code -> state) *>
+                  Console[IO]
+                    .println("Received auth code.")
+                    .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
                   Ok("Authorization code received. Return to Plutus.")
             .orNotFound
         )
@@ -330,9 +381,12 @@ object Plutus
       .build
       .use: server =>
         for
+          _ <- Console[IO]
+            .println("Requesting authorization...")
+            .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
           redirectUri = monzo
             .RedirectUri("http://localhost:8080/oauth/callback")
-          generatedState <- redirectUserToMonzo(clientId, redirectUri)
+          generatedState <- requestAuthorization(clientId, redirectUri)
           authorizationCodeAndReceivedState <-
             authorizationCodeAndStateDeferred.get
           (authorizationCode, receivedState) =
@@ -342,6 +396,9 @@ object Plutus
               s"generatedState != receivedState ($generatedState != $receivedState)"
             )
           )
+          _ <- Console[IO]
+            .println("Exchanging auth code for tokens...")
+            .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
           createAccessTokenOutput <- monzoTokenApi.createAccessToken(
             grantType = monzo.GrantType.AUTHORIZATION_CODE,
             clientId = clientId,
@@ -371,22 +428,30 @@ object Plutus
   private object StateQueryParamMatcher
       extends QueryParamDecoderMatcher[monzo.State]("state")
 
-  private def redirectUserToMonzo(
+  private def requestAuthorization(
       clientId: monzo.ClientId,
       redirectUri: monzo.RedirectUri
   ): IO[monzo.State] = for
     state <- IO.randomUUID.map: uuid =>
-      monzo.State(uuid.toString())
-    monzoAuthEndpoint = uri"https://auth.monzo.com".withQueryParams(
-      Map(
-        "client_id" -> clientId.value,
-        "redirect_uri" -> redirectUri.value.toString,
-        "response_type" -> "code",
-        "state" -> state.value
-      )
-    )
+      monzo.State(uuid.toString)
     _ <- IO(
-      Runtime.getRuntime().exec(Array("open", monzoAuthEndpoint.toString))
+      Runtime
+        .getRuntime()
+        .exec(
+          Array(
+            "open",
+            uri"https://auth.monzo.com"
+              .withQueryParams(
+                Map(
+                  "client_id" -> clientId.value,
+                  "redirect_uri" -> redirectUri.value,
+                  "response_type" -> "code",
+                  "state" -> state.value
+                )
+              )
+              .renderString
+          )
+        )
     )
   yield state
 
@@ -421,11 +486,14 @@ object Plutus
   private def exportTransactions(
       monzoApi: monzo.Api[IO],
       state: State,
-      verbose: Boolean,
+      verbosity: Verbosity,
       since: ExportTransactionsSince,
       before: Instant,
       output: fs2.io.file.Path
   ): IO[State] = for
+    _ <- Console[IO]
+      .println("Listing accounts...")
+      .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
     accounts <- monzoApi
       .listAccounts()
       .map:
@@ -442,6 +510,9 @@ object Plutus
           .collect:
             case (account, Some(since)) =>
               (account, ListTransactionsSince.IdAndTimestamp(since))
+    _ <- Console[IO]
+      .println("Listing transactions for accounts...")
+      .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
     accountsAndTransactions <- accountsAndSince
       .traverse: (account, since) =>
         listTransactions(
@@ -454,8 +525,8 @@ object Plutus
       .map:
         _.filter: (_, transactions) =>
           transactions.nonEmpty
-    _ <- IO.whenA(verbose)(
-      Console[IO].println(
+    _ <- Console[IO]
+      .println(
         Json.writeDocumentAsPrettyString(
           Document.array(
             accountsAndTransactions.map: (account, transactions) =>
@@ -469,7 +540,7 @@ object Plutus
           )
         )
       )
-    )
+      .whenA(verbosity.ordinal >= Verbosity.VERBOSE.ordinal)
     materialAccountIdsAndTransactions = accountsAndTransactions.map:
       (account, transactions) =>
         account.id -> transactions.filterNot: transaction =>
@@ -477,7 +548,7 @@ object Plutus
           transaction.amount.value == 0 ||
             // What it says.
             transaction.declineReason.isDefined
-    _ <- writeOfx(toOfx(materialAccountIdsAndTransactions), output)
+    _ <- writeOfx(toOfx(materialAccountIdsAndTransactions), output, verbosity)
     updatedState = state.copy(
       lastTransactions = state.lastTransactions ++
         accountsAndTransactions
@@ -606,8 +677,8 @@ object Plutus
       )
     )
 
-  private def writeOfx[A](a: A, output: fs2.io.file.Path)(implicit
-      schema: Schema[A]
+  private def writeOfx[A](a: A, output: fs2.io.file.Path, verbosity: Verbosity)(
+      implicit schema: Schema[A]
   ): IO[Unit] =
     (fs2.Stream("ENCODING:UTF-8\n") ++
       XmlDocument.documentEventifier
@@ -616,4 +687,7 @@ object Plutus
       .through(fs2.text.utf8.encode)
       .through(fs2.io.file.Files[IO].writeAll(output))
       .compile
-      .drain
+      .drain *>
+      Console[IO]
+        .println(s"Wrote OFX to $output.")
+        .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
