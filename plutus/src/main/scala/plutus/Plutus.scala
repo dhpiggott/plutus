@@ -6,6 +6,7 @@ import cats.syntax.all.*
 import com.monovore.decline.*
 import com.monovore.decline.effect.*
 import com.monovore.decline.time.*
+import epollcat.EpollApp
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.dsl.io.*
@@ -33,7 +34,8 @@ object Plutus
     extends CommandIOApp(
       name = "plutus",
       header = "Monzo OFX exporter."
-    ):
+    )
+    with EpollApp:
 
   override def main: Opts[IO[ExitCode]] =
     (verbosityOpt, sinceOpt, beforeOpt, outputOpt)
@@ -221,6 +223,9 @@ object Plutus
                 clientId <- Console[IO].readLine.map:
                   monzo.ClientId(_)
                 _ <- Console[IO].print("Enter client secret: ")
+                // TODO: Obfuscate input using
+                // https://github.com/hnaderi/scala-readpass?
+                // TODO: Encrypt state?
                 clientSecret <- Console[IO].readLine.map:
                   monzo.ClientSecret(_)
               yield (clientId, clientSecret)
@@ -257,9 +262,7 @@ object Plutus
           (state, accessToken) <- maybeState match
             case None =>
               Console[IO]
-                .println(
-                  "No valid state file found, requesting authorization..."
-                )
+                .println("No previous state, requesting authorization...")
                 .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
                 exchangeAuthCodeAndCreateOrUpdateState
 
@@ -309,8 +312,7 @@ object Plutus
   private def loadState(verbosity: Verbosity): IO[Option[State]] =
     fs2.io.file
       .Files[IO]
-      .readAll(stateFilePath)
-      .through(fs2.text.utf8.decode)
+      .readUtf8(stateFilePath)
       .compile
       .string
       .flatMap: state =>
@@ -328,11 +330,10 @@ object Plutus
   private def saveState(state: State, verbosity: Verbosity): IO[Unit] =
     fs2
       .Stream(Json.writePrettyString(state))
-      .through(fs2.text.utf8.encode)
       .through(
         fs2.io.file
           .Files[IO]
-          .writeAll(stateFilePath)
+          .writeUtf8(stateFilePath)
       )
       .compile
       .drain *>
@@ -684,8 +685,7 @@ object Plutus
       XmlDocument.documentEventifier
         .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
         .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4)))
-      .through(fs2.text.utf8.encode)
-      .through(fs2.io.file.Files[IO].writeAll(output))
+      .through(fs2.io.file.Files[IO].writeUtf8(output))
       .compile
       .drain *>
       Console[IO]
