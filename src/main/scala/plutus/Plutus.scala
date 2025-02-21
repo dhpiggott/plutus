@@ -51,6 +51,8 @@ object Plutus
         )
           .as(ExitCode.Success)
 
+  // TODO: Add a dry-run/no-last-transactions flag which avoids saving state?
+
   private lazy val verbosityOpt: Opts[Verbosity] =
     silentOpt orElse verboseOpt orElse debugOpt withDefault Verbosity.DEFAULT
 
