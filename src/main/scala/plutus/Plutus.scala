@@ -223,9 +223,6 @@ object Plutus
                 clientId <- Console[IO].readLine.map:
                   monzo.ClientId(_)
                 _ <- Console[IO].print("Enter client secret: ")
-                // TODO: Obfuscate input using
-                // https://github.com/hnaderi/scala-readpass?
-                // TODO: Encrypt state?
                 clientSecret <- Console[IO].readLine.map:
                   monzo.ClientSecret(_)
               yield (clientId, clientSecret)

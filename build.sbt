@@ -21,7 +21,6 @@ scalaVersion := "3.6.2"
 semanticdbEnabled := true
 
 libraryDependencies ++= Seq(
-  // TODO: Use https://github.com/com-lihaoyi/fansi for console output?
   // TODO: Experiment with a backend that uses
   // https://github.com/armanbilge/porcupine to write directly to GnuCash's
   // database.
