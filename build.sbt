@@ -32,6 +32,7 @@ libraryDependencies ++= Seq(
   "com.disneystreaming.smithy4s" %%% "smithy4s-http4s-kernel" % smithy4sVersion.value,
   "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
   "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
+  "com.lihaoyi" %%% "fansi" % "0.4.0",
   "com.monovore" %%% "decline" % "2.4.1",
   "com.monovore" %%% "decline-effect" % "2.4.1",
   "org.gnieh" %%% "fs2-data-text" % "1.11.2",

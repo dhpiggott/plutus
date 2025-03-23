@@ -270,7 +270,11 @@ object Plutus
           (state, accessToken) <- maybeState match
             case None =>
               Console[IO]
-                .println("No previous state, requesting authorization...")
+                .println(
+                  fansi.Color.Yellow(
+                    "No previous state, requesting authorization..."
+                  )
+                )
                 .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
                 exchangeAuthCodeAndCreateOrUpdateState
 
@@ -281,7 +285,9 @@ object Plutus
                 ) =>
               Console[IO]
                 .println(
-                  "Strong authentication required, requesting authorization..."
+                  fansi.Color.Yellow(
+                    "Strong authentication required, requesting authorization..."
+                  )
                 )
                 .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
                 exchangeAuthCodeAndCreateOrUpdateState
@@ -290,7 +296,9 @@ object Plutus
               for
                 _ <- Console[IO]
                   .println(
-                    "Existing refresh token found, exchanging for tokens..."
+                    fansi.Color.Green(
+                      "Existing refresh token found, exchanging for tokens..."
+                    )
                   )
                   .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
                 createAccessTokenOutput <- monzoTokenApi.createAccessToken(
@@ -330,8 +338,9 @@ object Plutus
         Console[IO]
           .println(
             if maybeState.isDefined then
-              s"Loaded state file from $stateFilePath."
-            else s"Couldn't load state file from $stateFilePath."
+              fansi.Color.Green(s"Loaded state file from $stateFilePath.")
+            else
+              fansi.Color.Red(s"Couldn't load state file from $stateFilePath.")
           )
           .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
 
@@ -346,7 +355,9 @@ object Plutus
       .compile
       .drain *>
       Console[IO]
-        .println(s"Saved state file to $stateFilePath.")
+        .println(
+          fansi.Color.Green(s"Saved state file to $stateFilePath.")
+        )
         .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
 
   private lazy val stateFilePath: fs2.io.file.Path =
@@ -380,7 +391,7 @@ object Plutus
                   StateQueryParamMatcher(state) =>
                 authorizationCodeAndStateDeferred.complete(code -> state) *>
                   Console[IO]
-                    .println("Received auth code.")
+                    .println(fansi.Color.Green("Received auth code."))
                     .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal) *>
                   Ok("Authorization code received. Return to Plutus.")
             .orNotFound
@@ -391,7 +402,9 @@ object Plutus
       .use: server =>
         for
           _ <- Console[IO]
-            .println("Requesting authorization...")
+            .println(
+              fansi.Color.Green("Requesting authorization...")
+            )
             .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
           redirectUri = monzo
             .RedirectUri("http://localhost:8080/oauth/callback")
@@ -406,7 +419,9 @@ object Plutus
             )
           )
           _ <- Console[IO]
-            .println("Exchanging auth code for tokens...")
+            .println(
+              fansi.Color.Green("Exchanging auth code for tokens...")
+            )
             .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
           createAccessTokenOutput <- monzoTokenApi.createAccessToken(
             grantType = monzo.GrantType.AUTHORIZATION_CODE,
@@ -416,7 +431,9 @@ object Plutus
             code = Some(authorizationCode)
           )
           _ <- Console[IO].print(
-            "Complete SCA in app, then press enter to continue."
+            fansi.Color.Green(
+              "Complete SCA in app, then press enter to continue."
+            )
           )
           _ <- Console[IO].readLine
         yield createAccessTokenOutput
@@ -502,7 +519,7 @@ object Plutus
       dryRun: Boolean
   ): IO[State] = for
     _ <- Console[IO]
-      .println("Listing accounts...")
+      .println(fansi.Color.Green("Listing accounts..."))
       .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
     accounts <- monzoApi
       .listAccounts()
@@ -521,7 +538,7 @@ object Plutus
             case (account, Some(since)) =>
               (account, ListTransactionsSince.IdAndTimestamp(since))
     _ <- Console[IO]
-      .println("Listing transactions for accounts...")
+      .println(fansi.Color.Green("Listing transactions for accounts..."))
       .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
     accountsAndTransactions <- accountsAndSince
       .traverse: (account, since) =>
@@ -701,5 +718,5 @@ object Plutus
       .compile
       .drain *>
       Console[IO]
-        .println(s"Wrote OFX to $output.")
+        .println(fansi.Color.Green(s"Wrote OFX to $output."))
         .whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal)
