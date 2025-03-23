@@ -9,7 +9,6 @@ addCommandAlias(
   "fmtCheck; fixCheck; undeclaredCompileDependenciesTest; unusedCompileDependenciesTest; dependencyUpdates"
 )
 
-// TODO: Create homebrew tap?
 enablePlugins(ScalaNativePlugin, Smithy4sCodegenPlugin)
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
