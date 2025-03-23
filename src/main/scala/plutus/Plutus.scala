@@ -38,8 +38,8 @@ object Plutus
     with EpollApp:
 
   override def main: Opts[IO[ExitCode]] =
-    (verbosityOpt, sinceOpt, beforeOpt, outputOpt)
-      .mapN: (verbosity, since, before, output) =>
+    (verbosityOpt, sinceOpt, beforeOpt, outputOpt, dryRunOpt)
+      .mapN: (verbosity, since, before, output, dryRun) =>
         program(
           verbosity,
           since,
@@ -47,11 +47,10 @@ object Plutus
           output = output
             .map:
               fs2.io.file.Path.fromNioPath(_)
-            .getOrElse(fs2.io.file.Path("monzo.ofx"))
+            .getOrElse(fs2.io.file.Path("monzo.ofx")),
+          dryRun
         )
           .as(ExitCode.Success)
-
-  // TODO: Add a dry-run/no-last-transactions flag which avoids saving state?
 
   private lazy val verbosityOpt: Opts[Verbosity] =
     silentOpt orElse verboseOpt orElse debugOpt withDefault Verbosity.DEFAULT
@@ -112,11 +111,20 @@ object Plutus
       )
       .orNone
 
+  private lazy val dryRunOpt: Opts[Boolean] =
+    Opts
+      .flag(
+        "dry-run",
+        help = "Don't update state-file's last-transactions bookmarks."
+      )
+      .orFalse
+
   private def program(
       verbosity: Verbosity,
       since: Option[Instant],
       before: Option[Instant],
-      output: fs2.io.file.Path
+      output: fs2.io.file.Path,
+      dryRun: Boolean
   ): IO[Unit] = for
     _ <- fs2.io.file
       .Files[IO]
@@ -197,7 +205,8 @@ object Plutus
                   case Some(since) =>
                     ExportTransactionsSince.Timestamp(since),
                 before = before.getOrElse(now),
-                output
+                output,
+                dryRun
               )
         yield updatedState
     _ <- saveState(updatedState, verbosity)
@@ -489,7 +498,8 @@ object Plutus
       verbosity: Verbosity,
       since: ExportTransactionsSince,
       before: Instant,
-      output: fs2.io.file.Path
+      output: fs2.io.file.Path,
+      dryRun: Boolean
   ): IO[State] = for
     _ <- Console[IO]
       .println("Listing accounts...")
@@ -549,18 +559,21 @@ object Plutus
             // What it says.
             transaction.declineReason.isDefined
     _ <- writeOfx(toOfx(materialAccountIdsAndTransactions), output, verbosity)
-    updatedState = state.copy(
-      lastTransactions = state.lastTransactions ++
-        accountsAndTransactions
-          .map: (account, transactions) =>
-            account.id -> transactions.lastOption
-          .collect:
-            case (accountId, Some(lastTransaction)) =>
-              accountId -> LastTransaction(
-                lastTransaction.id,
-                lastTransaction.created
-              )
-    )
+    updatedState =
+      if dryRun then state
+      else
+        state.copy(
+          lastTransactions = state.lastTransactions ++
+            accountsAndTransactions
+              .map: (account, transactions) =>
+                account.id -> transactions.lastOption
+              .collect:
+                case (accountId, Some(lastTransaction)) =>
+                  accountId -> LastTransaction(
+                    lastTransaction.id,
+                    lastTransaction.created
+                  )
+        )
   yield updatedState
 
   private enum ListTransactionsSince:
