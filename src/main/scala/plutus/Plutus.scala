@@ -6,7 +6,6 @@ import cats.syntax.all.*
 import com.monovore.decline.*
 import com.monovore.decline.effect.*
 import com.monovore.decline.time.*
-import epollcat.EpollApp
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.dsl.io.*
@@ -34,8 +33,7 @@ object Plutus
     extends CommandIOApp(
       name = "plutus",
       header = "Monzo OFX exporter."
-    )
-    with EpollApp:
+    ):
 
   override def main: Opts[IO[ExitCode]] =
     (verbosityOpt, sinceOpt, beforeOpt, outputOpt, dryRunOpt)
