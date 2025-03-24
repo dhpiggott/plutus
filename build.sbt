@@ -23,8 +23,8 @@ libraryDependencies ++= Seq(
   // TODO: Experiment with a backend that uses
   // https://github.com/armanbilge/porcupine to write directly to GnuCash's
   // database.
-  "co.fs2" %%% "fs2-core" % "3.11.0",
-  "co.fs2" %%% "fs2-io" % "3.11.0",
+  "co.fs2" %%% "fs2-core" % "3.12.0",
+  "co.fs2" %%% "fs2-io" % "3.12.0",
   "com.armanbilge" %%% "epollcat" % "0.1.6",
   "com.disneystreaming.smithy4s" %%% "smithy4s-cats" % smithy4sVersion.value,
   "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
