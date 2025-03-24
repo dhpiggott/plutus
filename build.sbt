@@ -44,9 +44,9 @@ libraryDependencies ++= Seq(
   "org.http4s" %%% "http4s-ember-server" % "0.23.30",
   "org.http4s" %%% "http4s-server" % "0.23.30",
   "org.typelevel" %% "cats-core" % "2.13.0",
-  "org.typelevel" %%% "cats-effect" % "3.5.7",
-  "org.typelevel" %%% "cats-effect-kernel" % "3.5.7",
-  "org.typelevel" %%% "cats-effect-std" % "3.5.7",
+  "org.typelevel" %%% "cats-effect" % "3.6.0",
+  "org.typelevel" %%% "cats-effect-kernel" % "3.6.0",
+  "org.typelevel" %%% "cats-effect-std" % "3.6.0",
   "org.typelevel" %%% "case-insensitive" % "1.4.2"
 )
 
