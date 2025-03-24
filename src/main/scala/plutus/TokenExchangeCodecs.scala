@@ -18,18 +18,12 @@ import smithy4s.json.JsoniterCodecCompiler
 import smithy4s.kinds.PolyFunction
 import smithy4s.server.UnaryServerCodecs
 
-class TokenExchangeCodecs(
-    val maxArity: Int,
-    val explicitDefaultsEncoding: Boolean
-) extends SimpleProtocolCodecs:
+object TokenExchangeCodecs extends SimpleProtocolCodecs:
 
   private val jsonCodecs = Json.payloadCodecs.withJsoniterCodecCompiler(
-    Json.jsoniter
-      .withMaxArity(maxArity)
-      .withHintMask(
-        alloy.SimpleRestJson.protocol.hintMask ++ JsoniterCodecCompiler.defaultHintMask
-      )
-      .withExplicitDefaultsEncoding(explicitDefaultsEncoding)
+    Json.jsoniter.withHintMask(
+      alloy.SimpleRestJson.protocol.hintMask ++ JsoniterCodecCompiler.defaultHintMask
+    )
   )
 
   private val jsonPayloadEncoders = jsonCodecs.encoders
@@ -38,16 +32,16 @@ class TokenExchangeCodecs(
 
   private val urlFormEncoders = UrlForm
     .Encoder(capitalizeStructAndUnionMemberNames = false)
-    .mapK {
-      smithy4s.codecs.Encoder.andThenK((form: UrlForm) => Blob(form.render))
-    }
+    .mapK:
+      smithy4s.codecs.Encoder.andThenK: (form: UrlForm) =>
+        Blob(form.render)
 
   private val urlFormDecoders = UrlForm
     .Decoder(
       ignoreUrlFormFlattened = false,
       capitalizeStructAndUnionMemberNames = false
     )
-    .mapK {
+    .mapK:
       new PolyFunction[
         Decoder[Either[UrlFormDecodeError, *], UrlForm, *],
         Decoder[Either[PayloadError, *], Blob, *]
@@ -59,14 +53,12 @@ class TokenExchangeCodecs(
             (for
               urlForm <- UrlForm.parse(blob.toUTF8String)
               a <- fa.decode(urlForm)
-            yield a).left.map(urlFormDecodeError =>
+            yield a).left.map: urlFormDecodeError =>
               PayloadError(
                 urlFormDecodeError.path,
                 "",
                 urlFormDecodeError.message
               )
-            )
-    }
 
   override def makeServerCodecs[F[_]: Concurrent] =
     TokenExchangeServerCodecs[F, Request[F], Response[F]](
@@ -88,8 +80,8 @@ class TokenExchangeCodecs(
   object TokenExchangeServerCodecs:
     private val errorHeaders = List(
       smithy4s.http.errorTypeHeader,
-      // Adding X-Amzn-Errortype as well to facilitate interop
-      // with Amazon-issued code-generators.
+      // Adding X-Amzn-Errortype as well to facilitate interop with
+      // Amazon-issued code-generators.
       smithy4s.http.amazonErrorTypeHeader
     )
     private val baseResponse = HttpResponse(200, Map.empty, Blob.empty)
@@ -116,8 +108,8 @@ class TokenExchangeCodecs(
   object TokenExchangeClientCodecs:
     private val errorHeaders = List(
       smithy4s.http.errorTypeHeader,
-      // Adding X-Amzn-Errortype as well to facilitate interop
-      // with Amazon-issued code-generators.
+      // Adding X-Amzn-Errortype as well to facilitate interop with
+      // Amazon-issued code-generators.
       smithy4s.http.amazonErrorTypeHeader
     )
     def apply[F[_], Req, Resp](
