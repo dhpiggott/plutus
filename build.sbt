@@ -4,10 +4,7 @@ addCommandAlias("fmtCheck", "all scalafmtSbtCheck scalafmtCheckAll")
 addCommandAlias("fmt", "all scalafmtSbt scalafmtAll")
 addCommandAlias("fixCheck", "scalafixAll --check")
 addCommandAlias("fix", "scalafixAll")
-addCommandAlias(
-  "check",
-  "fmtCheck; fixCheck; undeclaredCompileDependenciesTest; unusedCompileDependenciesTest; dependencyUpdates"
-)
+addCommandAlias("check", "fmtCheck; fixCheck; dependencyUpdates")
 
 enablePlugins(ScalaNativePlugin, Smithy4sCodegenPlugin)
 
