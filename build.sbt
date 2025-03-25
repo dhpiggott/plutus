@@ -6,7 +6,7 @@ addCommandAlias("fixCheck", "scalafixAll --check")
 addCommandAlias("fix", "scalafixAll")
 addCommandAlias("check", "fmtCheck; fixCheck; dependencyUpdates")
 
-enablePlugins(ScalaNativePlugin, Smithy4sCodegenPlugin)
+enablePlugins(BuildInfoPlugin, ScalaNativePlugin, Smithy4sCodegenPlugin)
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
@@ -47,6 +47,10 @@ libraryDependencies ++= Seq(
 )
 
 dependencyUpdatesFailBuild := true
+
+buildInfoKeys := Seq(version)
+
+buildInfoPackage := "plutus"
 
 crossPaths := false
 

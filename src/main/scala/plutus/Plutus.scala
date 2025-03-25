@@ -32,7 +32,8 @@ import scala.language.experimental.betterFors
 object Plutus
     extends CommandIOApp(
       name = "plutus",
-      header = "Monzo OFX exporter."
+      header = "Monzo OFX exporter.",
+      version = plutus.BuildInfo.version
     ):
 
   override def main: Opts[IO[ExitCode]] =
