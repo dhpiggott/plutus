@@ -28,6 +28,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import scala.concurrent.duration.*
 import scala.language.experimental.betterFors
+import scala.scalanative.unsafe.*
+import scala.scalanative.unsigned.*
 
 object Plutus
     extends CommandIOApp(
@@ -340,6 +342,60 @@ object Plutus
             else
               fansi.Color.Red(s"Couldn't load state file from $stateFilePath.")
           )
+        *> IO:
+          Zone { implicit z =>
+            // TODO: Types!?
+            val keys = alloc[Ptr[Byte]](3.toUInt)
+            val values = alloc[Ptr[Byte]](3.toUInt)
+            keys.update(
+              0.toULong,
+              secitem.SecItem.plutusKSecClass.asInstanceOf[Ptr[Byte]]
+            )
+            keys.update(
+              1.toULong,
+              secitem.SecItem.plutusKSecAttrAccount.asInstanceOf[Ptr[Byte]]
+            )
+            keys.update(
+              2.toULong,
+              secitem.SecItem.plutusKSecReturnData.asInstanceOf[Ptr[Byte]]
+            )
+            values.update(
+              0.toULong,
+              secitem.SecItem.plutusKSecClassGenericPassword
+                .asInstanceOf[Ptr[Byte]]
+            )
+            values.update(
+              1.toULong,
+              toCFString(c"plutus").asInstanceOf[Ptr[Byte]]
+            )
+            // values.update(2.toULong, cfnumber.CfNumber.plutusKCFBooleanTrue.asInstanceOf[Ptr[Byte]])
+            val result = alloc[secitem.aliases.CFTypeRef](1.toUInt)
+            val _ = secitem.functions.SecItemCopyMatching(
+              query = cfdictionary.functions
+                .CFDictionaryCreate(
+                  // TODO: Explicitly set to kCFAllocatorDefault?
+                  allocator = cfdictionary.aliases.CFAllocatorRef(null),
+                  // TODO
+                  keys = keys,
+                  values = values,
+                  numValues = cfdictionary.aliases.CFIndex(2),
+                  keyCallBacks = null,
+                  valueCallBacks = null
+                )
+                // TODO
+                .asInstanceOf[secitem.aliases.CFDictionaryRef],
+              result = result
+            )
+            // TODO: Check osStatus
+            // val cfStr = result.asInstanceOf[cfstring.aliases.CFStringRef]
+            // val cStr = cfstring.functions.CFStringGetCStringPtr(cfStr, encoding = cfstring.aliases.CFStringEncoding(
+            //       cfstring.aliases.UInt32(
+            //         cfstring.constants.kCFStringEncodingUTF8
+            //       )
+            //     ))
+            // val str = fromCString(cStr)
+            // println(str)
+          }
 
   private def saveState(state: State, verbosity: Verbosity): IO[Unit] =
     fs2
@@ -355,6 +411,70 @@ object Plutus
         Console[IO].println(
           fansi.Color.Green(s"Saved state file to $stateFilePath.")
         )
+        *> IO:
+          Zone { implicit z =>
+            // TODO: Types!?
+            val keys = alloc[Ptr[Byte]](3.toUInt)
+            val values = alloc[Ptr[Byte]](3.toUInt)
+            keys.update(
+              0.toULong,
+              secitem.SecItem.plutusKSecClass.asInstanceOf[Ptr[Byte]]
+            )
+            keys.update(
+              1.toULong,
+              secitem.SecItem.plutusKSecAttrAccount.asInstanceOf[Ptr[Byte]]
+            )
+            keys.update(
+              2.toULong,
+              secitem.SecItem.plutusKSecValueData.asInstanceOf[Ptr[Byte]]
+            )
+            values.update(
+              0.toULong,
+              secitem.SecItem.plutusKSecClassGenericPassword
+                .asInstanceOf[Ptr[Byte]]
+            )
+            values.update(
+              1.toULong,
+              toCFString(c"plutus").asInstanceOf[Ptr[Byte]]
+            )
+            values.update(
+              2.toULong,
+              toCFString(toCString(Json.writeBlob(state).toUTF8String))
+                .asInstanceOf[Ptr[Byte]]
+            )
+            val _ = secitem.functions.SecItemAdd(
+              attributes = cfdictionary.functions
+                .CFDictionaryCreate(
+                  // TODO: Explicitly set to kCFAllocatorDefault?
+                  allocator = cfdictionary.aliases.CFAllocatorRef(null),
+                  keys = keys,
+                  values = values,
+                  numValues = cfdictionary.aliases.CFIndex(3),
+                  keyCallBacks = null,
+                  valueCallBacks = null
+                )
+                // TODO
+                .asInstanceOf[secitem.aliases.CFDictionaryRef],
+              result = null
+            )
+            // TODO: Check osStatus
+          }
+
+  // TODO: Vertical ordering etc.
+  private def toCFString(cStr: CString): cfstring.aliases.CFStringRef =
+    cfstring.functions.CFStringCreateWithCStringNoCopy(
+      // TODO: Explicitly set to kCFAllocatorDefault?
+      alloc = cfstring.aliases.CFAllocatorRef(null),
+      cStr = cStr,
+      encoding = cfstring.aliases.CFStringEncoding(
+        cfstring.aliases.UInt32(
+          cfstring.constants.kCFStringEncodingUTF8
+        )
+      ),
+      // TODO: Should this be kCFAllocatorMalloc?
+      contentsDeallocator = cfbase.CfBase.plutusKCFAllocatorNull
+        .asInstanceOf[cfstring.aliases.CFAllocatorRef]
+    )
 
   private lazy val stateFilePath: fs2.io.file.Path =
     fs2.io.file.Path(System.getProperty("user.home")) /
