@@ -28,6 +28,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import scala.concurrent.duration.*
 import scala.language.experimental.betterFors
+import scala.scalanative.unsafe.*
+import scala.scalanative.unsigned.*
 
 object Plutus
     extends CommandIOApp(
@@ -208,7 +210,13 @@ object Plutus
                 dryRun
               )
         yield updatedState
-    _ <- saveState(updatedState, verbosity)
+    _ <- saveState(
+      updatedState,
+      mode =
+        if maybeState.isEmpty then SaveStateMode.Create
+        else SaveStateMode.Update,
+      verbosity
+    )
   yield ()
 
   private lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
@@ -323,42 +331,140 @@ object Plutus
     val leeway = Duration.ofSeconds(10)
     authorizedAtInstant.plus(leeway).isAfter(fiveMinutesAgo)
 
-  private def loadState(verbosity: Verbosity): IO[Option[State]] =
-    fs2.io.file
-      .Files[IO]
-      .readUtf8(stateFilePath)
-      .compile
-      .string
-      .flatMap: state =>
-        IO.fromEither(Json.read[State](Blob(state)))
-      .option
-      .flatTap: maybeState =>
-        IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-          Console[IO].println(
-            if maybeState.isDefined then
-              fansi.Color.Green(s"Loaded state file from $stateFilePath.")
-            else
-              fansi.Color.Red(s"Couldn't load state file from $stateFilePath.")
+  private def loadState(verbosity: Verbosity): IO[Option[State]] = for
+    errorOrMaybeDataString <- IO:
+      val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
+      (macos.functions
+        .SecItemCopyMatching(
+          query = toCfDictionary(
+            macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+            macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+            macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
+          ),
+          result = resultPtr
+        )
+        .value match
+        case macos.constants.errSecItemNotFound =>
+          Right(None)
+
+        case macos.constants.errSecSuccess =>
+          Right(
+            Some(
+              fromCString(
+                macos.functions.CFStringGetCStringPtr(
+                  theString = macos.functions
+                    .CFStringCreateFromExternalRepresentation(
+                      alloc = defaultAllocator,
+                      data =
+                        macos.aliases.CFDataRef((!resultPtr).value.unsafeToPtr),
+                      encoding = utf8
+                    ),
+                  encoding = utf8
+                )
+              )
+            )
           )
 
-  private def saveState(state: State, verbosity: Verbosity): IO[Unit] =
-    fs2
-      .Stream(Json.writePrettyString(state))
-      .through(
-        fs2.io.file
-          .Files[IO]
-          .writeUtf8(stateFilePath)
+        case other =>
+          Left(Error(s"Load state failed with status $other."))
       )
-      .compile
-      .drain *>
-      IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-        Console[IO].println(
-          fansi.Color.Green(s"Saved state file to $stateFilePath.")
-        )
+    maybeState <- errorOrMaybeDataString match
+      case Right(None) =>
+        IO.none
 
-  private lazy val stateFilePath: fs2.io.file.Path =
-    fs2.io.file.Path(System.getProperty("user.home")) /
-      "Library" / "Application Support" / "plutus" / "state.json"
+      case Right(Some(dataString)) =>
+        IO.fromEither(Json.read[State](Blob(dataString))).option
+
+      case Left(error) =>
+        IO.raiseError(error)
+    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
+      Console[IO].println(
+        if maybeState.isDefined then
+          fansi.Color.Green("Loaded state from Keychain.")
+        else fansi.Color.Red("Couldn't load state from Keychain.")
+      )
+  yield maybeState
+
+  private enum SaveStateMode:
+    case Create
+    case Update
+
+  private def saveState(
+      state: State,
+      mode: SaveStateMode,
+      verbosity: Verbosity
+  ): IO[Unit] = for
+    attributes <- IO:
+      toCfDictionary(
+        // TODO: The intent here is to always prompt for authentication, but
+        // including them results in an errSecMissingEntitlement error
+        // (https://developer.apple.com/documentation/security/errsecmissingentitlement?language=objc).
+        // macos.Forwarders.SecUseDataProtectionKeychain.value.unsafeToPtr ->
+        //   macos.Forwarders.CFBooleanTrue.value.unsafeToPtr,
+        // macos.Forwarders.SecAttrSynchronizable.value.unsafeToPtr ->
+        //   macos.Forwarders.CFBooleanTrue.value.unsafeToPtr,
+        // macos.Forwarders.SecAttrAccessControl.value.unsafeToPtr -> macos.functions
+        //   .SecAccessControlCreateWithFlags(
+        //     allocator = defaultAllocator,
+        //     protection =
+        //       macos.Forwarders.SecAttrAccessibleWhenUnlocked.value.unsafeToPtr,
+        //     flags = macos.aliases.CFOptionFlags(
+        //       macos.constants.kSecAccessControlUserPresence
+        //     ),
+        //     error = null
+        //   )
+        //   .value
+        //   .unsafeToPtr,
+        macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+        macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+        macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(implicit z =>
+          macos.functions
+            .CFStringCreateExternalRepresentation(
+              alloc = defaultAllocator,
+              theString = macos.functions.CFStringCreateWithCString(
+                alloc = defaultAllocator,
+                cStr = toCString(
+                  Json.writeBlob(state).toUTF8String,
+                  java.nio.charset.StandardCharsets.UTF_8
+                ),
+                encoding = utf8
+              ),
+              encoding = utf8,
+              lossByte = macos.aliases.UInt8(0.toUByte)
+            )
+            .value
+            .unsafeToPtr
+        )
+      )
+    osStatus <- mode match
+      case SaveStateMode.Create =>
+        IO:
+          macos.functions.SecItemAdd(
+            attributes = attributes,
+            result = null
+          )
+
+      case SaveStateMode.Update =>
+        IO:
+          macos.functions.SecItemUpdate(
+            query = toCfDictionary(
+              macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+              macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr
+            ),
+            attributesToUpdate = attributes
+          )
+    _ <- IO.unlessA(osStatus.value == macos.constants.errSecSuccess)(
+      IO.raiseError(
+        Error(
+          s"Save state failed with status $osStatus."
+        )
+      )
+    )
+    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
+      Console[IO].println(
+        fansi.Color.Green("Saved state to Keychain.")
+      )
+  yield ()
 
   private def exchangeAuthCode(
       monzoTokenApi: monzo.TokenApi[IO],
@@ -588,6 +694,66 @@ object Plutus
                   )
         )
   yield updatedState
+
+  private val defaultAllocator: macos.aliases.CFAllocatorRef =
+    macos.aliases.CFAllocatorRef(null)
+
+  private val utf8: macos.aliases.CFStringEncoding =
+    macos.aliases.UInt32(macos.constants.kCFStringEncodingUTF8)
+
+  private val secItemName: macos.aliases.CFStringRef =
+    macos.functions
+      .CFStringCreateWithCString(
+        alloc = defaultAllocator,
+        cStr = c"plutus",
+        encoding = utf8
+      )
+
+  extension (ptr: Ptr[?])
+    /** This is an unavoidable consequence of the way sn-bindgen generates code
+      * and the types the macOS APIs define interact. macOS's CFStringRef for
+      * example is generated as:
+      *
+      * opaque type CFStringRef = Ptr[__CFString]
+      *
+      * with:
+      *
+      * opaque type __CFString = CStruct0
+      *
+      * This is the behaviour documented at
+      * https://sn-bindgen.indoorvivants.com/semantics/index.html#structs-are-converted-to-opaque-types.
+      *
+      * This would be OK if macOS didn't define APIs like CFDictionaryCreate to
+      * take heterogenous map inputs like this:
+      *
+      * keys : Ptr[Ptr[Byte]], values : Ptr[Ptr[Byte]]
+      *
+      * (Read this as two pointers to arrays, where each array is of
+      * heterogeneous type, i.e. some values may be __CFString while others may
+      * be __CFBoolean, etc).
+      *
+      * @param A
+      * @return
+      */
+    def unsafeToPtr[A]: Ptr[A] = ptr.asInstanceOf[Ptr[A]]
+
+  private def toCfDictionary(
+      entries: (Ptr[Byte], Ptr[Byte])*
+  ): macos.aliases.CFDictionaryRef =
+    val keys = stackalloc[Ptr[Byte]](entries.length.toUInt)
+    val values = stackalloc[Ptr[Byte]](entries.length.toUInt)
+    entries.zipWithIndex.foreach: (entry, index) =>
+      val (key, value) = entry
+      keys.update(index.toULong, key)
+      values.update(index.toULong, value)
+    macos.functions.CFDictionaryCreate(
+      allocator = defaultAllocator,
+      keys = keys,
+      values = values,
+      numValues = macos.aliases.CFIndex(entries.length),
+      keyCallBacks = null,
+      valueCallBacks = null
+    )
 
   private enum ListTransactionsSince:
     case Timestamp(instant: Instant)
