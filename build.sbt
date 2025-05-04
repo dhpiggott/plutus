@@ -72,6 +72,8 @@ lazy val plutus = project
       "org.typelevel" %%% "cats-effect-std" % "3.6.1",
       "org.typelevel" %%% "case-insensitive" % "1.4.2"
     ),
+    // TODO: Version homebrew builds correctly. v2 for example reports its
+    // version as HEAD+20250504-1041.
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus",
     nativeLinkingOptions ++= Seq(
