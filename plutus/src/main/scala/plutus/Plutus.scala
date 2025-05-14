@@ -502,7 +502,7 @@ object Plutus
       )
       .withShutdownTimeout(0.seconds)
       .build
-      .use: server =>
+      .use: _ =>
         for
           _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
             Console[IO].println(
@@ -511,13 +511,11 @@ object Plutus
           redirectUri = monzo
             .RedirectUri("http://localhost:8080/oauth/callback")
           generatedState <- requestAuthorization(clientId, redirectUri)
-          authorizationCodeAndReceivedState <-
+          (authorizationCode, receivedState) <-
             authorizationCodeAndStateDeferred.get
-          (authorizationCode, receivedState) =
-            authorizationCodeAndReceivedState
           _ <- IO.raiseUnless(generatedState == receivedState)(
             Error(
-              s"generatedState != receivedState ($generatedState != $receivedState)"
+              s"generatedState != receivedState ($generatedState != ${receivedState})"
             )
           )
           _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):

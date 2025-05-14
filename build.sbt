@@ -6,7 +6,7 @@ name := "plutus"
 
 inThisBuild(
   Seq(
-    scalaVersion := "3.6.2",
+    scalaVersion := "3.7.0",
     semanticdbEnabled := true
   )
 )
