@@ -17,6 +17,7 @@ lazy val macos = project
   )
   .settings(
     dependencyUpdatesFailBuild := true,
+    bindgenVersion := "0.2.3",
     // TODO: Report and fix the sn-bindgen naming collision which results from
     // some function parameters being called alloc, so that we can use
     // ResourceGenerator mode, and not have to patch the generated source to
