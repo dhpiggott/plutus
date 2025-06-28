@@ -17,17 +17,12 @@ lazy val macos = project
   )
   .settings(
     dependencyUpdatesFailBuild := true,
-    bindgenVersion := "0.2.3",
-    // TODO: Report and fix the sn-bindgen naming collision which results from
-    // some function parameters being called alloc, so that we can use
-    // ResourceGenerator mode, and not have to patch the generated source to
-    // disambiguate those collisions.
-    bindgenMode := bindgen.plugin.BindgenMode.Manual(
-      scalaDir = (Compile / sourceDirectory).value / "scala" / "generated",
-      cDir = (Compile / resourceDirectory).value / "scala-native" / "generated"
-    ),
+    bindgenVersion := "0.2.4",
     bindgenBindings += bindgen.interface
       .Binding((Compile / baseDirectory).value / "macos.h", "macos")
+      .addCImport(
+        "CoreFoundation/CFString.h"
+      )
       .withLogLevel(bindgen.interface.LogLevel.Info),
     tpolecatExcludeOptions ++= Set(
       ScalacOptions.deprecation,
