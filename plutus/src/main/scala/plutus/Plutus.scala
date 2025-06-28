@@ -313,6 +313,8 @@ object Plutus
                   clientSecret = clientSecret,
                   refreshToken = Some(state.refreshToken)
                 )
+                // TODO: The refresh token may have expired, in which case we
+                // should request authorization again.
                 updatedState = state.copy(
                   refreshToken = createAccessTokenOutput.refreshToken
                 )
