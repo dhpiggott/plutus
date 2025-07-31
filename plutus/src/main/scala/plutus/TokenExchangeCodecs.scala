@@ -73,7 +73,7 @@ object TokenExchangeCodecs extends SimpleProtocolCodecs:
     TokenExchangeClientCodecs(
       jsonPayloadDecoders,
       urlFormEncoders,
-      fromSmithy4sHttpRequest[F](_).pure[F],
+      fromSmithy4sHttpRequest[F](_, encodePathSegments = false).pure[F],
       toSmithy4sHttpResponse[F](_),
       toSmithy4sHttpUri(baseUri, None)
     )
