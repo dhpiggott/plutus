@@ -20,11 +20,9 @@ import smithy4s.server.UnaryServerCodecs
 
 object TokenExchangeCodecs extends SimpleProtocolCodecs:
 
-  private val jsonCodecs = Json.payloadCodecs.withJsoniterCodecCompiler(
-    Json.jsoniter.withHintMask(
+  private val jsonCodecs = Json.payloadCodecs.withJsoniterCodecCompiler:
+    Json.jsoniter.withHintMask:
       alloy.SimpleRestJson.protocol.hintMask ++ JsoniterCodecCompiler.defaultHintMask
-    )
-  )
 
   private val jsonPayloadEncoders = jsonCodecs.encoders
 
@@ -34,7 +32,8 @@ object TokenExchangeCodecs extends SimpleProtocolCodecs:
     .Encoder(capitalizeStructAndUnionMemberNames = false)
     .mapK:
       smithy4s.codecs.Encoder.andThenK: (form: UrlForm) =>
-        Blob(form.render)
+        Blob:
+          form.render
 
   private val urlFormDecoders = UrlForm
     .Decoder(
@@ -51,8 +50,10 @@ object TokenExchangeCodecs extends SimpleProtocolCodecs:
         ): Decoder[Either[PayloadError, *], Blob, A] =
           (blob: Blob) =>
             (for
-              urlForm <- UrlForm.parse(blob.toUTF8String)
-              a <- fa.decode(urlForm)
+              urlForm <- UrlForm.parse:
+                blob.toUTF8String
+              a <- fa.decode:
+                urlForm
             yield a).left.map: urlFormDecodeError =>
               PayloadError(
                 urlFormDecodeError.path,
@@ -92,17 +93,28 @@ object TokenExchangeCodecs extends SimpleProtocolCodecs:
         respTransformation: HttpResponse[Blob] => F[Resp]
     )(implicit F: MonadThrowLike[F]): UnaryServerCodecs.Make[F, Req, Resp] =
       HttpUnaryServerCodecs.builder
-        .withBodyDecoders(decoders)
-        .withSuccessBodyEncoders(encoders)
-        .withErrorBodyEncoders(encoders)
+        .withBodyDecoders:
+          decoders
+        .withSuccessBodyEncoders:
+          encoders
+        .withErrorBodyEncoders:
+          encoders
         .withErrorTypeHeaders(errorHeaders*)
-        .withMetadataDecoders(Metadata.Decoder)
-        .withMetadataEncoders(Metadata.Encoder)
-        .withBaseResponse(_ => F.pure(baseResponse))
-        .withResponseMediaType("application/json")
-        .withWriteEmptyStructs(!_.isUnit)
-        .withRequestTransformation[Req](reqTransformation)
-        .withResponseTransformation[Resp](respTransformation)
+        .withMetadataDecoders:
+          Metadata.Decoder
+        .withMetadataEncoders:
+          Metadata.Encoder
+        .withBaseResponse: _ =>
+          F.pure:
+            baseResponse
+        .withResponseMediaType:
+          "application/json"
+        .withWriteEmptyStructs:
+          !_.isUnit
+        .withRequestTransformation[Req]:
+          reqTransformation
+        .withResponseTransformation[Resp]:
+          respTransformation
         .build()
 
   object TokenExchangeClientCodecs:
@@ -126,16 +138,26 @@ object TokenExchangeCodecs extends SimpleProtocolCodecs:
         Blob.empty
       )
       HttpUnaryClientCodecs.builder
-        .withBodyEncoders(encoders)
-        .withSuccessBodyDecoders(decoders)
-        .withErrorBodyDecoders(decoders)
-        .withErrorDiscriminator(x =>
-          F.pure(HttpDiscriminator.fromResponse(errorHeaders, x))
-        )
-        .withMetadataDecoders(Metadata.Decoder)
-        .withMetadataEncoders(Metadata.Encoder)
-        .withBaseRequest(_ => F.pure(baseRequest))
-        .withRequestMediaType("application/x-www-form-urlencoded")
-        .withRequestTransformation(reqTransformation)
-        .withResponseTransformation(respTransformation)
+        .withBodyEncoders:
+          encoders
+        .withSuccessBodyDecoders:
+          decoders
+        .withErrorBodyDecoders:
+          decoders
+        .withErrorDiscriminator: x =>
+          F.pure:
+            HttpDiscriminator.fromResponse(errorHeaders, x)
+        .withMetadataDecoders:
+          Metadata.Decoder
+        .withMetadataEncoders:
+          Metadata.Encoder
+        .withBaseRequest: _ =>
+          F.pure:
+            baseRequest
+        .withRequestMediaType:
+          "application/x-www-form-urlencoded"
+        .withRequestTransformation:
+          reqTransformation
+        .withResponseTransformation:
+          respTransformation
         .build()

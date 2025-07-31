@@ -48,10 +48,14 @@ object Plutus
           output = output
             .map:
               fs2.io.file.Path.fromNioPath(_)
-            .getOrElse(fs2.io.file.Path("monzo.ofx")),
+            .getOrElse:
+              fs2.io.file.Path:
+                "monzo.ofx"
+          ,
           dryRun
         )
-          .as(ExitCode.Success)
+          .as:
+            ExitCode.Success
 
   private lazy val verbosityOpt: Opts[Verbosity] =
     silentOpt orElse verboseOpt orElse debugOpt withDefault Verbosity.DEFAULT
@@ -59,7 +63,8 @@ object Plutus
   private lazy val silentOpt: Opts[Verbosity] =
     Opts
       .flag("silent", help = "Don't log anything.")
-      .as(Verbosity.SILENT)
+      .as:
+        Verbosity.SILENT
 
   private lazy val verboseOpt: Opts[Verbosity] =
     Opts
@@ -68,7 +73,8 @@ object Plutus
         help =
           "Log decoded account and transaction entities. This includes default logging."
       )
-      .as(Verbosity.VERBOSE)
+      .as:
+        Verbosity.VERBOSE
 
   private lazy val debugOpt: Opts[Verbosity] =
     Opts
@@ -77,7 +83,8 @@ object Plutus
         help =
           "Log raw HTTP requests and responses. This includes --verbose logging."
       )
-      .as(Verbosity.DEBUG)
+      .as:
+        Verbosity.DEBUG
 
   private enum Verbosity:
     case SILENT
@@ -129,18 +136,19 @@ object Plutus
   ): IO[Unit] = for
     _ <- fs2.io.file
       .Files[IO]
-      .exists(output)
+      .exists:
+        output
       .map:
         _ && since.isEmpty
       .flatMap:
-        IO.raiseWhen(_)(
-          Error(
+        IO.raiseWhen(_):
+          Error:
             s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
-          )
-        )
-    maybeState <- loadState(verbosity)
+    maybeState <- loadState:
+      verbosity
     now <- Clock[IO].realTime.map: finiteDuration =>
-      Instant.ofEpochMilli(finiteDuration.toMillis)
+      Instant.ofEpochMilli:
+        finiteDuration.toMillis
     // From https://docs.monzo.com/?shell#list-transactions:
     //
     // Strong Customer Authentication
@@ -157,7 +165,8 @@ object Plutus
         true
 
       case Some(state) =>
-        val leeway = Duration.ofSeconds(10)
+        val leeway = Duration.ofSeconds:
+          10
         since
           .getOrElse:
             state.lastTransactions.values
@@ -167,7 +176,13 @@ object Plutus
                   lastTransaction.created.value.nano
                 )
               .min
-          .isBefore(now.minus(Period.ofDays(90)).plus(leeway))
+          .isBefore:
+            now
+              .minus:
+                Period.ofDays:
+                  90
+              .plus:
+                leeway
     updatedState <- EmberClientBuilder
       .default[IO]
       .build
@@ -188,11 +203,16 @@ object Plutus
             now,
             requireStrongCustomerAuthentication
           )
-          updatedState <- SimpleRestJsonBuilder(monzo.Api)
-            .client(client)
-            .uri(monzoApiUri)
-            .middleware(BearerAuthMiddleware(accessToken.value))
-            .resource
+          updatedState <- SimpleRestJsonBuilder:
+            monzo.Api
+          .client:
+            client
+          .uri:
+            monzoApiUri
+          .middleware:
+            BearerAuthMiddleware:
+              accessToken.value
+          .resource
             .use:
               exportTransactions(
                 _,
@@ -228,19 +248,24 @@ object Plutus
       now: Instant,
       requireStrongCustomerAuthentication: Boolean
   ): IO[(State, monzo.AccessToken)] =
-    TokenExchangeBuilder(monzo.TokenApi)
-      .client(client)
-      .uri(monzoApiUri)
-      .resource
+    TokenExchangeBuilder:
+      monzo.TokenApi
+    .client:
+      client
+    .uri:
+      monzoApiUri
+    .resource
       .use: monzoTokenApi =>
         for
           (clientId, clientSecret) <- maybeState match
             case None =>
               for
-                _ <- Console[IO].print("Enter client ID: ")
+                _ <- Console[IO].print:
+                  "Enter client ID: "
                 clientId <- Console[IO].readLine.map:
                   monzo.ClientId(_)
-                _ <- Console[IO].print("Enter client secret: ")
+                _ <- Console[IO].print:
+                  "Enter client secret: "
                 clientSecret <- Console[IO].readLine.map:
                   monzo.ClientSecret(_)
               yield (clientId, clientSecret)
@@ -254,9 +279,8 @@ object Plutus
               clientId,
               clientSecret
             )
-            authorizedAt = AuthorizedAt(
+            authorizedAt = AuthorizedAt:
               Timestamp(now.getEpochSecond, now.getNano)
-            )
             refreshToken = createAccessTokenOutput.refreshToken
             state = maybeState match
               case None =>
@@ -276,12 +300,12 @@ object Plutus
           yield (state, createAccessTokenOutput.accessToken)
           (state, accessToken) <- maybeState match
             case None =>
-              IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-                Console[IO].println(
-                  fansi.Color.Yellow(
+              (IO.whenA:
+                verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+              ):
+                Console[IO].println:
+                  fansi.Color.Yellow:
                     "No previous state, requesting authorization..."
-                  )
-                )
               *>
                 exchangeAuthCodeAndCreateOrUpdateState
 
@@ -290,23 +314,23 @@ object Plutus
                   state.authorizedAt,
                   now
                 ) =>
-              IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-                Console[IO].println(
-                  fansi.Color.Yellow(
+              (IO.whenA:
+                verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+              ):
+                Console[IO].println:
+                  fansi.Color.Yellow:
                     "Strong authentication required, requesting authorization..."
-                  )
-                )
               *>
                 exchangeAuthCodeAndCreateOrUpdateState
 
             case Some(state) =>
               for
-                _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-                  Console[IO].println(
-                    fansi.Color.Green(
+                _ <- (IO.whenA:
+                  verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+                ):
+                  Console[IO].println:
+                    fansi.Color.Green:
                       "Existing refresh token found, exchanging for tokens..."
-                    )
-                  )
                 createAccessTokenOutput <- monzoTokenApi.createAccessToken(
                   grantType = monzo.GrantType.REFRESH_TOKEN,
                   clientId = clientId,
@@ -329,9 +353,16 @@ object Plutus
       authorizedAt.value.epochSecond,
       authorizedAt.value.nano
     )
-    val fiveMinutesAgo = now.minus(Duration.ofMinutes(5))
-    val leeway = Duration.ofSeconds(10)
-    authorizedAtInstant.plus(leeway).isAfter(fiveMinutesAgo)
+    val fiveMinutesAgo = now.minus:
+      Duration.ofMinutes:
+        5
+    val leeway = Duration.ofSeconds:
+      10
+    authorizedAtInstant
+      .plus:
+        leeway
+      .isAfter:
+        fiveMinutesAgo
 
   private def loadState(verbosity: Verbosity): IO[Option[State]] = for
     errorOrMaybeDataString <- IO:
@@ -347,44 +378,54 @@ object Plutus
         )
         .value match
         case macos.constants.errSecItemNotFound =>
-          Right(None)
+          Right:
+            None
 
         case macos.constants.errSecSuccess =>
-          Right(
-            Some(
-              fromCString(
+          Right:
+            Some:
+              fromCString:
                 macos.functions.CFStringGetCStringPtr(
                   theString = macos.functions
                     .CFStringCreateFromExternalRepresentation(
                       alloc = defaultAllocator,
-                      data =
-                        macos.aliases.CFDataRef((!resultPtr).value.unsafeToPtr),
+                      data = macos.aliases.CFDataRef:
+                        (!resultPtr).value.unsafeToPtr
+                      ,
                       encoding = utf8
                     ),
                   encoding = utf8
                 )
-              )
-            )
-          )
 
         case other =>
-          Left(Error(s"Load state failed with status $other."))
+          Left:
+            Error:
+              s"Load state failed with status $other."
       )
     maybeState <- errorOrMaybeDataString match
       case Right(None) =>
         IO.none
 
       case Right(Some(dataString)) =>
-        IO.fromEither(Json.read[State](Blob(dataString))).option
+        IO.fromEither:
+          Json.read[State]:
+            Blob:
+              dataString
+        .option
 
       case Left(error) =>
-        IO.raiseError(error)
-    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-      Console[IO].println(
+        IO.raiseError:
+          error
+    _ <- (IO.whenA:
+      verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+    ):
+      Console[IO].println:
         if maybeState.isDefined then
-          fansi.Color.Green("Loaded state from Keychain.")
-        else fansi.Color.Red("Couldn't load state from Keychain.")
-      )
+          fansi.Color.Green:
+            "Loaded state from Keychain."
+        else
+          fansi.Color.Red:
+            "Couldn't load state from Keychain."
   yield maybeState
 
   private enum SaveStateMode:
@@ -426,13 +467,17 @@ object Plutus
               theString = macos.functions.CFStringCreateWithCString(
                 alloc = defaultAllocator,
                 cStr = toCString(
-                  Json.writeBlob(state).toUTF8String,
+                  Json
+                    .writeBlob:
+                      state
+                    .toUTF8String,
                   java.nio.charset.StandardCharsets.UTF_8
                 ),
                 encoding = utf8
               ),
               encoding = utf8,
-              lossByte = macos.aliases.UInt8(0.toUByte)
+              lossByte = macos.aliases.UInt8:
+                0.toUByte
             )
             .value
             .unsafeToPtr
@@ -455,17 +500,18 @@ object Plutus
             ),
             attributesToUpdate = attributes
           )
-    _ <- IO.unlessA(osStatus.value == macos.constants.errSecSuccess)(
-      IO.raiseError(
-        Error(
+    _ <- (IO.unlessA:
+      osStatus.value == macos.constants.errSecSuccess
+    ):
+      IO.raiseError:
+        Error:
           s"Save state failed with status $osStatus."
-        )
-      )
-    )
-    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-      Console[IO].println(
-        fansi.Color.Green("Saved state to Keychain.")
-      )
+    _ <- (IO.whenA:
+      verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+    ):
+      Console[IO].println:
+        fansi.Color.Green:
+          "Saved state to Keychain."
   yield ()
 
   private def exchangeAuthCode(
@@ -480,7 +526,7 @@ object Plutus
     ]
     createAccessTokenOutput <- EmberServerBuilder
       .default[IO]
-      .withHttpApp(
+      .withHttpApp:
         (if verbosity.ordinal >= Verbosity.DEBUG.ordinal
          then
            org.http4s.server.middleware.Logger.httpApp[IO](
@@ -494,36 +540,41 @@ object Plutus
                   AuthorizationCodeQueryParamMatcher(code) +&
                   StateQueryParamMatcher(state) =>
                 authorizationCodeAndStateDeferred.complete(code -> state) *>
-                  IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-                    Console[IO].println(
-                      fansi.Color.Green("Received auth code.")
-                    )
-                  *> Ok("Authorization code received. Return to Plutus.")
+                  (IO.whenA:
+                    verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+                  ):
+                  Console[IO].println:
+                    fansi.Color.Green:
+                      "Received auth code."
+                *> Ok:
+                  "Authorization code received. Return to Plutus."
             .orNotFound
         )
-      )
-      .withShutdownTimeout(0.seconds)
+      .withShutdownTimeout:
+        0.seconds
       .build
       .use: _ =>
         for
-          _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-            Console[IO].println(
-              fansi.Color.Green("Requesting authorization...")
-            )
-          redirectUri = monzo
-            .RedirectUri("http://localhost:8080/oauth/callback")
+          _ <- (IO.whenA:
+            verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+          ):
+            Console[IO].println:
+              fansi.Color.Green:
+                "Requesting authorization..."
+          redirectUri = monzo.RedirectUri:
+            "http://localhost:8080/oauth/callback"
           generatedState <- requestAuthorization(clientId, redirectUri)
           (authorizationCode, receivedState) <-
             authorizationCodeAndStateDeferred.get
-          _ <- IO.raiseUnless(generatedState == receivedState)(
-            Error(
+          _ <- IO.raiseUnless(generatedState == receivedState):
+            Error:
               s"generatedState != receivedState ($generatedState != ${receivedState})"
-            )
-          )
-          _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-            Console[IO].println(
-              fansi.Color.Green("Exchanging auth code for tokens...")
-            )
+          _ <- (IO.whenA:
+            verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+          ):
+            Console[IO].println:
+              fansi.Color.Green:
+                "Exchanging auth code for tokens..."
           createAccessTokenOutput <- monzoTokenApi.createAccessToken(
             grantType = monzo.GrantType.AUTHORIZATION_CODE,
             clientId = clientId,
@@ -531,11 +582,9 @@ object Plutus
             redirectUri = Some(redirectUri),
             code = Some(authorizationCode)
           )
-          _ <- Console[IO].print(
-            fansi.Color.Green(
+          _ <- Console[IO].print:
+            fansi.Color.Green:
               "Complete SCA in app, then press enter to continue."
-            )
-          )
           _ <- Console[IO].readLine
         yield createAccessTokenOutput
   yield createAccessTokenOutput
@@ -560,26 +609,24 @@ object Plutus
       redirectUri: monzo.RedirectUri
   ): IO[monzo.State] = for
     state <- IO.randomUUID.map: uuid =>
-      monzo.State(uuid.toString)
-    _ <- IO(
+      monzo.State:
+        uuid.toString
+    _ <- IO:
       Runtime
         .getRuntime()
-        .exec(
+        .exec:
           Array(
             "open",
             uri"https://auth.monzo.com"
-              .withQueryParams(
+              .withQueryParams:
                 Map(
                   "client_id" -> clientId.value,
                   "redirect_uri" -> redirectUri.value,
                   "response_type" -> "code",
                   "state" -> state.value
                 )
-              )
               .renderString
           )
-        )
-    )
   yield state
 
   private object BearerAuthMiddleware:
@@ -591,17 +638,15 @@ object Plutus
         ): Client[IO] => Client[IO] =
           if serviceHints.has[smithy.api.HttpBearerAuth] && !endpointHints
               .get[smithy.api.Auth]
-              .exists(_.value.isEmpty)
+              .exists:
+                _.value.isEmpty
           then
             client =>
               Client[IO]: request =>
-                client.run(
-                  request.withHeaders(
-                    Authorization(
+                client.run:
+                  request.withHeaders:
+                    Authorization:
                       Credentials.Token(AuthScheme.Bearer, bearerToken)
-                    )
-                  )
-                )
           else identity
 
   private enum ExportTransactionsSince:
@@ -619,10 +664,12 @@ object Plutus
       output: fs2.io.file.Path,
       dryRun: Boolean
   ): IO[State] = for
-    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-      Console[IO].println(
-        fansi.Color.Green("Listing accounts...")
-      )
+    _ <- (IO.whenA:
+      verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+    ):
+      Console[IO].println:
+        fansi.Color.Green:
+          "Listing accounts..."
     accounts <- monzoApi
       .listAccounts()
       .map:
@@ -639,10 +686,12 @@ object Plutus
           .collect:
             case (account, Some(since)) =>
               (account, ListTransactionsSince.IdAndTimestamp(since))
-    _ <- IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-      Console[IO].println(
-        fansi.Color.Green("Listing transactions for accounts...")
-      )
+    _ <- (IO.whenA:
+      verbosity.ordinal >= Verbosity.DEFAULT.ordinal
+    ):
+      Console[IO].println:
+        fansi.Color.Green:
+          "Listing transactions for accounts..."
     accountsAndTransactions <- accountsAndSince
       .traverse: (account, since) =>
         listTransactions(
@@ -655,21 +704,21 @@ object Plutus
       .map:
         _.filter: (_, transactions) =>
           transactions.nonEmpty
-    _ <- IO.whenA(verbosity.ordinal >= Verbosity.VERBOSE.ordinal):
-      Console[IO].println(
-        Json.writeDocumentAsPrettyString(
-          Document.array(
+    _ <- (IO.whenA:
+      verbosity.ordinal >= Verbosity.VERBOSE.ordinal
+    ):
+      Console[IO].println:
+        Json.writeDocumentAsPrettyString:
+          Document.array:
             accountsAndTransactions.map: (account, transactions) =>
               Document.obj(
-                "account" -> Document.encode(account),
-                "transactions" -> Document.array(
+                "account" -> Document.encode:
+                  account
+                ,
+                "transactions" -> Document.array:
                   transactions.map:
                     Document.encode(_)
-                )
               )
-          )
-        )
-      )
     materialAccountIdsAndTransactions = accountsAndTransactions.map:
       (account, transactions) =>
         account.id -> transactions.filterNot: transaction =>
@@ -677,7 +726,13 @@ object Plutus
           transaction.amount.value == 0 ||
             // What it says.
             transaction.declineReason.isDefined
-    _ <- writeOfx(toOfx(materialAccountIdsAndTransactions), output, verbosity)
+    _ <- writeOfx(
+      toOfx:
+        materialAccountIdsAndTransactions
+      ,
+      output,
+      verbosity
+    )
     updatedState =
       if dryRun then state
       else
@@ -696,10 +751,12 @@ object Plutus
   yield updatedState
 
   private val defaultAllocator: macos.aliases.CFAllocatorRef =
-    macos.aliases.CFAllocatorRef(null)
+    macos.aliases.CFAllocatorRef:
+      null
 
   private val utf8: macos.aliases.CFStringEncoding =
-    macos.aliases.UInt32(macos.constants.kCFStringEncodingUTF8)
+    macos.aliases.UInt32:
+      macos.constants.kCFStringEncodingUTF8
 
   private val secItemName: macos.aliases.CFStringRef =
     macos.functions
@@ -740,8 +797,10 @@ object Plutus
   private def toCfDictionary(
       entries: (Ptr[Byte], Ptr[Byte])*
   ): macos.aliases.CFDictionaryRef =
-    val keys = stackalloc[Ptr[Byte]](entries.length.toUInt)
-    val values = stackalloc[Ptr[Byte]](entries.length.toUInt)
+    val keys = stackalloc[Ptr[Byte]]:
+      entries.length.toUInt
+    val values = stackalloc[Ptr[Byte]]:
+      entries.length.toUInt
     entries.zipWithIndex.foreach: (entry, index) =>
       val (key, value) = entry
       keys.update(index.toULong, key)
@@ -750,7 +809,9 @@ object Plutus
       allocator = defaultAllocator,
       keys = keys,
       values = values,
-      numValues = macos.aliases.CFIndex(entries.length),
+      numValues = macos.aliases.CFIndex:
+        entries.length
+      ,
       keyCallBacks = null,
       valueCallBacks = null
     )
@@ -777,9 +838,11 @@ object Plutus
           )
       // See
       // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
-      val maxPermittedBeforeForThisPage =
-        sinceInstant.plus(Duration.ofHours(8760))
-      val mustPaginate = before.isAfter(maxPermittedBeforeForThisPage)
+      val maxPermittedBeforeForThisPage = sinceInstant.plus:
+        Duration.ofHours:
+          8760
+      val mustPaginate = before.isAfter:
+        maxPermittedBeforeForThisPage
       if mustPaginate then maxPermittedBeforeForThisPage else before
     def toTimestamp(instant: Instant): Timestamp =
       Timestamp(instant.getEpochSecond, instant.getNano)
@@ -789,25 +852,38 @@ object Plutus
           accountId,
           since = Some(monzo.Since(since match
             case ListTransactionsSince.Timestamp(instant) =>
-              toTimestamp(instant).format(TimestampFormat.DATE_TIME)
+              toTimestamp:
+                instant
+              .format:
+                TimestampFormat.DATE_TIME
 
             case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
               lastTransaction.id.value
           )),
-          before = Some(monzo.Before(toTimestamp(beforeForThisPage))),
-          limit = Some(monzo.Limit(100))
+          before = Some:
+            monzo.Before:
+              toTimestamp:
+                beforeForThisPage
+          ,
+          limit = Some:
+            monzo.Limit:
+              100
         )
         .map(_.transactions)
       otherPages <- thisPage.lastOption match
         case None =>
           val haveRequestedAllPages = beforeForThisPage == before
           if haveRequestedAllPages
-          then IO.pure(List.empty)
+          then
+            IO.pure:
+              List.empty
           else
             listTransactions(
               monzoApi,
               accountId,
-              since = ListTransactionsSince.Timestamp(beforeForThisPage),
+              since = ListTransactionsSince.Timestamp:
+                beforeForThisPage
+              ,
               before
             )
 
@@ -815,9 +891,9 @@ object Plutus
           listTransactions(
             monzoApi,
             accountId,
-            since = ListTransactionsSince.IdAndTimestamp(
+            since = ListTransactionsSince.IdAndTimestamp:
               LastTransaction(transaction.id, transaction.created)
-            ),
+            ,
             before
           )
     yield thisPage ++ otherPages
@@ -827,59 +903,80 @@ object Plutus
         (monzo.AccountId, List[monzo.Transaction])
       ]
   ): ofx.Ofx =
-    ofx.Ofx(
-      ofx.BankMessageSetResponse(
+    ofx.Ofx:
+      ofx.BankMessageSetResponse:
         accountsIdsAndTransactions.map: (accountId, transactions) =>
-          ofx.StatementTransactionsResponse(
+          ofx.StatementTransactionsResponse:
             ofx.StatementResponse(
-              ofx.BankAccountFrom(
-                ofx.AccountId(accountId.value)
-              ),
-              ofx.BankTransactionList(
+              ofx.BankAccountFrom:
+                ofx.AccountId:
+                  accountId.value
+              ,
+              ofx.BankTransactionList:
                 transactions.map: transaction =>
                   ofx.StatementTransaction(
-                    datePosted = ofx.Datetime(
+                    datePosted = ofx.Datetime:
                       Instant
                         .ofEpochSecond(
                           transaction.created.value.epochSecond,
                           transaction.created.value.nano
                         )
-                        .atZone(ZoneId.of("GMT"))
-                        .format(
-                          DateTimeFormatter.ofPattern("yyyyMMddHHmmss.SSS")
-                        )
-                    ),
-                    transactionAmount = ofx.TransactionAmount(
-                      BigDecimal(transaction.amount.value) / 100
-                    ),
-                    financialInstitutionId =
-                      ofx.FinancialInstitutionId(transaction.id.value),
+                        .atZone:
+                          ZoneId.of:
+                            "GMT"
+                        .format:
+                          DateTimeFormatter.ofPattern:
+                            "yyyyMMddHHmmss.SSS"
+                    ,
+                    transactionAmount = ofx.TransactionAmount:
+                      BigDecimal:
+                        transaction.amount.value
+                      / 100
+                    ,
+                    financialInstitutionId = ofx.FinancialInstitutionId:
+                      transaction.id.value
+                    ,
                     name = ofx.Name(
                       transaction.merchant
-                        .map(_.name)
-                        .orElse(transaction.counterparty.name)
-                        .map(_.value)
-                        .getOrElse(transaction.description.value)
+                        .map:
+                          _.name
+                        .orElse:
+                          transaction.counterparty.name
+                        .map:
+                          _.value
+                        .getOrElse:
+                          transaction.description.value
                     ),
-                    memo = Some(ofx.Memo(transaction.notes.value))
+                    memo = Some:
+                      ofx.Memo:
+                        transaction.notes.value
                   )
-              )
             )
-          )
-      )
-    )
 
   private def writeOfx[A](a: A, output: fs2.io.file.Path, verbosity: Verbosity)(
       implicit schema: Schema[A]
   ): IO[Unit] =
-    (fs2.Stream("ENCODING:UTF-8\n") ++
+    (fs2.Stream:
+      "ENCODING:UTF-8\n"
+    ++
       XmlDocument.documentEventifier
-        .eventify(XmlDocument.Encoder.fromSchema(schema).encode(a))
-        .through(fs2.data.xml.render.prettyPrint(width = 60, indent = 4)))
-      .through(fs2.io.file.Files[IO].writeUtf8(output))
+        .eventify:
+          XmlDocument.Encoder
+            .fromSchema:
+              schema
+            .encode:
+              a
+        .through:
+          fs2.data.xml.render.prettyPrint(width = 60, indent = 4)
+    )
+      .through:
+        fs2.io.file
+          .Files[IO]
+          .writeUtf8:
+            output
       .compile
       .drain *>
       IO.whenA(verbosity.ordinal >= Verbosity.DEFAULT.ordinal):
-        Console[IO].println(
-          fansi.Color.Green(s"Wrote OFX to $output.")
-        )
+        Console[IO].println:
+          fansi.Color.Green:
+            s"Wrote OFX to $output."
