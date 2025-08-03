@@ -324,7 +324,7 @@ object Plutus
                 exchangeAuthCodeAndCreateOrUpdateState
 
             case Some(state) =>
-              for
+              (for
                 _ <- (IO.whenA:
                   verbosity.ordinal >= Verbosity.DEFAULT.ordinal
                 ):
@@ -337,12 +337,18 @@ object Plutus
                   clientSecret = clientSecret,
                   refreshToken = Some(state.refreshToken)
                 )
-                // TODO: The refresh token may have expired, in which case we
-                // should request authorization again.
                 updatedState = state.copy(
                   refreshToken = createAccessTokenOutput.refreshToken
                 )
-              yield (updatedState, createAccessTokenOutput.accessToken)
+              yield (updatedState, createAccessTokenOutput.accessToken))
+                // The refresh token may have expired, in which case we should
+                // request authorization again.
+                .recoverWith: throwable =>
+                  Console[IO].println:
+                    fansi.Color.Red:
+                      s"Couldn't refresh tokens, requesting re-authorization... (received error: ${throwable.getMessage})"
+                  *>
+                    exchangeAuthCodeAndCreateOrUpdateState
         yield (state, accessToken)
 
   private def lessThanFiveMinutesAgo(
@@ -540,14 +546,14 @@ object Plutus
                   AuthorizationCodeQueryParamMatcher(code) +&
                   StateQueryParamMatcher(state) =>
                 authorizationCodeAndStateDeferred.complete(code -> state) *>
-                  (IO.whenA:
+                  ((IO.whenA:
                     verbosity.ordinal >= Verbosity.DEFAULT.ordinal
                   ):
-                  Console[IO].println:
-                    fansi.Color.Green:
-                      "Received auth code."
-                *> Ok:
-                  "Authorization code received. Return to Plutus."
+                    Console[IO].println:
+                      fansi.Color.Green:
+                        "Received auth code."
+                  ) *> Ok:
+                    "Authorization code received. Return to Plutus."
             .orNotFound
         )
       .withShutdownTimeout:
