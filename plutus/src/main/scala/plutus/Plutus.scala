@@ -445,25 +445,6 @@ object Plutus
   ): IO[Unit] = for
     attributes <- IO:
       toCfDictionary(
-        // TODO: The intent here is to always prompt for authentication, but
-        // including them results in an errSecMissingEntitlement error
-        // (https://developer.apple.com/documentation/security/errsecmissingentitlement?language=objc).
-        // macos.Forwarders.SecUseDataProtectionKeychain.value.unsafeToPtr ->
-        //   macos.Forwarders.CFBooleanTrue.value.unsafeToPtr,
-        // macos.Forwarders.SecAttrSynchronizable.value.unsafeToPtr ->
-        //   macos.Forwarders.CFBooleanTrue.value.unsafeToPtr,
-        // macos.Forwarders.SecAttrAccessControl.value.unsafeToPtr -> macos.functions
-        //   .SecAccessControlCreateWithFlags(
-        //     allocator = defaultAllocator,
-        //     protection =
-        //       macos.Forwarders.SecAttrAccessibleWhenUnlocked.value.unsafeToPtr,
-        //     flags = macos.aliases.CFOptionFlags(
-        //       macos.constants.kSecAccessControlUserPresence
-        //     ),
-        //     error = null
-        //   )
-        //   .value
-        //   .unsafeToPtr,
         macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
         macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
         macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(implicit z =>

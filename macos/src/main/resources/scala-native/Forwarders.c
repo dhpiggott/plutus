@@ -1,26 +1,6 @@
 #include <CoreFoundation/CFNumber.h>
 #include <Security/SecItem.h>
 
-// CFStringRef SecUseDataProtectionKeychain()
-// {
-//     return kSecUseDataProtectionKeychain;
-// }
-
-// CFStringRef SecAttrSynchronizable()
-// {
-//     return kSecAttrSynchronizable;
-// }
-
-// CFStringRef SecAttrAccessControl()
-// {
-//     return kSecAttrAccessControl;
-// }
-
-// CFStringRef SecAttrAccessibleWhenUnlocked()
-// {
-//     return kSecAttrAccessibleWhenUnlocked;
-// }
-
 CFStringRef SecClass()
 {
     return kSecClass;
