@@ -3,6 +3,7 @@ addSbtPlugin(
   "com.disneystreaming.smithy4s" % "smithy4s-sbt-codegen" % "0.18.41"
 )
 addSbtPlugin("com.eed3si9n" % "sbt-buildinfo" % "0.13.1")
+addSbtPlugin("com.eed3si9n" % "sbt-projectmatrix" % "0.11.0")
 addSbtPlugin("com.github.sbt" % "sbt-dynver" % "5.1.1")
 addSbtPlugin("com.indoorvivants" % "bindgen-sbt-plugin" % "0.1.5")
 addSbtPlugin("com.timushev.sbt" % "sbt-updates" % "0.6.3")
