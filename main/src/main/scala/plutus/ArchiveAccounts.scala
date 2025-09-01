@@ -7,10 +7,6 @@ import com.monovore.decline.*
 import porcupine.*
 import porcupine.Codec.*
 
-import java.nio.file.Path
-
-// TODO: Add unarchive (as an account level command) too.
-
 lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
@@ -21,18 +17,6 @@ lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
       input = fs2.io.file.Path.fromNioPath:
         input
     )
-
-lazy val inputOpts: Opts[Path] =
-  Opts
-    .option[Path](
-      "input",
-      help =
-        "Path to read GnuCash SQLite3 file from. If not specified defaults to Accounts.gnucash in the current directory."
-    )
-    .orElse:
-      Opts:
-        Path.of:
-          "Accounts.gnucash"
 
 def archiveAccounts(
     verbosity: Verbosity,
@@ -45,6 +29,7 @@ def archiveAccounts(
       given Database[IO] = db
       for
         root <- Account.root
+        // TODO: Make this one hidden.
         archiveSubroot <- root.createOrRetrieveArchiveParent(
           parent = root,
           name = "Archive"
@@ -66,15 +51,23 @@ def archiveAccounts(
               root = root,
               archiveSubroot = archiveSubroot
             )
+            // TODO: Handle the case where an archive equivalent already exists
+            // (which should be a conflict). This happens when a child was
+            // already archived, resulting in the creation an archive equivalent
+            // of the parent account we're now archiving. The correct handling
+            // is to move the children of the existing archive equivalent to be
+            // children of the "real" parent and to delete the newly redundant
+            // archive equivalent of the parent account we're moving.
             _ <- hiddenAccount.update(parent = archiveParent, hidden = false)
             archiveParentPath <- archiveParent.path
             _ <- (IO.whenA:
               verbosity.intValue >= Verbosity.DEFAULT.intValue
             ):
               IO.println:
-                s"Moved ${hiddenAccount.name} to ${archiveParentPath
-                    .map(_.name)
-                    .mkString("/")}."
+                fansi.Color.Green:
+                  s"Moved ${hiddenAccount.name} to ${archiveParentPath
+                      .map(_.name)
+                      .mkString("/")}."
           yield ()
         _ <- (IO.whenA:
           verbosity.intValue >= Verbosity.DEFAULT.intValue

@@ -5,6 +5,8 @@ import cats.syntax.all.*
 import com.monovore.decline.*
 import com.monovore.decline.effect.*
 
+import java.nio.file.Path
+
 object Plutus
     extends CommandIOApp(
       name = "plutus",
@@ -13,12 +15,25 @@ object Plutus
     ):
 
   override def main: Opts[IO[ExitCode]] =
-    (archiveAccountsOpts orElse exportTransactionsOpts).map:
-      _.as:
-        ExitCode.Success
+    (archiveAccountsOpts orElse exportTransactionsOpts orElse restoreAccountOpts)
+      .map:
+        _.as:
+          ExitCode.Success
 
 lazy val verbosityOpts: Opts[Verbosity] =
   silentOpts orElse verboseOpts orElse debugOpts withDefault Verbosity.DEFAULT
+
+lazy val inputOpts: Opts[Path] =
+  Opts
+    .option[Path](
+      "input",
+      help =
+        "Path to read GnuCash SQLite3 file from. If not specified defaults to Accounts.gnucash in the current directory."
+    )
+    .orElse:
+      Opts:
+        Path.of:
+          "Accounts.gnucash"
 
 lazy val silentOpts: Opts[Verbosity] =
   Opts
