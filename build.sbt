@@ -56,6 +56,28 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
     )
   )
 
+lazy val `jvm-terminal` = projectMatrix
+  .settings(dependencyUpdatesFailBuild := true)
+  .jvmPlatform(
+    scalaVersions = scalaVersions,
+    // TODO: Re-implement https://github.com/jline/jline3/tree/master/native as
+    // both a JNI module and an SN module, and use it directly.
+    Seq(
+      libraryDependencies += "org.jline" % "jline" % "3.30.0"
+    )
+  )
+
+lazy val `native-terminal` = projectMatrix
+  .settings(dependencyUpdatesFailBuild := true)
+  .jvmPlatform(
+    scalaVersions = scalaVersions,
+    // TODO: Re-implement https://github.com/jline/jline3/tree/master/native as
+    // both a JNI module and an SN module, and use it directly.
+    Seq(
+      libraryDependencies += "org.jline" % "jline" % "3.30.0"
+    )
+  )
+
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`)
   .enablePlugins(BuildInfoPlugin)
@@ -91,16 +113,16 @@ lazy val main = projectMatrix
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`jvm-noop-state-store`.jvm(scalaVersion))
+  .dependsOn(`jvm-noop-state-store`.jvm(scalaVersion), `jvm-terminal`.jvm(scalaVersion))
   .jvmPlatform(
     scalaVersions = scalaVersions,
     Seq(
       libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
       connectInput := true,
-      fork := true
+      // fork := true
     )
   )
-  .dependsOn(`native-macos-keychain-state-store`.native(scalaVersion))
+  .dependsOn(`native-macos-keychain-state-store`.native(scalaVersion), `native-terminal`.jvm(scalaVersion))
   .nativePlatform(
     scalaVersions = scalaVersions,
     Seq(
