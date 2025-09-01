@@ -58,7 +58,7 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
 
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`)
-  .enablePlugins(BuildInfoPlugin)
+  .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
   .settings(
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
@@ -86,7 +86,8 @@ lazy val main = projectMatrix
       "org.typelevel" %%% "cats-effect" % "3.6.3",
       "org.typelevel" %%% "cats-effect-kernel" % "3.6.3",
       "org.typelevel" %%% "cats-effect-std" % "3.6.3",
-      "org.typelevel" %%% "case-insensitive" % "1.4.2"
+      "org.typelevel" %%% "case-insensitive" % "1.4.2",
+      "tech.neander" %%% "cue4s" % "0.0.9"
     ),
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
