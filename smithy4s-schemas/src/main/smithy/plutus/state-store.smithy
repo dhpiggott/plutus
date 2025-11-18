@@ -17,10 +17,6 @@ service StateStore {
 }
 
 operation LoadState {
-    input := {
-        @required
-        verbosity: Verbosity
-    }
     output := {
         state: State
     }
@@ -33,9 +29,6 @@ operation SaveState {
 
         @required
         mode: SaveStateMode
-        
-        @required
-        verbosity: Verbosity
     }
 }
 

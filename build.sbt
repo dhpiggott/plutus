@@ -19,6 +19,18 @@ lazy val `smithy4s-schemas` = projectMatrix
   .jvmPlatform(scalaVersions = scalaVersions)
   .nativePlatform(scalaVersions = scalaVersions)
 
+lazy val `log` = projectMatrix
+  .dependsOn(`smithy4s-schemas`)
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies ++= Seq(
+      "org.typelevel" %%% "cats-effect" % "3.6.3",
+      "com.lihaoyi" %%% "fansi" % "0.4.0"
+    )
+  )
+  .jvmPlatform(scalaVersions = scalaVersions)
+  .nativePlatform(scalaVersions = scalaVersions)
+
 lazy val `jvm-noop-state-store` = projectMatrix
   .dependsOn(`smithy4s-schemas`)
   .settings(dependencyUpdatesFailBuild := true)
@@ -30,13 +42,13 @@ lazy val `jvm-noop-state-store` = projectMatrix
   )
 
 lazy val `native-macos-keychain-state-store` = projectMatrix
-  .dependsOn(`smithy4s-schemas`)
+  .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BindgenPlugin)
   .settings(dependencyUpdatesFailBuild := true)
   .nativePlatform(
     scalaVersions = scalaVersions,
     Seq(
-      bindgenVersion := "0.2.4",
+      bindgenVersion := "0.3.1",
       bindgenBindings += bindgen.interface
         .Binding(
           (Compile / sourceDirectory).value / "include" / "macos.h",
@@ -46,7 +58,6 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
         .withLogLevel(bindgen.interface.LogLevel.Info),
       libraryDependencies ++= Seq(
         "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
-        "com.lihaoyi" %%% "fansi" % "0.4.0",
         "org.typelevel" %%% "cats-effect" % "3.6.3"
       ),
       tpolecatExcludeOptions ++= Set(
@@ -57,7 +68,7 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
   )
 
 lazy val main = projectMatrix
-  .dependsOn(`smithy4s-schemas`)
+  .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -71,7 +82,6 @@ lazy val main = projectMatrix
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s-kernel" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
-      "com.lihaoyi" %%% "fansi" % "0.4.0",
       "com.monovore" %%% "decline" % "2.4.1",
       "com.monovore" %%% "decline-effect" % "2.4.1",
       "org.gnieh" %%% "fs2-data-text" % "1.12.0",

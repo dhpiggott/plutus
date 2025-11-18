@@ -12,15 +12,13 @@ lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
 ):
   (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
     restoreAccount(
-      verbosity,
       input = fs2.io.file.Path.fromNioPath:
         input
-    )
+    )(using verbosity)
 
 def restoreAccount(
-    verbosity: Verbosity,
     input: fs2.io.file.Path
-): IO[Unit] =
+)(implicit verbosity: Verbosity): IO[Unit] =
   Database
     .open[IO]:
       input.toString
@@ -36,34 +34,61 @@ def restoreAccount(
           _.pathString
         _ <- IO:
           assert(archivedAccountPaths.distinct == archivedAccountPaths)
-        path <- IO.blocking:
+        archivedAccountPath <- IO.blocking:
           Prompts.sync.use:
             _.singleChoice(
               "Choose account to restore:",
               archivedAccountPaths
             ).getOrThrow
-        account = archivedAccounts(
-          archivedAccountPaths.indexOf(path)
+        archivedAccount = archivedAccounts(
+          archivedAccountPaths.indexOf(archivedAccountPath)
         )
-        nonArchiveParent <- account.createOrRetrieveNonArchiveParent(
+        nonArchiveParent <- archivedAccount.createOrRetrieveNonArchiveParent(
           root = root,
           archiveSubroot = archiveSubroot
         )
-        // TODO: Handle the case where a non-archive equivalent already exists
-        // (which should be a conflict). This happens when a child was already
-        // restored, resulting in the creation of a non-archive equivalent of
-        // the parent account we're now restoring...
-        restoredAccount <- account.update(
-          parent = nonArchiveParent,
-          hidden = true
-        )
-        _ <- (IO.whenA:
-          verbosity.intValue >= Verbosity.DEFAULT.intValue
-        ):
-          for
-            restoredPath <- restoredAccount.pathString
-            _ <- IO.println:
-              fansi.Color.Green:
-                s"Restored $path to $restoredPath."
-          yield ()
+        restoredAccount <- nonArchiveParent
+          .child(archivedAccount.name)
+          .flatMap:
+            case None =>
+              // The common case: there is no existing non-archive mirror, so we
+              // simply move the account out of the archive structure back to
+              // its original location.
+              archivedAccount.update(
+                parent = nonArchiveParent,
+                hidden = true
+              )
+
+            case Some(existingNonArchiveVersion) =>
+              // TODO: Test this case.
+              //
+              // This is the case where a non-archive mirror already exists.
+              // This happens when a child was already restored, resulting in
+              // the creation of a non-archive mirror of the parent account
+              // we're now restoring.
+              //
+              // The correct handling is to move the children of the account
+              // we're now restoring to be children of the existing non-archive
+              // mirror (their original parent) and to delete the newly
+              // redundant archive mirror.
+              for
+                _ <- warn:
+                  s"Non-archive mirror for $archivedAccountPath already exists."
+                existingChildren <- archivedAccount.directChildren
+                _ <- (IO.traverse:
+                  existingChildren
+                ): child =>
+                  for
+                    _ <- child.update(
+                      parent = existingNonArchiveVersion
+                    )
+                    childPath <- child.pathString
+                    _ <- warn:
+                      s"Moved $childPath to $existingNonArchiveVersion."
+                  yield ()
+                _ <- archivedAccount.delete
+              yield existingNonArchiveVersion
+        restoredPath <- restoredAccount.pathString
+        _ <- info:
+          s"Restored $archivedAccountPath to $restoredPath."
       yield ()

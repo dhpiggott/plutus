@@ -166,7 +166,7 @@ final case class Account(
   )(using db: Database[IO]): IO[Account] =
     parent.flatMap:
       case None =>
-        // The root account is it's own archive equivalent.
+        // The root account is its own archive mirror.
         IO.pure:
           this
 
@@ -198,7 +198,7 @@ final case class Account(
   )(using db: Database[IO]): IO[Account] =
     parent.flatMap:
       case None =>
-        // The root account is it's own archive equivalent.
+        // The root account is its own archive mirror.
         IO.pure:
           this
 
@@ -223,7 +223,7 @@ final case class Account(
           )
         yield nonArchiveParent
 
-  def update(parent: Account, hidden: Boolean)(using
+  def update(parent: Account, hidden: Boolean = hidden)(using
       db: Database[IO]
   ): IO[Account] =
     db.execute(
@@ -286,6 +286,15 @@ final case class Account(
         hidden,
         placeholder
       )
+    )
+
+  def delete(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        delete from accounts
+        where guid = $text
+      """.command,
+      args = guid
     )
 
   def directChildren(using db: Database[IO]): IO[List[Account]] =
