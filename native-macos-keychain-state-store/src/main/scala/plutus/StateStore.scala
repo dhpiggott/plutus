@@ -17,77 +17,80 @@ import scala.concurrent.duration.*
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
 
-object StateStore extends StateStore[IO]:
+object StateStore:
 
-  override def loadState(verbosity: Verbosity): IO[LoadStateOutput] = for
-    errorOrMaybeDataString <- IO:
-      val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
-      (macos.functions
-        .SecItemCopyMatching(
-          query = toCfDictionary(
-            macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-            macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-            macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
-          ),
-          result = resultPtr
+  def apply(implicit verbosity: Verbosity): StateStore[IO] =
+    new StateStoreImpl()
+
+final class StateStoreImpl(implicit verbosity: Verbosity)
+    extends StateStore[IO]:
+
+  override def loadState(): IO[LoadStateOutput] =
+    for
+      errorOrMaybeDataString <- IO:
+        val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
+        (macos.functions
+          .SecItemCopyMatching(
+            query = toCfDictionary(
+              macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+              macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+              macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
+            ),
+            result = resultPtr
+          )
+          .value match
+          case macos.constants.errSecItemNotFound =>
+            Right:
+              None
+
+          case macos.constants.errSecSuccess =>
+            Right:
+              Some:
+                fromCString:
+                  macos.functions.CFStringGetCStringPtr(
+                    theString = macos.functions
+                      .CFStringCreateFromExternalRepresentation(
+                        alloc = defaultAllocator,
+                        data = macos.aliases.CFDataRef:
+                          (!resultPtr).value.unsafeToPtr
+                        ,
+                        encoding = utf8
+                      ),
+                    encoding = utf8
+                  )
+
+          case other =>
+            Left:
+              Error:
+                s"Load state failed with status $other."
         )
-        .value match
-        case macos.constants.errSecItemNotFound =>
-          Right:
-            None
+      maybeState <- errorOrMaybeDataString match
+        case Right(None) =>
+          IO.none
 
-        case macos.constants.errSecSuccess =>
-          Right:
-            Some:
-              fromCString:
-                macos.functions.CFStringGetCStringPtr(
-                  theString = macos.functions
-                    .CFStringCreateFromExternalRepresentation(
-                      alloc = defaultAllocator,
-                      data = macos.aliases.CFDataRef:
-                        (!resultPtr).value.unsafeToPtr
-                      ,
-                      encoding = utf8
-                    ),
-                  encoding = utf8
-                )
+        case Right(Some(dataString)) =>
+          IO.fromEither:
+            Json.read[State]:
+              Blob:
+                dataString
+          .option
 
-        case other =>
-          Left:
-            Error:
-              s"Load state failed with status $other."
-      )
-    maybeState <- errorOrMaybeDataString match
-      case Right(None) =>
-        IO.none
-
-      case Right(Some(dataString)) =>
-        IO.fromEither:
-          Json.read[State]:
-            Blob:
-              dataString
-        .option
-
-      case Left(error) =>
-        IO.raiseError:
-          error
-    _ <- (IO.whenA:
-      verbosity.intValue >= Verbosity.DEFAULT.intValue
-    ):
-      IO.println:
+        case Left(error) =>
+          IO.raiseError:
+            error
+      _ <-
         if maybeState.isDefined then
-          fansi.Color.Green:
+          info:
             "Loaded state from Keychain."
         else
-          fansi.Color.Red:
+          warn:
             "Couldn't load state from Keychain."
-  yield LoadStateOutput:
-    maybeState
+    yield LoadStateOutput:
+      maybeState
 
   override def saveState(
       state: State,
-      mode: SaveStateMode,
-      verbosity: Verbosity
+      mode: SaveStateMode
   ): IO[Unit] = for
     attributes <- IO:
       toCfDictionary(
@@ -139,12 +142,8 @@ object StateStore extends StateStore[IO]:
       IO.raiseError:
         Error:
           s"Save state failed with status $osStatus."
-    _ <- (IO.whenA:
-      verbosity.intValue >= Verbosity.DEFAULT.intValue
-    ):
-      IO.println:
-        fansi.Color.Green:
-          "Saved state to Keychain."
+    _ <- info:
+      "Saved state to Keychain."
   yield ()
 
   val defaultAllocator: macos.aliases.CFAllocatorRef =

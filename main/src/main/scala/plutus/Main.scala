@@ -21,7 +21,7 @@ object Plutus
           ExitCode.Success
 
 lazy val verbosityOpts: Opts[Verbosity] =
-  silentOpts orElse verboseOpts orElse debugOpts withDefault Verbosity.DEFAULT
+  silentOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
 
 lazy val inputOpts: Opts[Path] =
   Opts
@@ -41,22 +41,37 @@ lazy val silentOpts: Opts[Verbosity] =
     .as:
       Verbosity.SILENT
 
+lazy val warnOpts: Opts[Verbosity] =
+  Opts
+    .flag("warn", help = "Log warnings only.")
+    .as:
+      Verbosity.WARN
+
+lazy val infoOpts: Opts[Verbosity] =
+  Opts
+    .flag(
+      "info",
+      help = "Default log level."
+    )
+    .as:
+      Verbosity.INFO
+
 lazy val verboseOpts: Opts[Verbosity] =
   Opts
     .flag(
       "verbose",
       help =
-        "Log decoded account and transaction entities. This includes default logging."
+        "Log decoded account and transaction entities. This includes --info logging."
     )
     .as:
       Verbosity.VERBOSE
 
-lazy val debugOpts: Opts[Verbosity] =
+lazy val traceOpts: Opts[Verbosity] =
   Opts
     .flag(
-      "debug",
+      "trace",
       help =
         "Log raw HTTP requests and responses. This includes --verbose logging."
     )
     .as:
-      Verbosity.DEBUG
+      Verbosity.TRACE

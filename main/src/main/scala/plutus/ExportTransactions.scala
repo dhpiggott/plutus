@@ -33,14 +33,13 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   (verbosityOpts, sinceOpts, beforeOpts, outputOpts, dryRunOpts).tupled.map:
     (verbosity, since, before, output, dryRun) =>
       exportTransactions(
-        verbosity,
         since,
         before,
         output = fs2.io.file.Path.fromNioPath:
           output
         ,
         dryRun
-      )
+      )(using verbosity)
 
 lazy val sinceOpts: Opts[Option[Instant]] =
   Opts
@@ -81,12 +80,11 @@ lazy val dryRunOpts: Opts[Boolean] =
     .orFalse
 
 def exportTransactions(
-    verbosity: Verbosity,
     since: Option[Instant],
     before: Option[Instant],
     output: fs2.io.file.Path,
     dryRun: Boolean
-): IO[Unit] = for
+)(implicit verbosity: Verbosity): IO[Unit] = for
   _ <- fs2.io.file
     .Files[IO]
     .exists:
@@ -97,8 +95,7 @@ def exportTransactions(
       IO.raiseWhen(_):
         Error:
           s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
-  loadStateOutput <- StateStore.loadState:
-    verbosity
+  loadStateOutput <- StateStore.loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
       finiteDuration.toMillis
@@ -140,7 +137,7 @@ def exportTransactions(
     .default[IO]
     .build
     .map:
-      if verbosity.intValue >= Verbosity.DEBUG.intValue
+      if verbosity.intValue >= Verbosity.TRACE.intValue
       then
         org.http4s.client.middleware.Logger.colored(
           logHeaders = true,
@@ -152,7 +149,6 @@ def exportTransactions(
         (state, accessToken) <- accessToken(
           client,
           loadStateOutput.state,
-          verbosity,
           now,
           requireStrongCustomerAuthentication
         )
@@ -170,7 +166,6 @@ def exportTransactions(
             exportTransactions(
               _,
               state,
-              verbosity,
               since match
                 case None =>
                   ExportTransactionsSince
@@ -187,8 +182,7 @@ def exportTransactions(
     updatedState,
     mode =
       if loadStateOutput.state.isEmpty then SaveStateMode.CREATE
-      else SaveStateMode.UPDATE,
-    verbosity
+      else SaveStateMode.UPDATE
   )
 yield ()
 
@@ -197,10 +191,9 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 def accessToken(
     client: Client[IO],
     maybeState: Option[State],
-    verbosity: Verbosity,
     now: Instant,
     requireStrongCustomerAuthentication: Boolean
-): IO[(State, monzo.AccessToken)] =
+)(implicit verbosity: Verbosity): IO[(State, monzo.AccessToken)] =
   TokenExchangeBuilder:
     monzo.TokenApi
   .client:
@@ -228,7 +221,6 @@ def accessToken(
         exchangeAuthCodeAndCreateOrUpdateState = for
           createAccessTokenOutput <- exchangeAuthCode(
             monzoTokenApi,
-            verbosity,
             clientId,
             clientSecret
           )
@@ -254,7 +246,7 @@ def accessToken(
         (state, accessToken) <- maybeState match
           case None =>
             (IO.whenA:
-              verbosity.intValue >= Verbosity.DEFAULT.intValue
+              verbosity.intValue >= Verbosity.INFO.intValue
             ):
               IO.println:
                 fansi.Color.Yellow:
@@ -268,7 +260,7 @@ def accessToken(
                 now
               ) =>
             (IO.whenA:
-              verbosity.intValue >= Verbosity.DEFAULT.intValue
+              verbosity.intValue >= Verbosity.INFO.intValue
             ):
               IO.println:
                 fansi.Color.Yellow:
@@ -278,12 +270,8 @@ def accessToken(
 
           case Some(state) =>
             (for
-              _ <- (IO.whenA:
-                verbosity.intValue >= Verbosity.DEFAULT.intValue
-              ):
-                IO.println:
-                  fansi.Color.Green:
-                    "Existing refresh token found, exchanging for tokens…"
+              _ <- info:
+                "Existing refresh token found, exchanging for tokens…"
               createAccessTokenOutput <- monzoTokenApi.createAccessToken(
                 grantType = monzo.GrantType.REFRESH_TOKEN,
                 clientId = clientId,
@@ -297,9 +285,8 @@ def accessToken(
               // The refresh token may have expired, in which case we should
               // request authorization again.
               .recoverWith: throwable =>
-                IO.println:
-                  fansi.Color.Red:
-                    s"Couldn't refresh tokens, requesting re-authorization… (received error: ${throwable.getMessage})"
+                warn:
+                  s"Couldn't refresh tokens, requesting re-authorization… (received error: ${throwable.getMessage})"
                 *>
                   exchangeAuthCodeAndCreateOrUpdateState
       yield (state, accessToken)
@@ -325,10 +312,9 @@ def lessThanFiveMinutesAgo(
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
-    verbosity: Verbosity,
     clientId: monzo.ClientId,
     clientSecret: monzo.ClientSecret
-): IO[monzo.CreateAccessTokenOutput] = for
+)(implicit verbosity: Verbosity): IO[monzo.CreateAccessTokenOutput] = for
   authorizationCodeAndStateDeferred <- Deferred[
     IO,
     (monzo.AuthorizationCode, monzo.State)
@@ -336,7 +322,7 @@ def exchangeAuthCode(
   createAccessTokenOutput <- EmberServerBuilder
     .default[IO]
     .withHttpApp:
-      (if verbosity.intValue >= Verbosity.DEBUG.intValue
+      (if verbosity.intValue >= Verbosity.TRACE.intValue
        then
          org.http4s.server.middleware.Logger.httpApp[IO](
            logHeaders = true,
@@ -349,12 +335,8 @@ def exchangeAuthCode(
                 AuthorizationCodeQueryParamMatcher(code) +&
                 StateQueryParamMatcher(state) =>
               authorizationCodeAndStateDeferred.complete(code -> state) *>
-                ((IO.whenA:
-                  verbosity.intValue >= Verbosity.DEFAULT.intValue
-                ):
-                  IO.println:
-                    fansi.Color.Green:
-                      "Received auth code."
+                (info:
+                  "Received auth code."
                 ) *> Ok:
                   "Authorization code received. Return to Plutus."
           .orNotFound
@@ -364,12 +346,8 @@ def exchangeAuthCode(
     .build
     .use: _ =>
       for
-        _ <- (IO.whenA:
-          verbosity.intValue >= Verbosity.DEFAULT.intValue
-        ):
-          IO.println:
-            fansi.Color.Green:
-              "Requesting authorization…"
+        _ <- info:
+          "Requesting authorization…"
         redirectUri = monzo.RedirectUri:
           "http://localhost:8080/oauth/callback"
         generatedState <- requestAuthorization(clientId, redirectUri)
@@ -378,12 +356,8 @@ def exchangeAuthCode(
         _ <- IO.raiseUnless(generatedState == receivedState):
           Error:
             s"generatedState != receivedState ($generatedState != ${receivedState})"
-        _ <- (IO.whenA:
-          verbosity.intValue >= Verbosity.DEFAULT.intValue
-        ):
-          IO.println:
-            fansi.Color.Green:
-              "Exchanging auth code for tokens…"
+        _ <- info:
+          "Exchanging auth code for tokens…"
         createAccessTokenOutput <- monzoTokenApi.createAccessToken(
           grantType = monzo.GrantType.AUTHORIZATION_CODE,
           clientId = clientId,
@@ -467,18 +441,13 @@ enum ExportTransactionsSince:
 def exportTransactions(
     monzoApi: monzo.Api[IO],
     state: State,
-    verbosity: Verbosity,
     since: ExportTransactionsSince,
     before: Instant,
     output: fs2.io.file.Path,
     dryRun: Boolean
-): IO[State] = for
-  _ <- (IO.whenA:
-    verbosity.intValue >= Verbosity.DEFAULT.intValue
-  ):
-    IO.println:
-      fansi.Color.Green:
-        "Listing accounts…"
+)(implicit verbosity: Verbosity): IO[State] = for
+  _ <- info:
+    "Listing accounts…"
   accounts <- monzoApi
     .listAccounts()
     .map:
@@ -495,12 +464,8 @@ def exportTransactions(
         .collect:
           case (account, Some(since)) =>
             (account, ListTransactionsSince.IdAndTimestamp(since))
-  _ <- (IO.whenA:
-    verbosity.intValue >= Verbosity.DEFAULT.intValue
-  ):
-    IO.println:
-      fansi.Color.Green:
-        "Listing transactions for accounts…"
+  _ <- info:
+    "Listing transactions for accounts…"
   accountsAndTransactions <- accountsAndSince
     .traverse: (account, since) =>
       listTransactions(
@@ -539,8 +504,7 @@ def exportTransactions(
     toOfx:
       materialAccountIdsAndTransactions
     ,
-    output,
-    verbosity
+    output
   )
   updatedState =
     if dryRun then state
@@ -698,9 +662,8 @@ def toOfx(
 
 def writeOfx(
     content: ofx.Ofx,
-    output: fs2.io.file.Path,
-    verbosity: Verbosity
-): IO[Unit] =
+    output: fs2.io.file.Path
+)(implicit verbosity: Verbosity): IO[Unit] =
   ((fs2.Stream:
     "ENCODING:UTF-8\n"
   )
@@ -722,7 +685,5 @@ def writeOfx(
           output
     .compile
     .drain *>
-    IO.whenA(verbosity.intValue >= Verbosity.DEFAULT.intValue):
-      IO.println:
-        fansi.Color.Green:
-          s"Wrote OFX to $output."
+    info:
+      s"Wrote OFX to $output."

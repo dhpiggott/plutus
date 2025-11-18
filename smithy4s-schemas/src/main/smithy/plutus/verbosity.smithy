@@ -4,7 +4,8 @@ namespace plutus
 
 enum Verbosity {
   SILENT
-  DEFAULT
+  WARN
+  INFO
   VERBOSE
-  DEBUG
+  TRACE
 }
