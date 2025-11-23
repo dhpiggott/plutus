@@ -70,6 +70,10 @@ final case class Account(
     parentGuid: Option[String],
     code: Option[String],
     description: Option[String],
+    // FIXME: Per https://wiki.gnucash.org/wiki/images/8/86/Gnucash_erd.png,
+    // these are implemented as slots. Only updating these accounts columns
+    // results in inconsistencies between Plutus' view of the world and GnuCash
+    // itself.
     hidden: Boolean,
     placeholder: Boolean
 ):
@@ -166,7 +170,7 @@ final case class Account(
   )(using db: Database[IO]): IO[Account] =
     parent.flatMap:
       case None =>
-        // The root account is it's own archive equivalent.
+        // The root account is its own archive mirror.
         IO.pure:
           this
 
@@ -198,7 +202,7 @@ final case class Account(
   )(using db: Database[IO]): IO[Account] =
     parent.flatMap:
       case None =>
-        // The root account is it's own archive equivalent.
+        // The root account is its own archive mirror.
         IO.pure:
           this
 
@@ -223,32 +227,28 @@ final case class Account(
           )
         yield nonArchiveParent
 
-  def update(parent: Account, hidden: Boolean)(using
-      db: Database[IO]
-  ): IO[Account] =
+  def update(parent: Account)(using db: Database[IO]): IO[Account] =
     db.execute(
       query = sql"""
         update accounts
-        set parent_guid = $text,
-            hidden = $boolean
+        set parent_guid = $text
         where guid = $text
       """.command,
-      args = (parent.guid, hidden, guid)
+      args = (parent.guid, guid)
     ).as(
       copy(
-        parentGuid = Some(parent.guid),
-        hidden = hidden
+        parentGuid = Some(parent.guid)
       )
     )
 
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(
       query = sql"""
-      select *
-      from accounts
-      where parent_guid = $text
-        and name = $text
-    """.query:
+        select *
+        from accounts
+        where parent_guid = $text
+          and name = $text
+      """.query:
         Account.decoder
       ,
       args = (guid, name)
@@ -288,6 +288,15 @@ final case class Account(
       )
     )
 
+  def delete(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        delete from accounts
+        where guid = $text
+      """.command,
+      args = guid
+    )
+
   def directChildren(using db: Database[IO]): IO[List[Account]] =
     db.execute(
       query = sql"""
@@ -304,10 +313,10 @@ final case class Account(
   def parent(using db: Database[IO]): IO[Option[Account]] =
     db.option(
       query = sql"""
-            select *
-            from accounts
-            where guid = ${text.opt}
-          """.query:
+        select *
+        from accounts
+        where guid = ${text.opt}
+      """.query:
         Account.decoder
       ,
       args = parentGuid

@@ -11,15 +11,13 @@ lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
 ):
   (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
     archiveAccounts(
-      verbosity,
       input = fs2.io.file.Path.fromNioPath:
         input
-    )
+    )(using verbosity)
 
 def archiveAccounts(
-    verbosity: Verbosity,
     input: fs2.io.file.Path
-): IO[Unit] =
+)(using verbosity: Verbosity): IO[Unit] =
   Database
     .open[IO]:
       input.toString
@@ -28,49 +26,63 @@ def archiveAccounts(
       for
         root <- Account.root
         archiveSubroot <- Account.createOrRetrieveArchiveSubroot
-        _ <- (IO.whenA:
-          verbosity.intValue >= Verbosity.DEFAULT.intValue
-        ):
-          IO.println:
-            fansi.Color.Green:
-              "Finding hidden accounts…"
+        // TODO: Change this to accept a single account to archive, like
+        // restore-account does?
+        _ <- info:
+          "Finding hidden accounts…"
         hiddenAccounts <- root.hiddenChildren:
           archiveSubroot
         _ <- (IO.traverse:
           hiddenAccounts
         ): hiddenAccount =>
           for
+            hiddenAccountPath <- hiddenAccount.pathString
             archiveParent <- hiddenAccount.createOrRetrieveArchiveParent(
               root = root,
               archiveSubroot = archiveSubroot
             )
-            // TODO: Handle the case where an archive equivalent already exists
-            // (which should be a conflict). This happens when a child was
-            // already archived, resulting in the creation of an archive
-            // equivalent of the parent account we're now archiving. The correct
-            // handling is to move the children of the existing archive
-            // equivalent to be children of the "real" parent and to delete the
-            // newly redundant archive equivalent of the parent account we're
-            // moving.
-            archivedAccount <- hiddenAccount.update(
-              parent = archiveParent,
-              hidden = false
-            )
-            _ <- (IO.whenA:
-              verbosity.intValue >= Verbosity.DEFAULT.intValue
-            ):
+            maybeExistingArchiveMirror <- archiveParent
+              .child(hiddenAccount.name)
+            _ <- (IO.traverse:
+              maybeExistingArchiveMirror
+            ): existingArchiveMirror =>
+              // This is the case where an archive mirror already exists. This
+              // happens when a child was already archived, resulting in the
+              // creation of an archive mirror of the parent account we're now
+              // archiving.
+              //
+              // The correct handling is to move the children of the existing
+              // archive mirror to be children of the account we're now
+              // archiving (their original parent) and to delete the newly
+              // redundant archive mirror (because it will be replaced when the
+              // original parent is moved into its place).
               for
-                path <- hiddenAccount.pathString
-                archivedPath <- archivedAccount.pathString
-                _ <- IO.println:
-                  fansi.Color.Green:
-                    s"Archived $path to $archivedPath."
+                _ <- warn:
+                  s"Archive mirror for $hiddenAccountPath already exists."
+                existingChildren <- existingArchiveMirror.directChildren
+                _ <- (IO.traverse:
+                  existingChildren
+                ): child =>
+                  for
+                    _ <- child.update(
+                      parent = hiddenAccount
+                    )
+                    childPath <- child.pathString
+                    _ <- warn:
+                      s"Moved $childPath to $hiddenAccountPath."
+                  yield ()
+                existingArchiveMirrorPath <- existingArchiveMirror.pathString
+                _ <- existingArchiveMirror.delete
+                _ <- warn:
+                  s"Deleted existing archive mirror $existingArchiveMirrorPath."
               yield ()
+            archivedAccount <- hiddenAccount.update(
+              parent = archiveParent
+            )
+            archivedPath <- archivedAccount.pathString
+            _ <- info:
+              s"Archived $hiddenAccountPath to $archivedPath."
           yield ()
-        _ <- (IO.whenA:
-          verbosity.intValue >= Verbosity.DEFAULT.intValue
-        ):
-          IO.println:
-            fansi.Color.Green:
-              "Finished archiving hidden accounts."
+        _ <- info:
+          "Finished archiving hidden accounts."
       yield ()

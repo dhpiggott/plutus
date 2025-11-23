@@ -3,8 +3,9 @@ $version: "2"
 namespace plutus
 
 enum Verbosity {
-  SILENT
-  DEFAULT
+  ERROR
+  WARN
+  INFO
   VERBOSE
-  DEBUG
+  TRACE
 }

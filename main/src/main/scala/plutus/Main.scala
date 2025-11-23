@@ -21,7 +21,7 @@ object Plutus
           ExitCode.Success
 
 lazy val verbosityOpts: Opts[Verbosity] =
-  silentOpts orElse verboseOpts orElse debugOpts withDefault Verbosity.DEFAULT
+  errorOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
 
 lazy val inputOpts: Opts[Path] =
   Opts
@@ -35,28 +35,41 @@ lazy val inputOpts: Opts[Path] =
         Path.of:
           "Accounts.gnucash"
 
-lazy val silentOpts: Opts[Verbosity] =
+lazy val errorOpts: Opts[Verbosity] =
   Opts
-    .flag("silent", help = "Don't log anything.")
+    .flag("error", help = "Log errors only.")
     .as:
-      Verbosity.SILENT
+      Verbosity.ERROR
+
+lazy val warnOpts: Opts[Verbosity] =
+  Opts
+    .flag("warn", help = "Log warnings only. Implies --error.")
+    .as:
+      Verbosity.WARN
+
+lazy val infoOpts: Opts[Verbosity] =
+  Opts
+    .flag(
+      "info",
+      help = "Default log level. Implies --warn."
+    )
+    .as:
+      Verbosity.INFO
 
 lazy val verboseOpts: Opts[Verbosity] =
   Opts
     .flag(
       "verbose",
-      help =
-        "Log decoded account and transaction entities. This includes default logging."
+      help = "Log decoded account and transaction entities. Implies --info."
     )
     .as:
       Verbosity.VERBOSE
 
-lazy val debugOpts: Opts[Verbosity] =
+lazy val traceOpts: Opts[Verbosity] =
   Opts
     .flag(
-      "debug",
-      help =
-        "Log raw HTTP requests and responses. This includes --verbose logging."
+      "trace",
+      help = "Log raw HTTP requests and responses. Implies --verbose."
     )
     .as:
-      Verbosity.DEBUG
+      Verbosity.TRACE
