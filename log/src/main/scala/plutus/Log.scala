@@ -1,7 +1,7 @@
 package plutus
 
-import cats.effect.*
 import cats.*
+import cats.effect.*
 
 def error(message: String)(using verbosity: Verbosity): IO[Unit] =
   log(Verbosity.ERROR):

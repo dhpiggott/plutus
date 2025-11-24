@@ -219,31 +219,32 @@ def accessToken(
 
           case Some(state) =>
             IO.pure(state.clientId, state.clientSecret)
-        exchangeAuthCodeAndCreateOrUpdateState = for
-          createAccessTokenOutput <- exchangeAuthCode(
-            monzoTokenApi,
-            clientId,
-            clientSecret
-          )
-          authorizedAt = AuthorizedAt:
-            Timestamp(now.getEpochSecond, now.getNano)
-          refreshToken = createAccessTokenOutput.refreshToken
-          state = maybeState match
-            case None =>
-              State(
-                clientId,
-                clientSecret,
-                authorizedAt,
-                refreshToken,
-                lastTransactions = Map.empty
-              )
+        exchangeAuthCodeAndCreateOrUpdateState =
+          for
+            createAccessTokenOutput <- exchangeAuthCode(
+              monzoTokenApi,
+              clientId,
+              clientSecret
+            )
+            authorizedAt = AuthorizedAt:
+              Timestamp(now.getEpochSecond, now.getNano)
+            refreshToken = createAccessTokenOutput.refreshToken
+            state = maybeState match
+              case None =>
+                State(
+                  clientId,
+                  clientSecret,
+                  authorizedAt,
+                  refreshToken,
+                  lastTransactions = Map.empty
+                )
 
-            case Some(state) =>
-              state.copy(
-                authorizedAt = authorizedAt,
-                refreshToken = refreshToken
-              )
-        yield (state, createAccessTokenOutput.accessToken)
+              case Some(state) =>
+                state.copy(
+                  authorizedAt = authorizedAt,
+                  refreshToken = refreshToken
+                )
+          yield (state, createAccessTokenOutput.accessToken)
         (state, accessToken) <- maybeState match
           case None =>
             warn:
@@ -328,8 +329,7 @@ def exchangeAuthCode(
                 StateQueryParamMatcher(state) =>
               authorizationCodeAndStateDeferred.complete(code -> state) *>
                 (verbose:
-                  "Received auth code."
-                ) *>
+                  "Received auth code.") *>
                 Ok:
                   "Authorization code received. Return to Plutus."
           .orNotFound
@@ -558,8 +558,7 @@ def listTransactions(
               TimestampFormat.DATE_TIME
 
           case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
-            lastTransaction.id.value
-        )),
+            lastTransaction.id.value)),
         before = Some:
           monzo.Before:
             toTimestamp:
