@@ -2,10 +2,13 @@ package plutus
 
 import cats.effect.*
 
-object StateStore extends StateStore[IO]:
+object StateStore:
 
-  def apply(using verbosity: Verbosity): StateStore[IO] =
-    this
+  def make(using verbosity: Verbosity): StateStore[IO] =
+    val _ = verbosity
+    new StateStoreImpl()
+
+final class StateStoreImpl extends StateStore[IO]:
 
   override def loadState(): IO[LoadStateOutput] =
     IO.pure:

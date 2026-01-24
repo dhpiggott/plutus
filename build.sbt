@@ -67,42 +67,51 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
     )
   )
 
+lazy val `jvm-gnucash` = projectMatrix
+  .dependsOn(`smithy4s-schemas`, log)
+  .settings(
+    dependencyUpdatesFailBuild := true
+  )
+  .jvmPlatform(
+    scalaVersions = scalaVersions,
+    Seq(
+      libraryDependencies ++= Seq(
+        "co.fs2" %%% "fs2-io" % "3.12.2",
+        "com.armanbilge" %%% "porcupine" % "0.0.1",
+        "com.monovore" %%% "decline-effect" % "2.4.1",
+        "tech.neander" %%% "cue4s" % "0.0.9"
+      )
+    )
+  )
+
+lazy val `native-noop-gnucash` = projectMatrix
+  .dependsOn(`smithy4s-schemas`)
+  .settings(dependencyUpdatesFailBuild := true)
+  .nativePlatform(
+    scalaVersions = scalaVersions,
+    Seq(
+      libraryDependencies += "com.monovore" %%% "decline" % "2.4.1"
+    )
+  )
+
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
   .settings(
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
-      "co.fs2" %%% "fs2-core" % "3.12.2",
-      "co.fs2" %%% "fs2-io" % "3.12.2",
-      "com.armanbilge" %%% "porcupine" % "0.0.1",
-      "com.disneystreaming.smithy4s" %%% "smithy4s-cats" % smithy4sVersion.value,
-      "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
-      "com.disneystreaming.smithy4s" %%% "smithy4s-http4s-kernel" % smithy4sVersion.value,
-      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
-      "com.monovore" %%% "decline" % "2.4.1",
-      "com.monovore" %%% "decline-effect" % "2.4.1",
-      "org.gnieh" %%% "fs2-data-text" % "1.12.0",
-      "org.gnieh" %%% "fs2-data-xml" % "1.12.0",
-      "org.http4s" %%% "http4s-client" % "0.23.33",
-      "org.http4s" %%% "http4s-core" % "0.23.33",
-      "org.http4s" %%% "http4s-dsl" % "0.23.33",
       "org.http4s" %%% "http4s-ember-client" % "0.23.33",
-      "org.http4s" %%% "http4s-ember-server" % "0.23.33",
-      "org.http4s" %%% "http4s-server" % "0.23.33",
-      "org.typelevel" %% "cats-core" % "2.13.0",
-      "org.typelevel" %%% "cats-effect" % "3.6.3",
-      "org.typelevel" %%% "cats-effect-kernel" % "3.6.3",
-      "org.typelevel" %%% "cats-effect-std" % "3.6.3",
-      "org.typelevel" %%% "case-insensitive" % "1.4.2",
-      "tech.neander" %%% "cue4s" % "0.0.9"
+      "org.http4s" %%% "http4s-ember-server" % "0.23.33"
     ),
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`jvm-noop-state-store`.jvm(scalaVersion))
+  .dependsOn(
+    `jvm-noop-state-store`.jvm(scalaVersion),
+    `jvm-gnucash`.jvm(scalaVersion)
+  )
   .jvmPlatform(
     scalaVersions = scalaVersions,
     Seq(
@@ -111,7 +120,10 @@ lazy val main = projectMatrix
       fork := true
     )
   )
-  .dependsOn(`native-macos-keychain-state-store`.native(scalaVersion))
+  .dependsOn(
+    `native-macos-keychain-state-store`.native(scalaVersion),
+    `native-noop-gnucash`.native(scalaVersion)
+  )
   .nativePlatform(
     scalaVersions = scalaVersions,
     Seq(

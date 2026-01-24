@@ -19,7 +19,7 @@ import scala.scalanative.unsigned.*
 
 object StateStore:
 
-  def apply(using verbosity: Verbosity): StateStore[IO] =
+  def make(using verbosity: Verbosity): StateStore[IO] =
     new StateStoreImpl()
 
 final class StateStoreImpl(using verbosity: Verbosity) extends StateStore[IO]:

@@ -95,7 +95,8 @@ def exportTransactions(
       IO.raiseWhen(_):
         Error:
           s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
-  loadStateOutput <- StateStore.loadState()
+  stateStore = StateStore.make
+  loadStateOutput <- stateStore.loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
       finiteDuration.toMillis
@@ -177,7 +178,7 @@ def exportTransactions(
               dryRun
             )
       yield updatedState
-  _ <- StateStore.saveState(
+  _ <- stateStore.saveState(
     updatedState,
     mode =
       if loadStateOutput.state.isEmpty then SaveStateMode.CREATE
