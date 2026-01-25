@@ -79,7 +79,7 @@ lazy val `jvm-gnucash` = projectMatrix
         "co.fs2" %%% "fs2-io" % "3.12.2",
         "com.armanbilge" %%% "porcupine" % "0.0.1",
         "com.monovore" %%% "decline-effect" % "2.4.1",
-        "tech.neander" %%% "cue4s" % "0.0.9"
+        "tech.neander" %%% "cue4s" % "0.0.10"
       )
     )
   )
@@ -102,6 +102,7 @@ lazy val main = projectMatrix
     libraryDependencies ++= Seq(
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
+      "com.monovore" %%% "decline-effect" % "2.4.1",
       "org.http4s" %%% "http4s-ember-client" % "0.23.33",
       "org.http4s" %%% "http4s-ember-server" % "0.23.33"
     ),
@@ -146,4 +147,4 @@ lazy val main = projectMatrix
 
 lazy val scalaVersions = Seq(scalaVersion)
 
-lazy val scalaVersion = "3.7.1"
+lazy val scalaVersion = "3.7.4"
