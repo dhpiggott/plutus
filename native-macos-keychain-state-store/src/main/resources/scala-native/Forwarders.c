@@ -1,6 +1,7 @@
 #include <CoreFoundation/CFNumber.h>
 #include <Security/SecItem.h>
 
+// TODO: Replace these with https://sn-bindgen.indoorvivants.com/semantics/index.html#some-macro-definitions-are-supported.
 CFStringRef SecClass()
 {
     return kSecClass;
