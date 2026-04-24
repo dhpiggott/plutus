@@ -67,8 +67,38 @@ lazy val `native-macos-keychain-state-store` = projectMatrix
     )
   )
 
+lazy val porcupine = projectMatrix
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies ++= Seq(
+      "org.typelevel" %%% "cats-effect" % "3.6.3",
+      "co.fs2" %%% "fs2-core" % "3.12.2",
+      "org.scodec" %%% "scodec-bits" % "1.2.1"
+    )
+  )
+  .jvmPlatform(scalaVersions = scalaVersions)
+
+lazy val `porcupine-jvm` = projectMatrix
+  .dependsOn(porcupine)
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies += "org.xerial" % "sqlite-jdbc" % "3.47.1.0"
+  )
+  .jvmPlatform(scalaVersions = scalaVersions)
+
+lazy val `porcupine-native` = projectMatrix
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies ++= Seq(
+      "org.typelevel" %%% "cats-effect" % "3.6.3",
+      "co.fs2" %%% "fs2-core" % "3.9.4",
+      "org.scodec" %%% "scodec-bits" % "1.1.38"
+    )
+  )
+  .nativePlatform(scalaVersions = scalaVersions)
+
 lazy val `jvm-gnucash` = projectMatrix
-  .dependsOn(`smithy4s-schemas`, log)
+  .dependsOn(`smithy4s-schemas`, log, `porcupine-jvm`)
   .settings(
     dependencyUpdatesFailBuild := true
   )
@@ -77,7 +107,6 @@ lazy val `jvm-gnucash` = projectMatrix
     Seq(
       libraryDependencies ++= Seq(
         "co.fs2" %%% "fs2-io" % "3.12.2",
-        "com.armanbilge" %%% "porcupine" % "0.0.1",
         "com.monovore" %%% "decline-effect" % "2.4.1",
         "tech.neander" %%% "cue4s" % "0.0.10"
       )

@@ -1,5 +1,6 @@
 .bloop/
 .bsp/
+.claude/
 .metals/
 .sbt/
 .smithy.lsp.log
