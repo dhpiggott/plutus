@@ -5,12 +5,7 @@ import cats.syntax.all.*
 import com.monovore.decline.*
 import porcupine.*
 
-import java.nio.file.Path
-
-def archiveAccountsOpts(
-    verbosityOpts: Opts[Verbosity],
-    inputOpts: Opts[Path]
-): Opts[IO[Unit]] = Opts.subcommand(
+lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
 ):

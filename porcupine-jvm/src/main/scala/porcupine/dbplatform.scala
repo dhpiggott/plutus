@@ -26,11 +26,15 @@ import java.sql.DriverManager
 import java.sql.Types
 
 private abstract class DatabasePlatform:
-  def open[F[_]](filename: String)(implicit F: Async[F]): Resource[F, Database[F]] =
+  def open[F[_]](
+      filename: String
+  )(implicit F: Async[F]): Resource[F, Database[F]] =
     for
       mutex <- Resource.eval(Mutex[F])
       connection <- Resource
-        .fromAutoCloseable(F.blocking(DriverManager.getConnection("jdbc:sqlite:" + filename)))
+        .fromAutoCloseable(
+          F.blocking(DriverManager.getConnection("jdbc:sqlite:" + filename))
+        )
     yield new AbstractDatabase[F]:
       def prepare[A, B](query: Query[A, B]): Resource[F, Statement[F, A, B]] =
         Resource
@@ -46,10 +50,14 @@ private abstract class DatabasePlatform:
                   .make {
                     F.blocking {
                       query.encoder.encode(args).zipWithIndex.foreach {
-                        case (LiteValue.Null, i) => statement.setNull(i + 1, Types.NULL)
-                        case (LiteValue.Integer(value), i) => statement.setLong(i + 1, value)
-                        case (LiteValue.Real(value), i) => statement.setDouble(i + 1, value)
-                        case (LiteValue.Text(value), i) => statement.setString(i + 1, value)
+                        case (LiteValue.Null, i) =>
+                          statement.setNull(i + 1, Types.NULL)
+                        case (LiteValue.Integer(value), i) =>
+                          statement.setLong(i + 1, value)
+                        case (LiteValue.Real(value), i) =>
+                          statement.setDouble(i + 1, value)
+                        case (LiteValue.Text(value), i) =>
+                          statement.setString(i + 1, value)
                         case (LiteValue.Blob(value), i) =>
                           statement.setBytes(i + 1, value.toArray)
                       }
@@ -71,12 +79,16 @@ private abstract class DatabasePlatform:
                             while i < maxRows && results.next() do
                               rows += (1 to columnCount).view.map { j =>
                                 results.getObject(j) match
-                                  case null => LiteValue.Null
-                                  case i: Integer => LiteValue.Integer(i.longValue())
-                                  case l: java.lang.Long => LiteValue.Integer(l.longValue())
-                                  case d: java.lang.Double => LiteValue.Real(d.doubleValue())
-                                  case s: String => LiteValue.Text(s)
-                                  case b: Array[Byte] => LiteValue.Blob(ByteVector.view(b))
+                                  case null       => LiteValue.Null
+                                  case i: Integer =>
+                                    LiteValue.Integer(i.longValue())
+                                  case l: java.lang.Long =>
+                                    LiteValue.Integer(l.longValue())
+                                  case d: java.lang.Double =>
+                                    LiteValue.Real(d.doubleValue())
+                                  case s: String      => LiteValue.Text(s)
+                                  case b: Array[Byte] =>
+                                    LiteValue.Blob(ByteVector.view(b))
                               }.toList
                               i += 1
 

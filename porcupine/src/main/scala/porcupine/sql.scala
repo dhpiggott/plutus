@@ -26,7 +26,11 @@ import scala.quoted.Exprs
 import scala.quoted.Quotes
 import scala.quoted.Varargs
 
-final class Query[A, B](val sql: String, val encoder: Encoder[A], val decoder: Decoder[B])
+final class Query[A, B](
+    val sql: String,
+    val encoder: Encoder[A],
+    val decoder: Decoder[B]
+)
 
 object Query:
 
@@ -37,9 +41,11 @@ object Query:
 final class Fragment[A](val fragment: String, val encoder: Encoder[A]):
   def command: Query[A, Unit] = Query(fragment, encoder, Codec.unit)
 
-  def query[B](decoder: Decoder[B]): Query[A, B] = Query(fragment, encoder, decoder)
+  def query[B](decoder: Decoder[B]): Query[A, B] =
+    Query(fragment, encoder, decoder)
 
-  def apply(a: A): Fragment[Unit] = Fragment(fragment, encoder.contramap(_ => a))
+  def apply(a: A): Fragment[Unit] =
+    Fragment(fragment, encoder.contramap(_ => a))
 
   def stripMargin: Fragment[A] = Fragment(fragment.stripMargin, encoder)
   def stripMargin(marginChar: Char): Fragment[A] =
@@ -64,31 +70,36 @@ extension (inline sc: StringContext)
 
 private def sqlImpl(
     scExpr: Expr[StringContext],
-    argsExpr: Expr[Seq[Any]],
+    argsExpr: Expr[Seq[Any]]
 )(using Quotes): Expr[Any] =
 
   val parts = scExpr match
-    case '{ StringContext(${ Varargs(Exprs(parts)) }*) } => parts.toList.map(Expr(_))
+    case '{ StringContext(${ Varargs(Exprs(parts)) }*) } =>
+      parts.toList.map(Expr(_))
     case _ => List.empty
 
   val args = Varargs.unapply(argsExpr).toList.flatMap(_.toList)
 
   val fragment = parts.zipAll(args, '{ "" }, '{ "" }).foldLeft('{ "" }) {
-    case ('{ $acc: String }, ('{ $p: String }, '{ $s: String })) => '{ $acc + $p + $s }
-    case ('{ $acc: String }, ('{ $p: String }, '{ $e: Encoder[t] })) => '{ $acc + $p + "?" }
+    case ('{ $acc: String }, ('{ $p: String }, '{ $s: String })) =>
+      '{ $acc + $p + $s }
+    case ('{ $acc: String }, ('{ $p: String }, '{ $e: Encoder[t] })) =>
+      '{ $acc + $p + "?" }
     case ('{ $acc: String }, ('{ $p: String }, '{ $f: Fragment[t] })) =>
       '{ $acc + $p + $f.fragment }
     case _ => sys.error("porcupine pricked itself")
   }
 
   val encoder = args.collect {
-    case '{ $e: Encoder[t] } => e
+    case '{ $e: Encoder[t] }  => e
     case '{ $f: Fragment[t] } => '{ $f.encoder }
   } match
-    case Nil => '{ Codec.unit }
+    case Nil                        => '{ Codec.unit }
     case '{ $e: Encoder[t] } :: Nil => e
-    case many =>
-      many.foldRight[Expr[Any]]('{ ContravariantMonoidal[Encoder].point(EmptyTuple) }) {
+    case many                       =>
+      many.foldRight[Expr[Any]]('{
+        ContravariantMonoidal[Encoder].point(EmptyTuple)
+      }) {
         case ('{ $head: Encoder[h] }, '{ $tail: Encoder[EmptyTuple] }) =>
           '{
             ($head, $tail).contramapN[h *: EmptyTuple] { case h *: EmptyTuple =>

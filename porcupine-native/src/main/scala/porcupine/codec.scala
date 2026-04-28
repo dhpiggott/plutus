@@ -32,7 +32,7 @@ trait Encoder[A]:
 
   def either[B](right: Encoder[B]): Encoder[Either[A, B]] = new:
     def encode(aorb: Either[A, B]) = aorb match
-      case Left(a) => outer.encode(a)
+      case Left(a)  => outer.encode(a)
       case Right(b) => right.encode(b)
 
   def opt: Encoder[Option[A]] =
@@ -66,11 +66,12 @@ trait Decoder[A]:
 
 object Decoder:
   extension [H](head: Decoder[H])
-    def *:[T <: Tuple](tail: Decoder[T]): Decoder[H *: T] = (head, tail).mapN(_ *: _)
+    def *:[T <: Tuple](tail: Decoder[T]): Decoder[H *: T] =
+      (head, tail).mapN(_ *: _)
 
   extension [A <: Tuple](fa: Decoder[A])
     def pmap[P <: Product](using
-        m: Mirror.ProductOf[P] { type MirroredElemTypes = A },
+        m: Mirror.ProductOf[P] { type MirroredElemTypes = A }
     ): Decoder[P] = fa.map(m.fromProduct(_))
 
   given Applicative[Decoder] = new:
@@ -106,35 +107,40 @@ object Codec:
     def encode(l: Long) = LiteValue.Integer(l) :: Nil
     def decode = StateT {
       case LiteValue.Integer(l) :: tail => Right((tail, l))
-      case other => Left(new RuntimeException(s"Expected integer, got ${other.headOption}"))
+      case other                        =>
+        Left(new RuntimeException(s"Expected integer, got ${other.headOption}"))
     }
 
   val real: Codec[Double] = new:
     def encode(d: Double) = LiteValue.Real(d) :: Nil
     def decode = StateT {
       case LiteValue.Real(d) :: tail => Right((tail, d))
-      case other => Left(new RuntimeException(s"Expected real, got ${other.headOption}"))
+      case other                     =>
+        Left(new RuntimeException(s"Expected real, got ${other.headOption}"))
     }
 
   val text: Codec[String] = new:
     def encode(s: String) = LiteValue.Text(s) :: Nil
     def decode = StateT {
       case LiteValue.Text(s) :: tail => Right((tail, s))
-      case other => Left(new RuntimeException(s"Expected text, got ${other.headOption}"))
+      case other                     =>
+        Left(new RuntimeException(s"Expected text, got ${other.headOption}"))
     }
 
   val blob: Codec[ByteVector] = new:
     def encode(b: ByteVector) = LiteValue.Blob(b) :: Nil
     def decode = StateT {
       case LiteValue.Blob(b) :: tail => Right((tail, b))
-      case other => Left(new RuntimeException(s"Expected blob, got ${other.headOption}"))
+      case other                     =>
+        Left(new RuntimeException(s"Expected blob, got ${other.headOption}"))
     }
 
   val `null`: Codec[None.type] = new:
     def encode(n: None.type) = LiteValue.Null :: Nil
     def decode = StateT {
       case LiteValue.Null :: tail => Right((tail, None))
-      case other => Left(new RuntimeException(s"Expected NULL, got ${other.headOption}"))
+      case other                  =>
+        Left(new RuntimeException(s"Expected NULL, got ${other.headOption}"))
     }
 
   def unit: Codec[Unit] = new:

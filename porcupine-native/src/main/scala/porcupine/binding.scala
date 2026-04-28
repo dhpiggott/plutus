@@ -22,8 +22,8 @@ import scala.scalanative.unsafe.*
 private object sqlite3:
   type sqlite3 = CStruct0
   type sqlite3_stmt = CStruct0
-  type sqlite3_int64 = CLong
-  type sqlite3_uint64 = CLong
+  type sqlite3_int64 = CLongLong
+  type sqlite3_uint64 = CUnsignedLongLong
 
   final val SQLITE_OK = 0
   final val SQLITE_ROW = 100
@@ -47,7 +47,7 @@ private object sqlite3:
       filename: Ptr[CChar],
       ppDb: Ptr[Ptr[sqlite3]],
       flags: CInt,
-      zVfs: Ptr[CChar],
+      zVfs: Ptr[CChar]
   ): CInt = extern
 
   def sqlite3_close(db: Ptr[sqlite3]): CInt = extern
@@ -57,7 +57,7 @@ private object sqlite3:
       zSql: Ptr[CChar],
       nByte: CInt,
       ppStmt: Ptr[Ptr[sqlite3_stmt]],
-      pzTail: Ptr[Ptr[CChar]],
+      pzTail: Ptr[Ptr[CChar]]
   ): CInt = extern
 
   def sqlite3_finalize(pStmt: Ptr[sqlite3_stmt]): CInt = extern
@@ -67,24 +67,24 @@ private object sqlite3:
       index: CInt,
       value: Ptr[Byte],
       length: sqlite3_uint64,
-      lifetime: Ptr[Byte],
+      lifetime: Ptr[Byte]
   ): CInt = extern
 
   def sqlite3_bind_double(
       stmt: Ptr[sqlite3_stmt],
       index: CInt,
-      value: CDouble,
+      value: CDouble
   ): CInt = extern
 
   def sqlite3_bind_int64(
       stmt: Ptr[sqlite3_stmt],
       index: CInt,
-      value: sqlite3_int64,
+      value: sqlite3_int64
   ): CInt = extern
 
   def sqlite3_bind_null(
       stmt: Ptr[sqlite3_stmt],
-      index: CInt,
+      index: CInt
   ): CInt = extern
 
   def sqlite3_bind_text(
@@ -92,18 +92,22 @@ private object sqlite3:
       index: CInt,
       value: Ptr[CChar],
       length: CInt,
-      lifetime: Ptr[Byte],
+      lifetime: Ptr[Byte]
   ): CInt = extern
 
   def sqlite3_step(stmt: Ptr[sqlite3_stmt]): CInt = extern
 
-  def sqlite3_column_blob(stmt: Ptr[sqlite3_stmt], iCol: CInt): Ptr[Byte] = extern
+  def sqlite3_column_blob(stmt: Ptr[sqlite3_stmt], iCol: CInt): Ptr[Byte] =
+    extern
 
-  def sqlite3_column_double(stmt: Ptr[sqlite3_stmt], iCol: CInt): CDouble = extern
+  def sqlite3_column_double(stmt: Ptr[sqlite3_stmt], iCol: CInt): CDouble =
+    extern
 
-  def sqlite3_column_int64(stmt: Ptr[sqlite3_stmt], iCol: CInt): sqlite3_int64 = extern
+  def sqlite3_column_int64(stmt: Ptr[sqlite3_stmt], iCol: CInt): sqlite3_int64 =
+    extern
 
-  def sqlite3_column_text(stmt: Ptr[sqlite3_stmt], iCol: CInt): Ptr[CChar] = extern
+  def sqlite3_column_text(stmt: Ptr[sqlite3_stmt], iCol: CInt): Ptr[CChar] =
+    extern
 
   def sqlite3_column_bytes(stmt: Ptr[sqlite3_stmt], iCol: CInt): CInt = extern
 
