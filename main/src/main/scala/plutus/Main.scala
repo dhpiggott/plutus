@@ -5,8 +5,6 @@ import cats.syntax.all.*
 import com.monovore.decline.*
 import com.monovore.decline.effect.*
 
-import java.nio.file.Path
-
 object Plutus
     extends CommandIOApp(
       name = "plutus",
@@ -25,16 +23,18 @@ object Plutus
 lazy val verbosityOpts: Opts[Verbosity] =
   errorOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
 
-lazy val inputOpts: Opts[Path] =
+lazy val inputOpts: Opts[fs2.io.file.Path] =
   Opts
-    .option[Path](
+    .option[java.nio.file.Path](
       "input",
       help =
         "Path to read GnuCash SQLite3 file from. If not specified defaults to Accounts.gnucash in the current directory."
     )
+    .map:
+      fs2.io.file.Path.fromNioPath
     .orElse:
       Opts:
-        Path.of:
+        fs2.io.file.Path:
           "Accounts.gnucash"
 
 lazy val errorOpts: Opts[Verbosity] =

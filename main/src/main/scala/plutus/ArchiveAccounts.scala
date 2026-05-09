@@ -10,10 +10,7 @@ lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   help = "Archive hidden accounts."
 ):
   (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
-    archiveAccounts(
-      input = fs2.io.file.Path.fromNioPath:
-        input
-    )(using verbosity)
+    archiveAccounts(input)(using verbosity)
 
 def archiveAccounts(
     input: fs2.io.file.Path

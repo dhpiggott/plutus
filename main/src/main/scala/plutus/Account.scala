@@ -47,18 +47,6 @@ object Account:
   * commodity_guid text(32), commodity_scu integer NOT NULL, non_std_scu integer
   * NOT NULL, parent_guid text(32), code text(2048), description text(2048),
   * hidden integer, placeholder integer );
-  *
-  * @param guid
-  * @param name
-  * @param accountType
-  * @param commodityGuid
-  * @param commodityScu
-  * @param nonStdScu
-  * @param parentGuid
-  * @param code
-  * @param description
-  * @param hidden
-  * @param placeholder
   */
 final case class Account(
     guid: String,
@@ -131,21 +119,6 @@ final case class Account(
         child.hiddenChildren:
           archiveSubroot
   yield hiddenChildren.flatten
-
-  // TODO: Find a use for this, or remove it.
-  def visibleChildren(using db: Database[IO]): IO[List[Account]] = for
-    directChildren <- directChildren
-    visibleChildren <- directChildren.traverse: child =>
-      if child.hidden then
-        // Children of a hidden account are implicitly hidden, i.e. we don't
-        // want to include them in the results, hence we don't recurse (or
-        // include this child).
-        IO.pure:
-          Nil
-      else
-        child.visibleChildren.map:
-          _ :+ child
-  yield visibleChildren.flatten
 
   def path(using db: Database[IO]): IO[List[Account]] =
     parent.flatMap:

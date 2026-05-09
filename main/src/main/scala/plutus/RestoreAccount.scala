@@ -6,15 +6,14 @@ import com.monovore.decline.*
 import cue4s.*
 import porcupine.*
 
+import scala.collection.immutable.SortedMap
+
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
   help = "Restore archived account."
 ):
   (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
-    restoreAccount(
-      input = fs2.io.file.Path.fromNioPath:
-        input
-    )(using verbosity)
+    restoreAccount(input)(using verbosity)
 
 def restoreAccount(
     input: fs2.io.file.Path
@@ -28,21 +27,24 @@ def restoreAccount(
         root <- Account.root
         archiveSubroot <- Account.createOrRetrieveArchiveSubroot
         archivedAccounts <- archiveSubroot.allChildren
-        archivedAccountPaths <- (IO.traverse:
+        archivedAccountsByPath <- (IO.traverse:
           archivedAccounts
+        ): account =>
+          account.pathString.map(_ -> account)
+        .map:
+          SortedMap.from
+        _ <- IO.raiseUnless(
+          archivedAccountsByPath.size == archivedAccounts.size
         ):
-          _.pathString
-        _ <- IO:
-          assert(archivedAccountPaths.distinct == archivedAccountPaths)
+          Error:
+            "Archived accounts have duplicate paths."
         archivedAccountPath <- IO.blocking:
           Prompts.sync.use:
             _.singleChoice(
               "Choose account to restore:",
-              archivedAccountPaths
+              archivedAccountsByPath.keys.toList
             ).getOrThrow
-        archivedAccount = archivedAccounts(
-          archivedAccountPaths.indexOf(archivedAccountPath)
-        )
+        archivedAccount = archivedAccountsByPath(archivedAccountPath)
         nonArchiveParent <- archivedAccount.createOrRetrieveNonArchiveParent(
           root = root,
           archiveSubroot = archiveSubroot

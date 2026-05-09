@@ -18,11 +18,10 @@ import smithy4s.time.Timestamp
 import smithy4s.xml.*
 
 import java.lang.Runtime
-import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
 import java.time.Period
-import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import scala.concurrent.duration.*
 
@@ -35,9 +34,7 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
       exportTransactions(
         since,
         before,
-        output = fs2.io.file.Path.fromNioPath:
-          output
-        ,
+        output,
         dryRun
       )(using verbosity)
 
@@ -59,16 +56,18 @@ lazy val beforeOpts: Opts[Option[Instant]] =
     )
     .orNone
 
-lazy val outputOpts: Opts[Path] =
+lazy val outputOpts: Opts[fs2.io.file.Path] =
   Opts
-    .option[Path](
+    .option[java.nio.file.Path](
       "output",
       help =
         "Path to write OFX file to. If not specified defaults to monzo.ofx in the current directory."
     )
+    .map:
+      fs2.io.file.Path.fromNioPath
     .orElse:
       Opts:
-        Path.of:
+        fs2.io.file.Path:
           "monzo.ofx"
 
 lazy val dryRunOpts: Opts[Boolean] =
@@ -121,11 +120,8 @@ def exportTransactions(
       since
         .getOrElse:
           state.lastTransactions.values
-            .map: lastTransaction =>
-              Instant.ofEpochSecond(
-                lastTransaction.created.value.epochSecond,
-                lastTransaction.created.value.nano
-              )
+            .map:
+              _.created.value.asInstant
             .min
         .isBefore:
           now
@@ -188,6 +184,14 @@ yield ()
 
 lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
+extension (timestamp: Timestamp)
+  def asInstant: Instant =
+    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
+
+extension (instant: Instant)
+  def asSmithyTimestamp: Timestamp =
+    Timestamp(instant.getEpochSecond, instant.getNano)
+
 def accessToken(
     client: Client[IO],
     maybeState: Option[State],
@@ -228,7 +232,7 @@ def accessToken(
               clientSecret
             )
             authorizedAt = AuthorizedAt:
-              Timestamp(now.getEpochSecond, now.getNano)
+              now.asSmithyTimestamp
             refreshToken = createAccessTokenOutput.refreshToken
             state = maybeState match
               case None =>
@@ -290,16 +294,12 @@ def lessThanFiveMinutesAgo(
     authorizedAt: AuthorizedAt,
     now: Instant
 ): Boolean =
-  val authorizedAtInstant = Instant.ofEpochSecond(
-    authorizedAt.value.epochSecond,
-    authorizedAt.value.nano
-  )
   val fiveMinutesAgo = now.minus:
     Duration.ofMinutes:
       5
   val leeway = Duration.ofSeconds:
     10
-  authorizedAtInstant
+  authorizedAt.value.asInstant
     .plus:
       leeway
     .isAfter:
@@ -533,10 +533,7 @@ def listTransactions(
         instant
 
       case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
-        Instant.ofEpochSecond(
-          lastTransaction.created.value.epochSecond,
-          lastTransaction.created.value.nano
-        )
+        lastTransaction.created.value.asInstant
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
     val maxPermittedBeforeForThisPage = sinceInstant.plus:
@@ -545,24 +542,19 @@ def listTransactions(
     val mustPaginate = before.isAfter:
       maxPermittedBeforeForThisPage
     if mustPaginate then maxPermittedBeforeForThisPage else before
-  def toTimestamp(instant: Instant): Timestamp =
-    Timestamp(instant.getEpochSecond, instant.getNano)
   for
     thisPage <- monzoApi
       .listTransactions(
         accountId,
         since = Some(monzo.Since(since match
           case ListTransactionsSince.Timestamp(instant) =>
-            toTimestamp:
-              instant
-            .formatDateTime
+            instant.asSmithyTimestamp.formatDateTime
 
           case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
             lastTransaction.id.value)),
         before = Some:
           monzo.Before:
-            toTimestamp:
-              beforeForThisPage
+            beforeForThisPage.asSmithyTimestamp
         ,
         limit = Some:
           monzo.Limit:
@@ -597,6 +589,10 @@ def listTransactions(
         )
   yield thisPage ++ otherPages
 
+val ofxDateTimeFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern:
+    "yyyyMMddHHmmss.SSS"
+
 def toOfx(
     accountsIdsAndTransactions: List[
       (monzo.AccountId, List[monzo.Transaction])
@@ -615,17 +611,11 @@ def toOfx(
               transactions.map: transaction =>
                 ofx.StatementTransaction(
                   datePosted = ofx.Datetime:
-                    Instant
-                      .ofEpochSecond(
-                        transaction.created.value.epochSecond,
-                        transaction.created.value.nano
-                      )
-                      .atZone:
-                        ZoneId.of:
-                          "GMT"
+                    transaction.created.value.asInstant
+                      .atOffset:
+                        ZoneOffset.UTC
                       .format:
-                        DateTimeFormatter.ofPattern:
-                          "yyyyMMddHHmmss.SSS"
+                        ofxDateTimeFormatter
                   ,
                   transactionAmount = ofx.TransactionAmount:
                     BigDecimal:
