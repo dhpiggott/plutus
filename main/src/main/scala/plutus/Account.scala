@@ -160,68 +160,33 @@ final case class Account(
           "/"
     )
 
-  def createOrRetrieveArchiveParent(
-      root: Account,
-      archiveSubroot: Account
+  // (from, to) is the boundary pair: when `from` would appear as a parent it
+  // is replaced by `to`. Archiving uses (root, archiveSubroot); restoring
+  // uses (archiveSubroot, root).
+  def createOrRetrieveMirrorParent(
+      from: Account,
+      to: Account
   )(using db: Database[IO]): IO[Account] =
     parent.flatMap:
       case None =>
-        // The root account is its own archive mirror.
         IO.pure:
           this
 
-      // The parent being the root account means this is a subroot account (i.e.
-      // one of Assets/Expenses/Equity/Income/Liabilities), and needs to become
-      // a child of the Archive subroot.
-      case Some(parent) if parent == root =>
+      case Some(parent) if parent == from =>
         IO.pure:
-          archiveSubroot
+          to
 
-      // This is somewhere else in the branch between the subroot and the leaf,
-      // so we need to find or create the mirror of the parent within the
-      // archive subtree.
       case Some(parent) =>
         for
-          parentArchiveParent <- parent.createOrRetrieveArchiveParent(
-            root = root,
-            archiveSubroot = archiveSubroot
+          grandparentMirror <- parent.createOrRetrieveMirrorParent(
+            from = from,
+            to = to
           )
-          archiveParent <- parent.createOrRetrieveMirror(
-            parent = parentArchiveParent,
+          mirrorParent <- parent.createOrRetrieveMirror(
+            parent = grandparentMirror,
             name = parent.name
           )
-        yield archiveParent
-
-  def createOrRetrieveNonArchiveParent(
-      root: Account,
-      archiveSubroot: Account
-  )(using db: Database[IO]): IO[Account] =
-    parent.flatMap:
-      case None =>
-        // The root account is its own archive mirror.
-        IO.pure:
-          this
-
-      // The archive subroot is the one we're looking for, and it needs to
-      // disappear from the chain.
-      case Some(parent) if parent == archiveSubroot =>
-        IO.pure:
-          root
-
-      // This is somewhere else in the branch between the subroot and the leaf,
-      // so we need to find or create the mirror of the parent within the
-      // non-archive subtree.
-      case Some(parent) =>
-        for
-          parentNonArchiveParent <- parent.createOrRetrieveNonArchiveParent(
-            root = root,
-            archiveSubroot = archiveSubroot
-          )
-          nonArchiveParent <- parent.createOrRetrieveMirror(
-            parent = parentNonArchiveParent,
-            name = parent.name
-          )
-        yield nonArchiveParent
+        yield mirrorParent
 
   def update(parent: Account)(using db: Database[IO]): IO[Account] =
     db.execute(

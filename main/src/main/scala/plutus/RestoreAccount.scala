@@ -45,9 +45,9 @@ def restoreAccount(
               archivedAccountsByPath.keys.toList
             ).getOrThrow
         archivedAccount = archivedAccountsByPath(archivedAccountPath)
-        nonArchiveParent <- archivedAccount.createOrRetrieveNonArchiveParent(
-          root = root,
-          archiveSubroot = archiveSubroot
+        nonArchiveParent <- archivedAccount.createOrRetrieveMirrorParent(
+          from = archiveSubroot,
+          to = root
         )
         maybeExistingNonArchiveMirror <- nonArchiveParent
           .child(archivedAccount.name)

@@ -34,9 +34,9 @@ def archiveAccounts(
         ): hiddenAccount =>
           for
             hiddenAccountPath <- hiddenAccount.pathString
-            archiveParent <- hiddenAccount.createOrRetrieveArchiveParent(
-              root = root,
-              archiveSubroot = archiveSubroot
+            archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
+              from = root,
+              to = archiveSubroot
             )
             maybeExistingArchiveMirror <- archiveParent
               .child(hiddenAccount.name)
