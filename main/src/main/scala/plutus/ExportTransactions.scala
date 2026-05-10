@@ -461,7 +461,7 @@ def exportTransactions(
   _ <- info:
     "Listing transactions for accounts…"
   accountsAndTransactions <- accountsAndSince
-    .traverse: (account, since) =>
+    .parTraverse: (account, since) =>
       listTransactions(
         monzoApi,
         accountId = account.id,
