@@ -6,12 +6,7 @@ import com.monovore.decline.*
 import cue4s.*
 import porcupine.*
 
-import java.nio.file.Path
-
-def restoreAccountOpts(
-    verbosityOpts: Opts[Verbosity],
-    inputOpts: Opts[Path]
-): Opts[IO[Unit]] = Opts.subcommand(
+lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
   help = "Restore archived account."
 ):

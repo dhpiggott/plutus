@@ -95,7 +95,7 @@ final class StateStoreImpl(using verbosity: Verbosity) extends StateStore[IO]:
       toCfDictionary(
         macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
         macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-        macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(implicit z =>
+        macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(
           macos.functions
             .CFStringCreateExternalRepresentation(
               alloc = defaultAllocator,
@@ -198,8 +198,8 @@ final class StateStoreImpl(using verbosity: Verbosity) extends StateStore[IO]:
       entries.length.toUInt
     entries.zipWithIndex.foreach: (entry, index) =>
       val (key, value) = entry
-      keys.update(index.toULong, key)
-      values.update(index.toULong, value)
+      keys.update(index, key)
+      values.update(index, value)
     macos.functions.CFDictionaryCreate(
       allocator = defaultAllocator,
       keys = keys,

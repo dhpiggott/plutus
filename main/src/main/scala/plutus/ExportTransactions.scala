@@ -11,10 +11,10 @@ import org.http4s.ember.client.EmberClientBuilder
 import org.http4s.ember.server.EmberServerBuilder
 import org.http4s.headers.*
 import org.http4s.implicits.*
-import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.http4s.*
 import smithy4s.json.*
+import smithy4s.time.Timestamp
 import smithy4s.xml.*
 
 import java.lang.Runtime
@@ -555,8 +555,7 @@ def listTransactions(
           case ListTransactionsSince.Timestamp(instant) =>
             toTimestamp:
               instant
-            .format:
-              TimestampFormat.DATE_TIME
+            .formatDateTime
 
           case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
             lastTransaction.id.value)),
