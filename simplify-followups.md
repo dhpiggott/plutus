@@ -10,15 +10,13 @@ in the "Simplify main module" commit that introduces this file.
 2. Hard-coded `http://localhost:8080/oauth/callback` redirect URI in
    `ExportTransactions.scala:345` (port `8080` also implicit in
    `EmberServerBuilder.default`).
-3. `BearerAuthMiddleware` takes `String` instead of `monzo.AccessToken` — the
-   newtype is unwrapped at the call site.
-4. `Log.log`'s unused `S: Show[A]` parameter — `IO.println(a)` already does
+3. `Log.log`'s unused `S: Show[A]` parameter — `IO.println(a)` already does
    the right thing via its own default.
-5. JVM noop StateStore `val _ = verbosity` discard — harmless suppression
+4. JVM noop StateStore `val _ = verbosity` discard — harmless suppression
    matching the cross-platform `using` interface.
-6. TOCTOU on `Files[IO].exists(output)` precheck at
+5. TOCTOU on `Files[IO].exists(output)` precheck at
    `ExportTransactions.scala:88` — cosmetic given the network-bound
    runtime.
-7. Mutating `var continue` in `porcupine-native/dbplatform.scala` —
+6. Mutating `var continue` in `porcupine-native/dbplatform.scala` —
    vendored upstream Porcupine; refactoring drifts the fork further from
    upstream.

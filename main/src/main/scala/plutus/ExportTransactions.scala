@@ -157,7 +157,7 @@ def exportTransactions(
           monzoApiUri
         .middleware:
           BearerAuthMiddleware:
-            accessToken.value
+            accessToken
         .resource
           .use:
             exportTransactions(
@@ -407,7 +407,7 @@ def requestAuthorization(
 yield state
 
 object BearerAuthMiddleware:
-  def apply(bearerToken: String): ClientEndpointMiddleware[IO] =
+  def apply(accessToken: monzo.AccessToken): ClientEndpointMiddleware[IO] =
     new ClientEndpointMiddleware.Simple[IO]:
       override def prepareWithHints(
           serviceHints: Hints,
@@ -423,7 +423,7 @@ object BearerAuthMiddleware:
               client.run:
                 request.withHeaders:
                   Authorization:
-                    Credentials.Token(AuthScheme.Bearer, bearerToken)
+                    Credentials.Token(AuthScheme.Bearer, accessToken.value)
         else identity
 
 enum ExportTransactionsSince:
