@@ -165,13 +165,7 @@ def exportTransactions(
             exportTransactions(
               _,
               state,
-              since match
-                case None =>
-                  ExportTransactionsSince
-                    .LastTransactions(state.lastTransactions)
-
-                case Some(since) =>
-                  ExportTransactionsSince.Timestamp(since),
+              since,
               before = before.getOrElse(now),
               output,
               dryRun
@@ -424,16 +418,10 @@ object BearerAuthMiddleware:
                     Credentials.Token(AuthScheme.Bearer, accessToken.value)
         else identity
 
-enum ExportTransactionsSince:
-  case Timestamp(instant: Instant)
-  case LastTransactions(
-      lastTransactions: Map[monzo.AccountId, LastTransaction]
-  )
-
 def exportTransactions(
     monzoApi: monzo.Api[IO],
     state: State,
-    since: ExportTransactionsSince,
+    since: Option[Instant],
     before: Instant,
     output: fs2.io.file.Path,
     dryRun: Boolean
@@ -445,14 +433,14 @@ def exportTransactions(
     .map:
       _.accounts
   accountsAndSince = since match
-    case ExportTransactionsSince.Timestamp(since) =>
+    case Some(since) =>
       accounts.map: account =>
         (account, ListTransactionsSince.Timestamp(since))
 
-    case ExportTransactionsSince.LastTransactions(lastTransactions) =>
+    case None =>
       accounts
         .map: account =>
-          (account, lastTransactions.get(account.id))
+          (account, state.lastTransactions.get(account.id))
         .collect:
           case (account, Some(since)) =>
             (account, ListTransactionsSince.IdAndTimestamp(since))
@@ -497,9 +485,7 @@ def exportTransactions(
       materialAccountIdsAndTransactions
     ,
     output,
-    overwrite = since match
-      case ExportTransactionsSince.Timestamp(_)        => true
-      case ExportTransactionsSince.LastTransactions(_) => false
+    overwrite = since.isDefined
   ).adaptError:
     case _: java.nio.file.FileAlreadyExistsException =>
       Error:
