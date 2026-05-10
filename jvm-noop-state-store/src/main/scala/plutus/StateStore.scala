@@ -2,10 +2,11 @@ package plutus
 
 import cats.effect.*
 
+import scala.annotation.unused
+
 object StateStore:
 
-  def make(using verbosity: Verbosity): StateStore[IO] =
-    val _ = verbosity
+  def make(using @unused verbosity: Verbosity): StateStore[IO] =
     new StateStoreImpl()
 
 final class StateStoreImpl extends StateStore[IO]:
