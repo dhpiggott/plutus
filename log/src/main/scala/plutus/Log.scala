@@ -1,6 +1,5 @@
 package plutus
 
-import cats.*
 import cats.effect.*
 
 def error(message: String)(using verbosity: Verbosity): IO[Unit] =
@@ -28,11 +27,9 @@ def trace(message: String)(using verbosity: Verbosity): IO[Unit] =
     fansi.Color.White:
       message
 
-def log[A](level: Verbosity)(
-    a: A
-)(implicit S: Show[A] = Show.fromToString[A], verbosity: Verbosity): IO[Unit] =
+def log(level: Verbosity)(a: fansi.Str)(using verbosity: Verbosity): IO[Unit] =
   (IO.whenA:
     verbosity.intValue >= level.intValue
   ):
     IO.println:
-      a
+      a.render
