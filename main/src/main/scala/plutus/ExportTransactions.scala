@@ -97,16 +97,6 @@ def exportTransactions(
     output: fs2.io.file.Path,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
-  _ <- fs2.io.file
-    .Files[IO]
-    .exists:
-      output
-    .map:
-      _ && since.isEmpty
-    .flatMap:
-      IO.raiseWhen(_):
-        Error:
-          s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
   stateStore = StateStore.make
   loadStateOutput <- stateStore.loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
@@ -506,8 +496,14 @@ def exportTransactions(
     toOfx:
       materialAccountIdsAndTransactions
     ,
-    output
-  )
+    output,
+    overwrite = since match
+      case ExportTransactionsSince.Timestamp(_)        => true
+      case ExportTransactionsSince.LastTransactions(_) => false
+  ).adaptError:
+    case _: java.nio.file.FileAlreadyExistsException =>
+      Error:
+        s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
   updatedState =
     if dryRun then state
     else
@@ -652,7 +648,8 @@ def toOfx(
 
 def writeOfx(
     content: ofx.Ofx,
-    output: fs2.io.file.Path
+    output: fs2.io.file.Path,
+    overwrite: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
   ((fs2.Stream:
     "ENCODING:UTF-8\n"
@@ -671,8 +668,15 @@ def writeOfx(
     .through:
       fs2.io.file
         .Files[IO]
-        .writeUtf8:
-          output
+        .writeUtf8(
+          output,
+          if overwrite then fs2.io.file.Flags.Write
+          else
+            fs2.io.file.Flags(
+              fs2.io.file.Flag.Write,
+              fs2.io.file.Flag.CreateNew
+            )
+        )
     .compile
     .drain *>
     info:
