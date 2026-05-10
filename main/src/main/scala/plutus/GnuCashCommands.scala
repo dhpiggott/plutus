@@ -8,7 +8,11 @@ import porcupine.*
 
 import scala.collection.immutable.SortedMap
 
-// TODO: Define a command group.
+lazy val gnucashOpts: Opts[IO[Unit]] = Opts.subcommand(
+  name = "gnucash",
+  help = "GnuCash housekeeping."
+):
+  archiveAccountsOpts orElse restoreAccountOpts
 
 lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",

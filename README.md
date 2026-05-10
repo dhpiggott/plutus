@@ -10,10 +10,10 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ## Commands
 
 ```
-plutus archive-accounts    [--input PATH] [verbosity]
-plutus restore-account     [--input PATH] [verbosity]
-plutus export-transactions [--since INSTANT] [--before INSTANT]
-                           [--output PATH] [--dry-run] [verbosity]
+plutus gnucash archive-accounts    [--input PATH] [verbosity]
+plutus gnucash restore-account     [--input PATH] [verbosity]
+plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
+                                   [--output PATH] [--dry-run] [verbosity]
 ```
 
 Verbosity flags (mutually exclusive, default `--info`): `--error`, `--warn`, `--info`, `--verbose`, `--trace`.
@@ -48,7 +48,7 @@ The build is sbt with `sbt-projectmatrix`. The two interesting projects are `mai
 ### JVM
 
 ```
-sbt 'main3/run archive-accounts --input Accounts.gnucash'
+sbt 'main3/run gnucash archive-accounts --input Accounts.gnucash'
 ```
 
 The JVM build uses a no-op state store, so `export-transactions` will re-prompt for credentials on every run. Useful for working on the GnuCash subcommands; not what you want day-to-day for Monzo exports.
@@ -56,7 +56,7 @@ The JVM build uses a no-op state store, so `export-transactions` will re-prompt 
 ### Scala Native (macOS only)
 
 ```
-sbt 'mainNative3/run export-transactions --output monzo.ofx'
+sbt 'mainNative3/run monzo export-transactions --output monzo.ofx'
 ```
 
 Prerequisites:

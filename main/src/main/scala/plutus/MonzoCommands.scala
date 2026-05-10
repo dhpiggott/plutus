@@ -27,7 +27,11 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import scala.concurrent.duration.*
 
-// TODO: Rename file to MonzoCommands.scala, define a command group.
+lazy val monzoOpts: Opts[IO[Unit]] = Opts.subcommand(
+  name = "monzo",
+  help = "Monzo commands."
+):
+  exportTransactionsOpts
 
 lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
 
