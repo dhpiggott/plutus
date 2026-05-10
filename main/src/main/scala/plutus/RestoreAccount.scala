@@ -49,40 +49,11 @@ def restoreAccount(
           from = archiveSubroot,
           to = root
         )
-        maybeExistingNonArchiveMirror <- nonArchiveParent
-          .child(archivedAccount.name)
-        _ <- (IO.traverse:
-          maybeExistingNonArchiveMirror
-        ): existingNonArchiveMirror =>
-          // This is the case where a non-archive mirror already exists. This
-          // happens when a child was already restored, resulting in the
-          // creation of a non-archive mirror of the parent account we're now
-          // restoring.
-          //
-          // The correct handling is to move the children of the non-archive
-          // mirror to be children of the acount we're now restoring (their
-          // original parent) and to delete the newly redundant non-archive
-          // mirror.
-          for
-            _ <- warn:
-              s"Non-archive mirror for $archivedAccountPath already exists."
-            existingChildren <- existingNonArchiveMirror.directChildren
-            _ <- (IO.traverse:
-              existingChildren
-            ): child =>
-              for
-                _ <- child.update(
-                  parent = archivedAccount
-                )
-                childPath <- child.pathString
-                _ <- warn:
-                  s"Moved $childPath to $archivedAccountPath."
-              yield ()
-            _ <- existingNonArchiveMirror.delete
-            existingNonArchiveMirrorPath <- existingNonArchiveMirror.pathString
-            _ <- warn:
-              s"Deleted existing non-archive mirror $existingNonArchiveMirrorPath."
-          yield ()
+        _ <- cleanUpRedundantMirror(
+          original = archivedAccount,
+          mirrorParent = nonArchiveParent,
+          mirrorKind = "Non-archive"
+        )
         restoredAccount <- archivedAccount.update(
           parent = nonArchiveParent
         )

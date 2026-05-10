@@ -38,41 +38,11 @@ def archiveAccounts(
               from = root,
               to = archiveSubroot
             )
-            maybeExistingArchiveMirror <- archiveParent
-              .child(hiddenAccount.name)
-            _ <- (IO.traverse:
-              maybeExistingArchiveMirror
-            ): existingArchiveMirror =>
-              // This is the case where an archive mirror already exists. This
-              // happens when a child was already archived, resulting in the
-              // creation of an archive mirror of the parent account we're now
-              // archiving.
-              //
-              // The correct handling is to move the children of the existing
-              // archive mirror to be children of the account we're now
-              // archiving (their original parent) and to delete the newly
-              // redundant archive mirror (because it will be replaced when the
-              // original parent is moved into its place).
-              for
-                _ <- warn:
-                  s"Archive mirror for $hiddenAccountPath already exists."
-                existingChildren <- existingArchiveMirror.directChildren
-                _ <- (IO.traverse:
-                  existingChildren
-                ): child =>
-                  for
-                    _ <- child.update(
-                      parent = hiddenAccount
-                    )
-                    childPath <- child.pathString
-                    _ <- warn:
-                      s"Moved $childPath to $hiddenAccountPath."
-                  yield ()
-                existingArchiveMirrorPath <- existingArchiveMirror.pathString
-                _ <- existingArchiveMirror.delete
-                _ <- warn:
-                  s"Deleted existing archive mirror $existingArchiveMirrorPath."
-              yield ()
+            _ <- cleanUpRedundantMirror(
+              original = hiddenAccount,
+              mirrorParent = archiveParent,
+              mirrorKind = "Archive"
+            )
             archivedAccount <- hiddenAccount.update(
               parent = archiveParent
             )
@@ -83,3 +53,45 @@ def archiveAccounts(
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
+
+// Handles the case where a mirror already exists at `mirrorParent` with the
+// same name as `original`. This happens when a child was already
+// archived/restored, resulting in the creation of a mirror of the parent
+// account we're now archiving/restoring.
+//
+// The correct handling is to move the children of the existing mirror to be
+// children of the account we're now archiving/restoring (their original
+// parent) and to delete the newly redundant mirror (because it will be
+// replaced when the original is moved into its place).
+def cleanUpRedundantMirror(
+    original: Account,
+    mirrorParent: Account,
+    mirrorKind: String
+)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
+  for
+    originalPath <- original.pathString
+    maybeExistingMirror <- mirrorParent.child(original.name)
+    _ <- (IO.traverse:
+      maybeExistingMirror
+    ): existingMirror =>
+      for
+        _ <- warn:
+          s"$mirrorKind mirror for $originalPath already exists."
+        existingChildren <- existingMirror.directChildren
+        _ <- (IO.traverse:
+          existingChildren
+        ): child =>
+          for
+            _ <- child.update(
+              parent = original
+            )
+            childPath <- child.pathString
+            _ <- warn:
+              s"Moved $childPath to $originalPath."
+          yield ()
+        existingMirrorPath <- existingMirror.pathString
+        _ <- existingMirror.delete
+        _ <- warn:
+          s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
+      yield ()
+  yield ()
