@@ -186,6 +186,11 @@ yield ()
 
 lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
+lazy val callbackPort: Port = port"8080"
+
+lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
+  s"http://localhost:$callbackPort/oauth/callback"
+
 extension (timestamp: Timestamp)
   def asInstant: Instant =
     Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
@@ -308,67 +313,63 @@ def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
     clientId: monzo.ClientId,
     clientSecret: monzo.ClientSecret
-)(using verbosity: Verbosity): IO[monzo.CreateAccessTokenOutput] =
-  val callbackPort = port"8080"
-  val redirectUri = monzo.RedirectUri:
-    s"http://localhost:$callbackPort/oauth/callback"
-  for
-    authorizationCodeAndStateDeferred <- Deferred[
-      IO,
-      (monzo.AuthorizationCode, monzo.State)
-    ]
-    createAccessTokenOutput <- EmberServerBuilder
-      .default[IO]
-      .withPort(callbackPort)
-      .withHttpApp:
-        org.http4s.server.middleware.Logger.httpApp[IO](
-          logHeaders = true,
-          logBody = true,
-          logAction = Some:
-            trace
-        )(
-          HttpRoutes
-            .of[IO]:
-              case GET -> Root / "oauth" / "callback" :?
-                  AuthorizationCodeQueryParamMatcher(code) +&
-                  StateQueryParamMatcher(state) =>
-                authorizationCodeAndStateDeferred.complete(code -> state) *>
-                  (verbose:
-                    "Received auth code.") *>
-                  Ok:
-                    "Authorization code received. Return to Plutus."
-            .orNotFound
+)(using verbosity: Verbosity): IO[monzo.CreateAccessTokenOutput] = for
+  authorizationCodeAndStateDeferred <- Deferred[
+    IO,
+    (monzo.AuthorizationCode, monzo.State)
+  ]
+  createAccessTokenOutput <- EmberServerBuilder
+    .default[IO]
+    .withPort(callbackPort)
+    .withHttpApp:
+      org.http4s.server.middleware.Logger.httpApp[IO](
+        logHeaders = true,
+        logBody = true,
+        logAction = Some:
+          trace
+      )(
+        HttpRoutes
+          .of[IO]:
+            case GET -> Root / "oauth" / "callback" :?
+                AuthorizationCodeQueryParamMatcher(code) +&
+                StateQueryParamMatcher(state) =>
+              authorizationCodeAndStateDeferred.complete(code -> state) *>
+                (verbose:
+                  "Received auth code.") *>
+                Ok:
+                  "Authorization code received. Return to Plutus."
+          .orNotFound
+      )
+    .withShutdownTimeout:
+      0.seconds
+    .build
+    .use: _ =>
+      for
+        _ <- verbose:
+          "Requesting authorization…"
+        generatedState <- requestAuthorization(clientId)
+        (authorizationCode, receivedState) <-
+          authorizationCodeAndStateDeferred.get
+        _ <- IO.raiseUnless(generatedState == receivedState):
+          Error:
+            s"generatedState != receivedState ($generatedState != ${receivedState})"
+        _ <- verbose:
+          "Exchanging auth code for tokens…"
+        createAccessTokenOutput <- monzoTokenApi.createAccessToken(
+          grantType = monzo.GrantType.AUTHORIZATION_CODE,
+          clientId = clientId,
+          clientSecret = clientSecret,
+          redirectUri = Some(redirectUri),
+          code = Some(authorizationCode)
         )
-      .withShutdownTimeout:
-        0.seconds
-      .build
-      .use: _ =>
-        for
-          _ <- verbose:
-            "Requesting authorization…"
-          generatedState <- requestAuthorization(clientId, redirectUri)
-          (authorizationCode, receivedState) <-
-            authorizationCodeAndStateDeferred.get
-          _ <- IO.raiseUnless(generatedState == receivedState):
-            Error:
-              s"generatedState != receivedState ($generatedState != ${receivedState})"
-          _ <- verbose:
-            "Exchanging auth code for tokens…"
-          createAccessTokenOutput <- monzoTokenApi.createAccessToken(
-            grantType = monzo.GrantType.AUTHORIZATION_CODE,
-            clientId = clientId,
-            clientSecret = clientSecret,
-            redirectUri = Some(redirectUri),
-            code = Some(authorizationCode)
-          )
-          scaComplete <- IO.blocking:
-            Prompts.sync.use:
-              _.confirm("Complete SCA in app, then continue?").getOrThrow
-          _ <- IO.raiseUnless(scaComplete):
-            Error:
-              "SCA not completed."
-        yield createAccessTokenOutput
-  yield createAccessTokenOutput
+        scaComplete <- IO.blocking:
+          Prompts.sync.use:
+            _.confirm("Complete SCA in app, then continue?").getOrThrow
+        _ <- IO.raiseUnless(scaComplete):
+          Error:
+            "SCA not completed."
+      yield createAccessTokenOutput
+yield createAccessTokenOutput
 
 given authorizationCodeQueryParamDecoder
     : QueryParamDecoder[monzo.AuthorizationCode] =
@@ -386,8 +387,7 @@ object StateQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.State]("state")
 
 def requestAuthorization(
-    clientId: monzo.ClientId,
-    redirectUri: monzo.RedirectUri
+    clientId: monzo.ClientId
 ): IO[monzo.State] = for
   state <- IO.randomUUID.map: uuid =>
     monzo.State:
