@@ -27,6 +27,17 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import scala.concurrent.duration.*
 
+// TODO: Rename file to MonzoCommands.scala, define a command group.
+
+lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
+
+lazy val callbackPort: Port = port"8080"
+
+lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
+  s"http://localhost:$callbackPort/oauth/callback"
+
+lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
+
 lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "export-transactions",
   help = "Export Monzo transactions to OFX format."
@@ -183,13 +194,6 @@ def exportTransactions(
       else SaveStateMode.UPDATE
   )
 yield ()
-
-lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
-
-lazy val callbackPort: Port = port"8080"
-
-lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
-  s"http://localhost:$callbackPort/oauth/callback"
 
 extension (timestamp: Timestamp)
   def asInstant: Instant =
@@ -398,7 +402,7 @@ def requestAuthorization(
       .exec:
         Array(
           "open",
-          uri"https://auth.monzo.com"
+          monzoAuthUri
             .withQueryParams:
               Map(
                 "client_id" -> clientId.value,

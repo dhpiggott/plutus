@@ -8,6 +8,8 @@ import porcupine.*
 
 import scala.collection.immutable.SortedMap
 
+// TODO: Define a command group.
+
 lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
