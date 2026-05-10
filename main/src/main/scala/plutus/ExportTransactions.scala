@@ -2,6 +2,7 @@ package plutus
 
 import cats.effect.*
 import cats.syntax.all.*
+import com.comcast.ip4s.*
 import com.monovore.decline.*
 import com.monovore.decline.time.*
 import cue4s.*
@@ -307,64 +308,67 @@ def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
     clientId: monzo.ClientId,
     clientSecret: monzo.ClientSecret
-)(using verbosity: Verbosity): IO[monzo.CreateAccessTokenOutput] = for
-  authorizationCodeAndStateDeferred <- Deferred[
-    IO,
-    (monzo.AuthorizationCode, monzo.State)
-  ]
-  createAccessTokenOutput <- EmberServerBuilder
-    .default[IO]
-    .withHttpApp:
-      org.http4s.server.middleware.Logger.httpApp[IO](
-        logHeaders = true,
-        logBody = true,
-        logAction = Some:
-          trace
-      )(
-        HttpRoutes
-          .of[IO]:
-            case GET -> Root / "oauth" / "callback" :?
-                AuthorizationCodeQueryParamMatcher(code) +&
-                StateQueryParamMatcher(state) =>
-              authorizationCodeAndStateDeferred.complete(code -> state) *>
-                (verbose:
-                  "Received auth code.") *>
-                Ok:
-                  "Authorization code received. Return to Plutus."
-          .orNotFound
-      )
-    .withShutdownTimeout:
-      0.seconds
-    .build
-    .use: _ =>
-      for
-        _ <- verbose:
-          "Requesting authorization…"
-        redirectUri = monzo.RedirectUri:
-          "http://localhost:8080/oauth/callback"
-        generatedState <- requestAuthorization(clientId, redirectUri)
-        (authorizationCode, receivedState) <-
-          authorizationCodeAndStateDeferred.get
-        _ <- IO.raiseUnless(generatedState == receivedState):
-          Error:
-            s"generatedState != receivedState ($generatedState != ${receivedState})"
-        _ <- verbose:
-          "Exchanging auth code for tokens…"
-        createAccessTokenOutput <- monzoTokenApi.createAccessToken(
-          grantType = monzo.GrantType.AUTHORIZATION_CODE,
-          clientId = clientId,
-          clientSecret = clientSecret,
-          redirectUri = Some(redirectUri),
-          code = Some(authorizationCode)
+)(using verbosity: Verbosity): IO[monzo.CreateAccessTokenOutput] =
+  val callbackPort = port"8080"
+  val redirectUri = monzo.RedirectUri:
+    s"http://localhost:$callbackPort/oauth/callback"
+  for
+    authorizationCodeAndStateDeferred <- Deferred[
+      IO,
+      (monzo.AuthorizationCode, monzo.State)
+    ]
+    createAccessTokenOutput <- EmberServerBuilder
+      .default[IO]
+      .withPort(callbackPort)
+      .withHttpApp:
+        org.http4s.server.middleware.Logger.httpApp[IO](
+          logHeaders = true,
+          logBody = true,
+          logAction = Some:
+            trace
+        )(
+          HttpRoutes
+            .of[IO]:
+              case GET -> Root / "oauth" / "callback" :?
+                  AuthorizationCodeQueryParamMatcher(code) +&
+                  StateQueryParamMatcher(state) =>
+                authorizationCodeAndStateDeferred.complete(code -> state) *>
+                  (verbose:
+                    "Received auth code.") *>
+                  Ok:
+                    "Authorization code received. Return to Plutus."
+            .orNotFound
         )
-        scaComplete <- IO.blocking:
-          Prompts.sync.use:
-            _.confirm("Complete SCA in app, then continue?").getOrThrow
-        _ <- IO.raiseUnless(scaComplete):
-          Error:
-            "SCA not completed."
-      yield createAccessTokenOutput
-yield createAccessTokenOutput
+      .withShutdownTimeout:
+        0.seconds
+      .build
+      .use: _ =>
+        for
+          _ <- verbose:
+            "Requesting authorization…"
+          generatedState <- requestAuthorization(clientId, redirectUri)
+          (authorizationCode, receivedState) <-
+            authorizationCodeAndStateDeferred.get
+          _ <- IO.raiseUnless(generatedState == receivedState):
+            Error:
+              s"generatedState != receivedState ($generatedState != ${receivedState})"
+          _ <- verbose:
+            "Exchanging auth code for tokens…"
+          createAccessTokenOutput <- monzoTokenApi.createAccessToken(
+            grantType = monzo.GrantType.AUTHORIZATION_CODE,
+            clientId = clientId,
+            clientSecret = clientSecret,
+            redirectUri = Some(redirectUri),
+            code = Some(authorizationCode)
+          )
+          scaComplete <- IO.blocking:
+            Prompts.sync.use:
+              _.confirm("Complete SCA in app, then continue?").getOrThrow
+          _ <- IO.raiseUnless(scaComplete):
+            Error:
+              "SCA not completed."
+        yield createAccessTokenOutput
+  yield createAccessTokenOutput
 
 given authorizationCodeQueryParamDecoder
     : QueryParamDecoder[monzo.AuthorizationCode] =
