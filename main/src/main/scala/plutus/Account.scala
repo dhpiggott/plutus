@@ -90,12 +90,22 @@ final case class Account(
         IO.pure:
           mirror
 
-  def allChildren(using db: Database[IO]): IO[List[Account]] = for
-    directChildren <- directChildren
-    allChildren <- directChildren.traverse: child =>
-      child.allChildren.map:
-        child +: _
-  yield allChildren.flatten
+  def allChildren(using db: Database[IO]): IO[List[Account]] =
+    db.execute(
+      query = sql"""
+        with recursive descendants as (
+          select * from accounts where parent_guid = $text
+          union all
+          select accounts.*
+          from accounts
+          join descendants on accounts.parent_guid = descendants.guid
+        )
+        select * from descendants
+      """.query:
+        Account.decoder
+      ,
+      args = guid
+    )
 
   def hiddenChildren(
       archiveSubroot: Account
@@ -121,14 +131,27 @@ final case class Account(
   yield hiddenChildren.flatten
 
   def path(using db: Database[IO]): IO[List[Account]] =
-    parent.flatMap:
-      case None =>
-        IO.pure:
-          this :: Nil
-
-      case Some(parent) =>
-        parent.path.map:
-          _ :+ this
+    db.execute(
+      query = sql"""
+        with recursive ancestors as (
+          select accounts.*, 0 as depth
+          from accounts
+          where guid = $text
+          union all
+          select accounts.*, ancestors.depth + 1
+          from accounts
+          join ancestors on accounts.guid = ancestors.parent_guid
+        )
+        select
+          guid, name, account_type, commodity_guid, commodity_scu,
+          non_std_scu, parent_guid, code, description, hidden, placeholder
+        from ancestors
+        order by depth desc
+      """.query:
+        Account.decoder
+      ,
+      args = guid
+    )
 
   def pathString(using db: Database[IO]): IO[String] =
     path.map(
