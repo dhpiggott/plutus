@@ -40,6 +40,7 @@ def archiveAccounts(
             )
             _ <- cleanUpRedundantMirror(
               original = hiddenAccount,
+              originalPath = hiddenAccountPath,
               mirrorParent = archiveParent,
               mirrorKind = "Archive"
             )
@@ -65,11 +66,11 @@ def archiveAccounts(
 // replaced when the original is moved into its place).
 def cleanUpRedundantMirror(
     original: Account,
+    originalPath: String,
     mirrorParent: Account,
     mirrorKind: String
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
-    originalPath <- original.pathString
     maybeExistingMirror <- mirrorParent.child(original.name)
     _ <- (IO.traverse:
       maybeExistingMirror

@@ -51,6 +51,7 @@ def restoreAccount(
         )
         _ <- cleanUpRedundantMirror(
           original = archivedAccount,
+          originalPath = archivedAccountPath,
           mirrorParent = nonArchiveParent,
           mirrorKind = "Non-archive"
         )
