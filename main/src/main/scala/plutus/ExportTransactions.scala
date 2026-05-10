@@ -4,6 +4,7 @@ import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
 import com.monovore.decline.time.*
+import cue4s.*
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.dsl.io.*
@@ -209,18 +210,15 @@ def accessToken(
       for
         (clientId, clientSecret) <- maybeState match
           case None =>
-            for
-              // TODO: Use cue4s.
-              _ <- IO.print:
-                "Enter client ID: "
-              clientId <- IO.readLine.map:
-                monzo.ClientId(_)
-              // TODO: Use cue4s.
-              _ <- IO.print:
-                "Enter client secret: "
-              clientSecret <- IO.readLine.map:
-                monzo.ClientSecret(_)
-            yield (clientId, clientSecret)
+            IO.blocking:
+              Prompts.sync.use: prompts =>
+                val clientId = prompts.text("Enter client ID").getOrThrow
+                val clientSecret =
+                  prompts.password("Enter client secret").getOrThrow
+                (
+                  monzo.ClientId(clientId),
+                  monzo.ClientSecret(clientSecret.raw)
+                )
 
           case Some(state) =>
             IO.pure(state.clientId, state.clientSecret)
@@ -359,10 +357,12 @@ def exchangeAuthCode(
           redirectUri = Some(redirectUri),
           code = Some(authorizationCode)
         )
-        // TODO: Use cue4s.
-        _ <- warn:
-          "Complete SCA in app, then press enter to continue."
-        _ <- IO.readLine
+        scaComplete <- IO.blocking:
+          Prompts.sync.use:
+            _.confirm("Complete SCA in app, then continue?").getOrThrow
+        _ <- IO.raiseUnless(scaComplete):
+          Error:
+            "SCA not completed."
       yield createAccessTokenOutput
 yield createAccessTokenOutput
 
