@@ -109,11 +109,45 @@ lazy val `porcupine-jvm` = projectMatrix
   )
   .jvmPlatform(scalaVersions = scala3Versions)
 
-// TODO: Use sn-bindgen where possible.
 lazy val `porcupine-native` = projectMatrix
   .dependsOn(porcupine)
+  .enablePlugins(BindgenPlugin)
   .settings(dependencyUpdatesFailBuild := true)
-  .nativePlatform(scalaVersions = scala3Versions)
+  .nativePlatform(
+    scalaVersions = scala3Versions,
+    Seq(
+      bindgenBindings += {
+        // See the rationale on `native-macos-keychain-state-store`'s binding —
+        // sn-bindgen drops declarations from headers clang tags as system
+        // headers, and angle-bracket includes get that tag.
+        //
+        // For sqlite3 the absolute-path trick alone is not enough: clang still
+        // tags `/usr/include/sqlite3.h` as a system header (it is one), so the
+        // declarations get filtered out. Copying the SDK's sqlite3.h into the
+        // managed source directory and including from there gives clang a
+        // non-system origin, so sn-bindgen renders everything.
+        val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
+        val managed = (Compile / sourceManaged).value
+        val sqlite3Header = managed / "sqlite3.h"
+        IO.copyFile(file(s"$sdkPath/usr/include/sqlite3.h"), sqlite3Header)
+        val header = managed / "sqlite3-binding.h"
+        IO.write(header, "#include \"sqlite3.h\"\n")
+        // The package is named `sqlite` (not `sqlite3`) to avoid colliding
+        // with the `sqlite3` struct that lives inside it.
+        bindgen.interface
+          .Binding(header, "sqlite")
+          .addCImport("sqlite3.h")
+          .withClangFlags(Seq(s"-I${managed.getAbsolutePath}"))
+          .withMacros(Set("SQLITE_*"))
+          .withOnlyValidMacros(true)
+          .withLogLevel(bindgen.interface.LogLevel.Info)
+      },
+      tpolecatExcludeOptions ++= Set(
+        ScalacOptions.deprecation,
+        ScalacOptions.warnUnusedImports
+      )
+    )
+  )
 
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)

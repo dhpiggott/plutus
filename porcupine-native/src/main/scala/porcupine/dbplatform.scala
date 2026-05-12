@@ -26,7 +26,7 @@ import scala.annotation.tailrec
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.UnsignedRichInt
 
-import sqlite3.*
+import sqlite.all.*
 
 private abstract class DatabasePlatform:
   def open[F[_]](
@@ -91,7 +91,7 @@ private abstract class DatabasePlatform:
                                 i += 1
                                 Nil
                               case LiteValue.Integer(j) =>
-                                guard(db)(sqlite3_bind_int64(stmt, i, j))
+                                guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(j)))
                                 i += 1
                                 Nil
                               case LiteValue.Real(d) =>
@@ -118,7 +118,7 @@ private abstract class DatabasePlatform:
                                     stmt,
                                     i,
                                     ba.at(0),
-                                    ba.length.toULong,
+                                    sqlite_uint64(ba.length.toULong),
                                     null
                                   )
                                 )
@@ -144,7 +144,7 @@ private abstract class DatabasePlatform:
                                           LiteValue.Null
                                         case SQLITE_INTEGER =>
                                           LiteValue.Integer(
-                                            sqlite3_column_int64(stmt, j)
+                                            sqlite3_column_int64(stmt, j).value
                                           )
                                         case SQLITE_FLOAT =>
                                           LiteValue.Real(
@@ -154,6 +154,7 @@ private abstract class DatabasePlatform:
                                           LiteValue.Text(
                                             fromCString(
                                               sqlite3_column_text(stmt, j)
+                                                .asInstanceOf[CString]
                                             )
                                           )
                                         case SQLITE_BLOB =>
