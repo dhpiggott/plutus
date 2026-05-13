@@ -111,33 +111,33 @@ lazy val `porcupine-jvm` = projectMatrix
 
 lazy val `porcupine-native` = projectMatrix
   .dependsOn(porcupine)
-  .enablePlugins(BindgenPlugin)
+  .enablePlugins(BindgenPlugin, VcpkgNativePlugin)
   .settings(dependencyUpdatesFailBuild := true)
   .nativePlatform(
     scalaVersions = scala3Versions,
     Seq(
+      vcpkgDependencies := VcpkgDependencies("sqlite3"),
       bindgenBindings += {
-        // See the rationale on `native-macos-keychain-state-store`'s binding —
-        // sn-bindgen drops declarations from headers clang tags as system
-        // headers, and angle-bracket includes get that tag.
-        //
-        // For sqlite3 the absolute-path trick alone is not enough: clang still
-        // tags `/usr/include/sqlite3.h` as a system header (it is one), so the
-        // declarations get filtered out. Copying the SDK's sqlite3.h into the
-        // managed source directory and including from there gives clang a
-        // non-system origin, so sn-bindgen renders everything.
-        val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
-        val managed = (Compile / sourceManaged).value
-        val sqlite3Header = managed / "sqlite3.h"
-        IO.copyFile(file(s"$sdkPath/usr/include/sqlite3.h"), sqlite3Header)
-        val header = managed / "sqlite3-binding.h"
-        IO.write(header, "#include \"sqlite3.h\"\n")
-        // The package is named `sqlite` (not `sqlite3`) to avoid colliding
-        // with the `sqlite3` struct that lives inside it.
+        // Package `libsqlite` (not `sqlite3`) avoids colliding with the
+        // `sqlite3` struct that lives inside it.
         bindgen.interface
-          .Binding(header, "sqlite")
+          .Binding(
+            vcpkgConfigurator.value.includes("sqlite3") / "sqlite3.h",
+            "libsqlite"
+          )
           .addCImport("sqlite3.h")
-          .withClangFlags(Seq(s"-I${managed.getAbsolutePath}"))
+          // `char` is unsigned by default on aarch64 macOS, which would make
+          // sn-bindgen emit `Ptr[CUnsignedChar]` for sqlite parameters declared
+          // as `char*` — surprising at call sites that pass UTF-8 bytes via
+          // `.getBytes`. Force signed `char` so they come out as `CString`.
+          // (`sqlite3_column_text` returns `unsigned char*` explicitly in the
+          // header, so its result still needs a cast.)
+          .withClangFlags(List("-fsigned-char"))
+          // Opt in to `#define` macro rendering for the SQLite result codes and
+          // open flags we use (`SQLITE_OK`, `SQLITE_ROW`, `SQLITE_OPEN_*`, …).
+          // `onlyValidMacros` skips the ones with composite expressions (e.g.
+          // `SQLITE_OK_LOAD_PERMANENTLY (SQLITE_OK | (1<<8))`) instead of
+          // erroring out.
           .withMacros(Set("SQLITE_*"))
           .withOnlyValidMacros(true)
           .withLogLevel(bindgen.interface.LogLevel.Info)
@@ -151,7 +151,7 @@ lazy val `porcupine-native` = projectMatrix
 
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
-  .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
+  .enablePlugins(BuildInfoPlugin, JavaAppPackaging, VcpkgNativePlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
@@ -188,17 +188,22 @@ lazy val main = projectMatrix
   .nativePlatform(
     scalaVersions = scala3Versions,
     Seq(
-      nativeConfig ~= (_.withLinkingOptions(
-        Seq(
-          "-framework",
-          "CoreFoundation",
-          "-framework",
-          "Security",
-          "-lsqlite3",
-          // Homebrew install path for s2n, pulled in by epollcat for TLS.
-          "-L/opt/homebrew/lib"
+      vcpkgDependencies := VcpkgDependencies("sqlite3"),
+      // Append rather than replace: VcpkgNativePlugin has already injected
+      // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
+      // `withLinkingOptions(Seq(...))` would discard.
+      nativeConfig ~= (c =>
+        c.withLinkingOptions(
+          c.linkingOptions ++ Seq(
+            "-framework",
+            "CoreFoundation",
+            "-framework",
+            "Security",
+            // Homebrew install path for s2n, pulled in by epollcat for TLS.
+            "-L/opt/homebrew/lib"
+          )
         )
-      )),
+      ),
       crossPaths := false
     )
   )

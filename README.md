@@ -62,7 +62,8 @@ sbt 'mainNative3/run monzo export-transactions --output monzo.ofx'
 Prerequisites:
 
 - The macOS SDK (`xcrun --show-sdk-path` must succeed) — the build generates Keychain bindings against it via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
-- Homebrew packages `sqlite` and `s2n` (the latter is pulled in via epollcat for TLS); the build links against `/opt/homebrew/lib`.
+- Homebrew package `s2n` (pulled in via epollcat for TLS); the build links against `/opt/homebrew/lib`.
+- Homebrew packages `cmake`, `ninja`, and `pkg-config` — needed by [sbt-vcpkg-native](https://github.com/indoorvivants/sbt-vcpkg) to build sqlite3 from source on first run. The static lib is cached under `~/Library/Caches/sbt-vcpkg`.
 
 To produce a standalone binary instead of running through sbt:
 
