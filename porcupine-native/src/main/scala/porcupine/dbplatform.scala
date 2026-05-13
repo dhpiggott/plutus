@@ -26,7 +26,7 @@ import scala.annotation.tailrec
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.UnsignedRichInt
 
-import sqlite.all.*
+import libsqlite.all.*
 
 private abstract class DatabasePlatform:
   def open[F[_]](
