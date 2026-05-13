@@ -23,6 +23,14 @@ Two non-obvious things in `native-macos-keychain-state-store`:
 - **`build.sbt` generates `macos.h` at build time** with the macOS SDK path resolved by `xcrun --show-sdk-path` baked into absolute `#include` lines. sn-bindgen filters declarations out of headers it considers "system headers"; angle-bracket includes (`<CoreFoundation/CFNumber.h>`) get that tag, absolute-path includes don't. Don't "simplify" it back to angle-bracket form — the bindings come out silently empty.
 - **`src/main/resources/scala-native/Forwarders.c`** wraps `extern const` globals (`kSecClass`, `kSecAttrAccount`, `kCFBooleanTrue`, …) in trivial getter functions. sn-bindgen only emits Scala bindings for functions, types and structs, not for `extern const` variables, so without the forwarders those constants are unreachable from Scala Native.
 
+## porcupine-native sqlite3 FFI gotchas
+
+- **sqlite3 is sourced via `VcpkgNativePlugin`**, which builds `libsqlite3.a` from source on first compile (slow — needs `cmake`, `ninja`, `pkg-config`) and exposes its include dir for codegen. The plugin only injects link/include config into the project where it's enabled, so **both `porcupine-native` and `main` enable it and re-declare `vcpkgDependencies := VcpkgDependencies("sqlite3")`** — sbt's `dependsOn` does not propagate vcpkg config.
+- **`main`'s `nativeConfig ~=` must append, not replace.** `VcpkgNativePlugin` runs first and injects `-L<vcpkg-install>/lib -lsqlite3 -pthread`; a bare `_.withLinkingOptions(Seq(...))` silently discards those and the binary falls back to the system `libsqlite3.dylib` (or fails to link). Use the `c => c.withLinkingOptions(c.linkingOptions ++ Seq(...))` form.
+- **Binding package is `libsqlite`, not `sqlite3`.** sn-bindgen emits a struct called `sqlite3` (the opaque DB handle); a package of the same name shadows it after `import <pkg>.all.*`.
+- **`-fsigned-char` is intentional.** `char` is unsigned by default on aarch64 macOS, so without the flag sn-bindgen emits `Ptr[CUnsignedChar]` for sqlite's plain `char*` parameters. `sqlite3_column_text` is the exception — its sqlite declaration is explicitly `unsigned char *`, so its return value still needs `.asInstanceOf[CString]`.
+- **`SQLITE_OK`/`SQLITE_ROW`/`SQLITE_OPEN_*`** come from sn-bindgen's `withMacros(Set("SQLITE_*"))` + `withOnlyValidMacros(true)`. The second flag is required — some `SQLITE_OK_*` macros are composite expressions (`SQLITE_OK | (1<<8)`) sn-bindgen can't render, and without `onlyValidMacros` codegen fails outright instead of skipping them.
+
 ## Conventions
 
 - **Scala 3 colon-block / fewer-braces**, enforced by `.scalafmt.conf` (`rewrite.scala3.convertToNewSyntax = true`, `removeOptionalBraces = true`). Match surrounding style — don't introduce braces.
