@@ -28,6 +28,7 @@ import scala.scalanative.unsigned.UnsignedRichInt
 
 import libsqlite.all.*
 
+// TODO: Formatting.
 private abstract class DatabasePlatform:
   def open[F[_]](
       filename: String

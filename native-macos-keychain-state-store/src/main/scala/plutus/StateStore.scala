@@ -17,6 +17,7 @@ import scala.concurrent.duration.*
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
 
+// TODO: Import consistency.
 object StateStore:
 
   def make(using verbosity: Verbosity): StateStore[IO] =
