@@ -5,7 +5,7 @@ A small personal-finance CLI that does two unrelated jobs:
 - **GnuCash housekeeping** — archive hidden accounts in a local GnuCash SQLite file, and restore them later.
 - **Monzo → OFX export** — pull transactions from the Monzo API and write a single `monzo.ofx` file suitable for import into GnuCash (or anything else that reads OFX).
 
-It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; the Scala Native build stores Monzo OAuth credentials in the macOS Keychain.
+It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; both builds store Monzo OAuth credentials in the macOS Keychain — the JVM build via the [Foreign Function & Memory API](https://openjdk.org/jeps/454), the Scala Native build via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
 
 ## Commands
 
@@ -51,7 +51,9 @@ The build is sbt with `sbt-projectmatrix`. The two interesting projects are `mai
 sbt 'main3/run gnucash archive-accounts --input Accounts.gnucash'
 ```
 
-The JVM build uses a no-op state store, so `export-transactions` will re-prompt for credentials on every run. Useful for working on the GnuCash subcommands; not what you want day-to-day for Monzo exports.
+Prerequisites:
+
+- JDK 22 or later — the Keychain state store uses the [Foreign Function & Memory API](https://openjdk.org/jeps/454), which is final in JDK 22.
 
 ### Scala Native (macOS only)
 
@@ -88,8 +90,8 @@ sbt dependencyUpdates       # also fails the regular build if any dep is stale
 | --- | --- | --- |
 | `smithy4s-schemas` | jvm + native | Smithy IDL for the `StateStore` service, the Monzo API, OFX, and the `Verbosity` enum. |
 | `log` | jvm + native | Tiny `fansi`-coloured logging façade keyed off an implicit `Verbosity`. |
-| `jvm-noop-state-store` | jvm | No-op `StateStore` (placeholder until a Java FFI Keychain backend lands). |
-| `native-macos-keychain-state-store` | native | Real `StateStore` backed by the macOS Keychain via sn-bindgen. |
+| `jvm-macos-keychain-state-store` | jvm | `StateStore` backed by the macOS Keychain via Java's Foreign Function & Memory API. |
+| `native-macos-keychain-state-store` | native | `StateStore` backed by the macOS Keychain via sn-bindgen. |
 | `porcupine` (+ `-jvm`, `-native`) | cross | Inlined Porcupine fork. JVM impl uses `sqlite-jdbc`; Native impl uses direct `sqlite3` C externs. |
 | `main` | jvm + native | The CLI entry point — wires the platform-specific state store and Porcupine impl into `decline`'s `CommandIOApp`. |
 

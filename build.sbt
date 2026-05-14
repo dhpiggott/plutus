@@ -33,17 +33,21 @@ lazy val `log` = projectMatrix
   .jvmPlatform(scalaVersions = scala3Versions)
   .nativePlatform(scalaVersions = scala3Versions)
 
-// TODO: Change from noop to use Java FFI.
-lazy val `jvm-noop-state-store` = projectMatrix
-  .dependsOn(`smithy4s-schemas`)
+// TODO: Make platform a suffix.
+lazy val `jvm-macos-keychain-state-store` = projectMatrix
+  .dependsOn(`smithy4s-schemas`, log)
   .settings(dependencyUpdatesFailBuild := true)
   .jvmPlatform(
     scalaVersions = scala3Versions,
     Seq(
-      libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0"
+      libraryDependencies ++= Seq(
+        "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
+        "org.typelevel" %%% "cats-effect" % "3.7.0"
+      )
     )
   )
 
+// TODO: Make platform a suffix.
 lazy val `native-macos-keychain-state-store` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BindgenPlugin)
@@ -144,7 +148,7 @@ lazy val `porcupine-native` = projectMatrix
 
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
-  .enablePlugins(BuildInfoPlugin, JavaAppPackaging, VcpkgNativePlugin)
+  .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
   .settings(
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
@@ -159,7 +163,7 @@ lazy val main = projectMatrix
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`jvm-noop-state-store`.jvm(scala3Version))
+  .dependsOn(`jvm-macos-keychain-state-store`.jvm(scala3Version))
   .dependsOn(`porcupine-jvm`.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
@@ -173,14 +177,25 @@ lazy val main = projectMatrix
       ),
       libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
       connectInput := true,
-      fork := true
+      fork := true,
+      // FFM API is final in JDK 22+; suppress the runtime "restricted method"
+      // warning so stderr stays clean during `main3/run`.
+      javaOptions += "--enable-native-access=ALL-UNNAMED"
     )
   )
   .dependsOn(`native-macos-keychain-state-store`.native(scala3Version))
   .dependsOn(`porcupine-native`.native(scala3Version))
   .nativePlatform(
     scalaVersions = scala3Versions,
-    Seq(
+    // `nativePlatform` already prepends `VirtualAxis.native`.
+    axisValues = Seq.empty,
+    // TODO: Use this configure method consistently across all modules - plus
+    // review use of nativePlatform vs. module level settings.
+    // `VcpkgNativePlugin` (auto-loads `ScalaNativePlugin`) is enabled here on
+    // the native row only, not at the projectMatrix level. The native plugin
+    // hijacks `%%%` cross-version resolution and adds nscplugin to every row
+    // it's applied to, so enabling it project-wide poisons JVM compilation.
+    configure = _.enablePlugins(VcpkgNativePlugin).settings(
       vcpkgDependencies := VcpkgDependencies("sqlite3"),
       // Append rather than replace: VcpkgNativePlugin has already injected
       // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
