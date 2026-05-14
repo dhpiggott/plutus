@@ -1,6 +1,8 @@
 package plutus
 
 import cats.effect.*
+import macos.Forwarders.*
+import macos.all.*
 import smithy4s.*
 import smithy4s.json.*
 
@@ -12,34 +14,31 @@ import Keychain.*
 def loadState()(using verbosity: Verbosity): IO[Option[State]] =
   for
     errorOrMaybeDataString <- IO:
-      val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
-      (macos.functions
-        .SecItemCopyMatching(
-          query = toCfDictionary(
-            macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-            macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-            macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
-          ),
-          result = resultPtr
-        )
-        .value match
-        case macos.constants.errSecItemNotFound =>
+      val resultPtr = stackalloc[CFTypeRef]()
+      (SecItemCopyMatching(
+        query = toCfDictionary(
+          SecClass.value.unsafeToPtr -> SecClassGenericPassword.value.unsafeToPtr,
+          SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+          SecReturnData.value.unsafeToPtr -> CFBooleanTrue.value.unsafeToPtr
+        ),
+        result = resultPtr
+      ).value match
+        case `errSecItemNotFound` =>
           Right:
             None
 
-        case macos.constants.errSecSuccess =>
+        case `errSecSuccess` =>
           Right:
             Some:
               fromCString:
-                macos.functions.CFStringGetCStringPtr(
-                  theString = macos.functions
-                    .CFStringCreateFromExternalRepresentation(
-                      alloc = defaultAllocator,
-                      data = macos.aliases.CFDataRef:
-                        (!resultPtr).value.unsafeToPtr
-                      ,
-                      encoding = utf8
-                    ),
+                CFStringGetCStringPtr(
+                  theString = CFStringCreateFromExternalRepresentation(
+                    alloc = defaultAllocator,
+                    data = CFDataRef:
+                      (!resultPtr).value.unsafeToPtr
+                    ,
+                    encoding = utf8
+                  ),
                   encoding = utf8
                 )
 
@@ -74,49 +73,46 @@ def loadState()(using verbosity: Verbosity): IO[Option[State]] =
 def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
   osStatus <- IO:
     val attributes = toCfDictionary(
-      macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-      macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-      macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(
-        macos.functions
-          .CFStringCreateExternalRepresentation(
+      SecClass.value.unsafeToPtr -> SecClassGenericPassword.value.unsafeToPtr,
+      SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+      SecValueData.value.unsafeToPtr -> Zone(
+        CFStringCreateExternalRepresentation(
+          alloc = defaultAllocator,
+          theString = CFStringCreateWithCString(
             alloc = defaultAllocator,
-            theString = macos.functions.CFStringCreateWithCString(
-              alloc = defaultAllocator,
-              cStr = toCString(
-                Json
-                  .writeBlob:
-                    state
-                  .toUTF8String,
-                java.nio.charset.StandardCharsets.UTF_8
-              ),
-              encoding = utf8
+            cStr = toCString(
+              Json
+                .writeBlob:
+                  state
+                .toUTF8String,
+              java.nio.charset.StandardCharsets.UTF_8
             ),
-            encoding = utf8,
-            lossByte = macos.aliases.UInt8:
-              0.toUByte
-          )
-          .value
-          .unsafeToPtr
+            encoding = utf8
+          ),
+          encoding = utf8,
+          lossByte = UInt8:
+            0.toUByte
+        ).value.unsafeToPtr
       )
     )
     val query = toCfDictionary(
-      macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-      macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr
+      SecClass.value.unsafeToPtr -> SecClassGenericPassword.value.unsafeToPtr,
+      SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr
     )
     // Try update first; on errSecItemNotFound (first run, nothing to update)
     // fall back to add.
-    val updateStatus = macos.functions.SecItemUpdate(
+    val updateStatus = SecItemUpdate(
       query = query,
       attributesToUpdate = attributes
     )
-    if updateStatus.value == macos.constants.errSecItemNotFound then
-      macos.functions.SecItemAdd(
+    if updateStatus.value == errSecItemNotFound then
+      SecItemAdd(
         attributes = attributes,
         result = null
       )
     else updateStatus
   _ <- (IO.unlessA:
-    osStatus.value == macos.constants.errSecSuccess
+    osStatus.value == errSecSuccess
   ):
     IO.raiseError:
       Error:
@@ -127,21 +123,20 @@ yield ()
 
 private object Keychain:
 
-  val defaultAllocator: macos.aliases.CFAllocatorRef =
-    macos.aliases.CFAllocatorRef:
+  val defaultAllocator: CFAllocatorRef =
+    CFAllocatorRef:
       null
 
-  val utf8: macos.aliases.CFStringEncoding =
-    macos.aliases.UInt32:
-      macos.constants.kCFStringEncodingUTF8
+  val utf8: CFStringEncoding =
+    UInt32:
+      kCFStringEncodingUTF8
 
-  val secItemName: macos.aliases.CFStringRef =
-    macos.functions
-      .CFStringCreateWithCString(
-        alloc = defaultAllocator,
-        cStr = c"plutus",
-        encoding = utf8
-      )
+  val secItemName: CFStringRef =
+    CFStringCreateWithCString(
+      alloc = defaultAllocator,
+      cStr = c"plutus",
+      encoding = utf8
+    )
 
   extension (ptr: Ptr[?])
     /** This is an unavoidable consequence of the way sn-bindgen generates code
@@ -173,7 +168,7 @@ private object Keychain:
 
   def toCfDictionary(
       entries: (Ptr[Byte], Ptr[Byte])*
-  ): macos.aliases.CFDictionaryRef =
+  ): CFDictionaryRef =
     val keys = stackalloc[Ptr[Byte]]:
       entries.length.toUInt
     val values = stackalloc[Ptr[Byte]]:
@@ -182,11 +177,11 @@ private object Keychain:
       val (key, value) = entry
       keys.update(index, key)
       values.update(index, value)
-    macos.functions.CFDictionaryCreate(
+    CFDictionaryCreate(
       allocator = defaultAllocator,
       keys = keys,
       values = values,
-      numValues = macos.aliases.CFIndex:
+      numValues = CFIndex:
         entries.length
       ,
       keyCallBacks = null,
