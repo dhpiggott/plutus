@@ -101,8 +101,7 @@ def exportTransactions(
     output: fs2.io.file.Path,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
-  stateStore = StateStore.make
-  loadStateOutput <- stateStore.loadState()
+  maybeState <- loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
       finiteDuration.toMillis
@@ -114,7 +113,7 @@ def exportTransactions(
   // transactions, and after 5 minutes, it can only sync the last 90 days of
   // transactions. If you need the user’s entire transaction history, you
   // should consider fetching and storing it right after authentication.
-  requireStrongCustomerAuthentication = loadStateOutput.state match
+  requireStrongCustomerAuthentication = maybeState match
     case None =>
       // n/a - there's no refresh token anyway, so we'll need to authenticate
       // for the first time, and that will happen regardless of whether we
@@ -151,7 +150,7 @@ def exportTransactions(
       for
         (state, accessToken) <- accessToken(
           client,
-          loadStateOutput.state,
+          maybeState,
           now,
           requireStrongCustomerAuthentication
         )
@@ -175,12 +174,7 @@ def exportTransactions(
               dryRun
             )
       yield updatedState
-  _ <- stateStore.saveState(
-    updatedState,
-    mode =
-      if loadStateOutput.state.isEmpty then SaveStateMode.CREATE
-      else SaveStateMode.UPDATE
-  )
+  _ <- saveState(updatedState)
 yield ()
 
 extension (timestamp: Timestamp)

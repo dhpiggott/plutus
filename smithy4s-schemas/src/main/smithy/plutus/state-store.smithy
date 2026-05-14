@@ -9,29 +9,6 @@ use plutus.monzo#Created
 use plutus.monzo#RefreshToken
 use plutus.monzo#TransactionId
 
-service StateStore {
-    operations: [
-        LoadState,
-        SaveState
-    ]
-}
-
-operation LoadState {
-    output := {
-        state: State
-    }
-}
-
-operation SaveState {
-    input := {
-        @required
-        state: State
-
-        @required
-        mode: SaveStateMode
-    }
-}
-
 @suppress(["UnreferencedShape"])
 structure State {
     @required
@@ -69,9 +46,4 @@ structure LastTransaction {
 
     @required
     created: Created
-}
-
-enum SaveStateMode {
-  CREATE
-  UPDATE
 }

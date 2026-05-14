@@ -1,150 +1,131 @@
 package plutus
 
 import cats.effect.*
-import cats.effect.std.*
-import smithy.api.TimestampFormat
 import smithy4s.*
 import smithy4s.json.*
 
-import java.lang.Runtime
-import java.nio.file.Path
-import java.time.Duration
-import java.time.Instant
-import java.time.Period
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import scala.concurrent.duration.*
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
 
-// TODO: Import consistency.
-object StateStore:
+import Keychain.*
 
-  def make(using verbosity: Verbosity): StateStore[IO] =
-    new StateStoreImpl()
-
-final class StateStoreImpl(using verbosity: Verbosity) extends StateStore[IO]:
-
-  override def loadState(): IO[LoadStateOutput] =
-    for
-      errorOrMaybeDataString <- IO:
-        val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
-        (macos.functions
-          .SecItemCopyMatching(
-            query = toCfDictionary(
-              macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-              macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-              macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
-            ),
-            result = resultPtr
-          )
-          .value match
-          case macos.constants.errSecItemNotFound =>
-            Right:
-              None
-
-          case macos.constants.errSecSuccess =>
-            Right:
-              Some:
-                fromCString:
-                  macos.functions.CFStringGetCStringPtr(
-                    theString = macos.functions
-                      .CFStringCreateFromExternalRepresentation(
-                        alloc = defaultAllocator,
-                        data = macos.aliases.CFDataRef:
-                          (!resultPtr).value.unsafeToPtr
-                        ,
-                        encoding = utf8
-                      ),
-                    encoding = utf8
-                  )
-
-          case other =>
-            Left:
-              Error:
-                s"Load state failed with status $other."
+def loadState()(using verbosity: Verbosity): IO[Option[State]] =
+  for
+    errorOrMaybeDataString <- IO:
+      val resultPtr = stackalloc[macos.aliases.CFTypeRef]()
+      (macos.functions
+        .SecItemCopyMatching(
+          query = toCfDictionary(
+            macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+            macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+            macos.Forwarders.SecReturnData.value.unsafeToPtr -> macos.Forwarders.CFBooleanTrue.value.unsafeToPtr
+          ),
+          result = resultPtr
         )
-      maybeState <- errorOrMaybeDataString match
-        case Right(None) =>
-          IO.none
+        .value match
+        case macos.constants.errSecItemNotFound =>
+          Right:
+            None
 
-        case Right(Some(dataString)) =>
-          IO.fromEither:
-            Json.read[State]:
-              Blob:
-                dataString
-          .option
+        case macos.constants.errSecSuccess =>
+          Right:
+            Some:
+              fromCString:
+                macos.functions.CFStringGetCStringPtr(
+                  theString = macos.functions
+                    .CFStringCreateFromExternalRepresentation(
+                      alloc = defaultAllocator,
+                      data = macos.aliases.CFDataRef:
+                        (!resultPtr).value.unsafeToPtr
+                      ,
+                      encoding = utf8
+                    ),
+                  encoding = utf8
+                )
 
-        case Left(error) =>
-          IO.raiseError:
-            error
-      _ <-
-        if maybeState.isDefined then
-          info:
-            "Loaded state from Keychain."
-        else
-          warn:
-            "Couldn't load state from Keychain."
-    yield LoadStateOutput:
-      maybeState
-
-  override def saveState(
-      state: State,
-      mode: SaveStateMode
-  ): IO[Unit] = for
-    attributes <- IO:
-      toCfDictionary(
-        macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-        macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
-        macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(
-          macos.functions
-            .CFStringCreateExternalRepresentation(
-              alloc = defaultAllocator,
-              theString = macos.functions.CFStringCreateWithCString(
-                alloc = defaultAllocator,
-                cStr = toCString(
-                  Json
-                    .writeBlob:
-                      state
-                    .toUTF8String,
-                  java.nio.charset.StandardCharsets.UTF_8
-                ),
-                encoding = utf8
-              ),
-              encoding = utf8,
-              lossByte = macos.aliases.UInt8:
-                0.toUByte
-            )
-            .value
-            .unsafeToPtr
-        )
+        case other =>
+          Left:
+            Error:
+              s"Load state failed with status $other."
       )
-    osStatus <- mode match
-      case SaveStateMode.CREATE =>
-        IO:
-          macos.functions.SecItemAdd(
-            attributes = attributes,
-            result = null
-          )
+    maybeState <- errorOrMaybeDataString match
+      case Right(None) =>
+        IO.none
 
-      case SaveStateMode.UPDATE =>
-        IO:
-          macos.functions.SecItemUpdate(
-            query = toCfDictionary(
-              macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
-              macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr
+      case Right(Some(dataString)) =>
+        IO.fromEither:
+          Json.read[State]:
+            Blob:
+              dataString
+        .option
+
+      case Left(error) =>
+        IO.raiseError:
+          error
+    _ <-
+      if maybeState.isDefined then
+        info:
+          "Loaded state from Keychain."
+      else
+        warn:
+          "Couldn't load state from Keychain."
+  yield maybeState
+
+def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
+  osStatus <- IO:
+    val attributes = toCfDictionary(
+      macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+      macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr,
+      macos.Forwarders.SecValueData.value.unsafeToPtr -> Zone(
+        macos.functions
+          .CFStringCreateExternalRepresentation(
+            alloc = defaultAllocator,
+            theString = macos.functions.CFStringCreateWithCString(
+              alloc = defaultAllocator,
+              cStr = toCString(
+                Json
+                  .writeBlob:
+                    state
+                  .toUTF8String,
+                java.nio.charset.StandardCharsets.UTF_8
+              ),
+              encoding = utf8
             ),
-            attributesToUpdate = attributes
+            encoding = utf8,
+            lossByte = macos.aliases.UInt8:
+              0.toUByte
           )
-    _ <- (IO.unlessA:
-      osStatus.value == macos.constants.errSecSuccess
-    ):
-      IO.raiseError:
-        Error:
-          s"Save state failed with status $osStatus."
-    _ <- info:
-      "Saved state to Keychain."
-  yield ()
+          .value
+          .unsafeToPtr
+      )
+    )
+    val query = toCfDictionary(
+      macos.Forwarders.SecClass.value.unsafeToPtr -> macos.Forwarders.SecClassGenericPassword.value.unsafeToPtr,
+      macos.Forwarders.SecAttrAccount.value.unsafeToPtr -> secItemName.value.unsafeToPtr
+    )
+    // Try update first; on errSecItemNotFound (first run, nothing to update)
+    // fall back to add.
+    val updateStatus = macos.functions.SecItemUpdate(
+      query = query,
+      attributesToUpdate = attributes
+    )
+    if updateStatus.value == macos.constants.errSecItemNotFound then
+      macos.functions.SecItemAdd(
+        attributes = attributes,
+        result = null
+      )
+    else updateStatus
+  _ <- (IO.unlessA:
+    osStatus.value == macos.constants.errSecSuccess
+  ):
+    IO.raiseError:
+      Error:
+        s"Save state failed with status $osStatus."
+  _ <- info:
+    "Saved state to Keychain."
+yield ()
+
+private object Keychain:
 
   val defaultAllocator: macos.aliases.CFAllocatorRef =
     macos.aliases.CFAllocatorRef:
