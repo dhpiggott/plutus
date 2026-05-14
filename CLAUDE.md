@@ -18,14 +18,14 @@ The Smithy `StateStore` service is the abstraction boundary between `main` and t
 
 ## macOS Keychain FFI gotchas
 
-The Keychain is reached two different ways: `native-macos-keychain-state-store` (Scala Native, sn-bindgen) and `jvm-macos-keychain-state-store` (JVM, Java's Foreign Function & Memory API). Both end up calling `SecItemCopyMatching`/`SecItemAdd`/`SecItemUpdate`; the `extern const CFStringRef` constants (`kSecClass`, …) are the main wrinkle on both sides.
+The Keychain is reached two different ways: `macos-keychain-state-store-native` (Scala Native, sn-bindgen) and `macos-keychain-state-store-jvm` (JVM, Java's Foreign Function & Memory API). Both end up calling `SecItemCopyMatching`/`SecItemAdd`/`SecItemUpdate`; the `extern const CFStringRef` constants (`kSecClass`, …) are the main wrinkle on both sides.
 
-`native-macos-keychain-state-store`:
+`macos-keychain-state-store-native`:
 
 - **`build.sbt` generates `macos.h` at build time** with the macOS SDK path resolved by `xcrun --show-sdk-path` baked into absolute `#include` lines. sn-bindgen filters declarations out of headers it considers "system headers"; angle-bracket includes (`<CoreFoundation/CFNumber.h>`) get that tag, absolute-path includes don't. Don't "simplify" it back to angle-bracket form — the bindings come out silently empty.
 - **`src/main/resources/scala-native/Forwarders.c`** wraps `extern const` globals (`kSecClass`, `kSecAttrAccount`, `kCFBooleanTrue`, …) in trivial getter functions. sn-bindgen only emits Scala bindings for functions, types and structs, not for `extern const` variables, so without the forwarders those constants are unreachable from Scala Native.
 
-`jvm-macos-keychain-state-store`:
+`macos-keychain-state-store-jvm`:
 
 - **Frameworks are loaded by absolute path** (`/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation`, same for Security) via `SymbolLookup.libraryLookup(...)`. Using the bare `"CoreFoundation"` name won't work — `System.loadLibrary` only searches `java.library.path` / `DYLD_LIBRARY_PATH`, neither of which covers `/System/Library/Frameworks`.
 - **`extern const CFTypeRef` globals need an extra dereference.** `SymbolLookup.find("kSecClass")` returns the *address* of the symbol — a pointer-sized cell that itself holds the actual `CFTypeRef`. So the value to pass to `SecItem*` is `cell.reinterpret(ADDRESS.byteSize).get(ADDRESS, 0)`, not the segment from `find()` itself. (This is the JVM analogue of `Forwarders.c` on the native side.)
