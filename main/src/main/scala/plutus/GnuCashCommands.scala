@@ -83,12 +83,13 @@ def restoreAccount(
         root <- Account.root
         archiveSubroot <- Account.createOrRetrieveArchiveSubroot
         archivedAccounts <- archiveSubroot.allChildren
-        archivedAccountsByPath <- (IO.traverse:
-          archivedAccounts
-        ): account =>
-          account.pathString.map(_ -> account)
-        .map:
-          SortedMap.from
+        archivedAccountsByPath <- (IO
+          .traverse:
+            archivedAccounts
+          ): account =>
+            account.pathString.map(_ -> account)
+          .map:
+            SortedMap.from
         _ <- IO.raiseUnless(
           archivedAccountsByPath.size == archivedAccounts.size
         ):

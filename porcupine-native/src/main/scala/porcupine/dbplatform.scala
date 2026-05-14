@@ -20,13 +20,12 @@ import cats.effect.kernel.Async
 import cats.effect.kernel.Resource
 import cats.effect.std.Mutex
 import cats.syntax.all.*
+import libsqlite.all.*
 import scodec.bits.ByteVector
 
 import scala.annotation.tailrec
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.UnsignedRichInt
-
-import libsqlite.all.*
 
 // TODO: Formatting.
 private abstract class DatabasePlatform:
@@ -92,7 +91,9 @@ private abstract class DatabasePlatform:
                                 i += 1
                                 Nil
                               case LiteValue.Integer(j) =>
-                                guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(j)))
+                                guard(db)(
+                                  sqlite3_bind_int64(stmt, i, sqlite_int64(j))
+                                )
                                 i += 1
                                 Nil
                               case LiteValue.Real(d) =>
@@ -168,7 +169,7 @@ private abstract class DatabasePlatform:
                                     }
                                     loop(i + 1)
                                   case SQLITE_DONE => false
-                                  case other =>
+                                  case other       =>
                                     guard(db)(other)
                                     loop(i + 1)
 
