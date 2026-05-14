@@ -33,8 +33,7 @@ lazy val `log` = projectMatrix
   .jvmPlatform(scalaVersions = scala3Versions)
   .nativePlatform(scalaVersions = scala3Versions)
 
-// TODO: Make platform a suffix.
-lazy val `jvm-macos-keychain-state-store` = projectMatrix
+lazy val `macos-keychain-state-store-jvm` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
   .settings(dependencyUpdatesFailBuild := true)
   .jvmPlatform(
@@ -47,8 +46,7 @@ lazy val `jvm-macos-keychain-state-store` = projectMatrix
     )
   )
 
-// TODO: Make platform a suffix.
-lazy val `native-macos-keychain-state-store` = projectMatrix
+lazy val `macos-keychain-state-store-native` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BindgenPlugin)
   .settings(dependencyUpdatesFailBuild := true)
@@ -163,7 +161,7 @@ lazy val main = projectMatrix
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`jvm-macos-keychain-state-store`.jvm(scala3Version))
+  .dependsOn(`macos-keychain-state-store-jvm`.jvm(scala3Version))
   .dependsOn(`porcupine-jvm`.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
@@ -183,7 +181,7 @@ lazy val main = projectMatrix
       javaOptions += "--enable-native-access=ALL-UNNAMED"
     )
   )
-  .dependsOn(`native-macos-keychain-state-store`.native(scala3Version))
+  .dependsOn(`macos-keychain-state-store-native`.native(scala3Version))
   .dependsOn(`porcupine-native`.native(scala3Version))
   .nativePlatform(
     scalaVersions = scala3Versions,

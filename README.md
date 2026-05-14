@@ -90,8 +90,8 @@ sbt dependencyUpdates       # also fails the regular build if any dep is stale
 | --- | --- | --- |
 | `smithy4s-schemas` | jvm + native | Smithy IDL for the `StateStore` service, the Monzo API, OFX, and the `Verbosity` enum. |
 | `log` | jvm + native | Tiny `fansi`-coloured logging façade keyed off an implicit `Verbosity`. |
-| `jvm-macos-keychain-state-store` | jvm | `StateStore` backed by the macOS Keychain via Java's Foreign Function & Memory API. |
-| `native-macos-keychain-state-store` | native | `StateStore` backed by the macOS Keychain via sn-bindgen. |
+| `macos-keychain-state-store-jvm` | jvm | `StateStore` backed by the macOS Keychain via Java's Foreign Function & Memory API. |
+| `macos-keychain-state-store-native` | native | `StateStore` backed by the macOS Keychain via sn-bindgen. |
 | `porcupine` (+ `-jvm`, `-native`) | cross | Inlined Porcupine fork. JVM impl uses `sqlite-jdbc`; Native impl uses direct `sqlite3` C externs. |
 | `main` | jvm + native | The CLI entry point — wires the platform-specific state store and Porcupine impl into `decline`'s `CommandIOApp`. |
 
