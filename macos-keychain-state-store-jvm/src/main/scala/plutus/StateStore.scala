@@ -223,9 +223,9 @@ private object Keychain:
       lookup: SymbolLookup,
       name: String
   ): MemorySegment =
-    val opt = lookup.find(name)
-    if opt.isPresent then opt.get
-    else throw new UnsatisfiedLinkError(s"Symbol $name not found")
+    lookup
+      .find(name)
+      .orElseThrow(() => UnsatisfiedLinkError(s"Symbol $name not found"))
 
   val CFStringCreateWithBytes: MethodHandle = downcall(
     coreFoundation,
