@@ -126,13 +126,6 @@ lazy val `porcupine-native` = projectMatrix
             "libsqlite"
           )
           .addCImport("sqlite3.h")
-          // `char` is unsigned by default on aarch64 macOS, which would make
-          // sn-bindgen emit `Ptr[CUnsignedChar]` for sqlite parameters declared
-          // as `char*` — surprising at call sites that pass UTF-8 bytes via
-          // `.getBytes`. Force signed `char` so they come out as `CString`.
-          // (`sqlite3_column_text` returns `unsigned char*` explicitly in the
-          // header, so its result still needs a cast.)
-          .withClangFlags(List("-fsigned-char"))
           // Opt in to `#define` macro rendering for the SQLite result codes and
           // open flags we use (`SQLITE_OK`, `SQLITE_ROW`, `SQLITE_OPEN_*`, …).
           // `onlyValidMacros` skips the ones with composite expressions (e.g.
