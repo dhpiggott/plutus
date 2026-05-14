@@ -35,61 +35,57 @@ lazy val `log` = projectMatrix
 
 lazy val `macos-keychain-state-store-jvm` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
-  .settings(dependencyUpdatesFailBuild := true)
-  .jvmPlatform(
-    scalaVersions = scala3Versions,
-    Seq(
-      libraryDependencies ++= Seq(
-        "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
-        "org.typelevel" %%% "cats-effect" % "3.7.0"
-      )
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies ++= Seq(
+      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
+      "org.typelevel" %%% "cats-effect" % "3.7.0"
     )
   )
+  .jvmPlatform(scalaVersions = scala3Versions)
 
 lazy val `macos-keychain-state-store-native` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
   .enablePlugins(BindgenPlugin)
-  .settings(dependencyUpdatesFailBuild := true)
-  .nativePlatform(
-    scalaVersions = scala3Versions,
-    Seq(
-      bindgenBindings += {
-        // sn-bindgen filters out declarations from headers that clang tags as
-        // system headers. Includes via the angle-bracket form (e.g.
-        // `<CoreFoundation/CFNumber.h>`) get that tag; absolute-path includes
-        // do not. So macos.h is generated at build time with the SDK path
-        // (resolved via `xcrun --show-sdk-path`) baked in, rather than
-        // hardcoding it.
-        //
-        // TODO: Check if this is an upstream bug and if so if it can be fixed.
-        val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
-        val header = (Compile / sourceManaged).value / "macos.h"
-        IO.write(
-          header,
-          Seq(
-            "CoreFoundation.framework/Versions/A/Headers/CFNumber.h",
-            "CoreFoundation.framework/Versions/A/Headers/CFDictionary.h",
-            "CoreFoundation.framework/Versions/A/Headers/CFString.h",
-            "Security.framework/Versions/A/Headers/SecBase.h",
-            "Security.framework/Versions/A/Headers/SecItem.h"
-          ).map(p => s"#include <$sdkPath/System/Library/Frameworks/$p>\n")
-            .mkString
-        )
-        bindgen.interface
-          .Binding(header, "macos")
-          .addCImport("CoreFoundation/CFString.h")
-          .withLogLevel(bindgen.interface.LogLevel.Info)
-      },
-      libraryDependencies ++= Seq(
-        "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
-        "org.typelevel" %%% "cats-effect" % "3.7.0"
-      ),
-      tpolecatExcludeOptions ++= Set(
-        ScalacOptions.deprecation,
-        ScalacOptions.warnUnusedImports
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    bindgenBindings += {
+      // sn-bindgen filters out declarations from headers that clang tags as
+      // system headers. Includes via the angle-bracket form (e.g.
+      // `<CoreFoundation/CFNumber.h>`) get that tag; absolute-path includes
+      // do not. So macos.h is generated at build time with the SDK path
+      // (resolved via `xcrun --show-sdk-path`) baked in, rather than
+      // hardcoding it.
+      //
+      // TODO: Check if this is an upstream bug and if so if it can be fixed.
+      val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
+      val header = (Compile / sourceManaged).value / "macos.h"
+      IO.write(
+        header,
+        Seq(
+          "CoreFoundation.framework/Versions/A/Headers/CFNumber.h",
+          "CoreFoundation.framework/Versions/A/Headers/CFDictionary.h",
+          "CoreFoundation.framework/Versions/A/Headers/CFString.h",
+          "Security.framework/Versions/A/Headers/SecBase.h",
+          "Security.framework/Versions/A/Headers/SecItem.h"
+        ).map(p => s"#include <$sdkPath/System/Library/Frameworks/$p>\n")
+          .mkString
       )
+      bindgen.interface
+        .Binding(header, "macos")
+        .addCImport("CoreFoundation/CFString.h")
+        .withLogLevel(bindgen.interface.LogLevel.Info)
+    },
+    libraryDependencies ++= Seq(
+      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
+      "org.typelevel" %%% "cats-effect" % "3.7.0"
+    ),
+    tpolecatExcludeOptions ++= Set(
+      ScalacOptions.deprecation,
+      ScalacOptions.warnUnusedImports
     )
   )
+  .nativePlatform(scalaVersions = scala3Versions)
 
 lazy val porcupine = projectMatrix
   .settings(
@@ -114,35 +110,33 @@ lazy val `porcupine-jvm` = projectMatrix
 lazy val `porcupine-native` = projectMatrix
   .dependsOn(porcupine)
   .enablePlugins(BindgenPlugin, VcpkgNativePlugin)
-  .settings(dependencyUpdatesFailBuild := true)
-  .nativePlatform(
-    scalaVersions = scala3Versions,
-    Seq(
-      vcpkgDependencies := VcpkgDependencies("sqlite3"),
-      bindgenBindings += {
-        // Package `libsqlite` (not `sqlite3`) avoids colliding with the
-        // `sqlite3` struct that lives inside it.
-        bindgen.interface
-          .Binding(
-            vcpkgConfigurator.value.includes("sqlite3") / "sqlite3.h",
-            "libsqlite"
-          )
-          .addCImport("sqlite3.h")
-          // Opt in to `#define` macro rendering for the SQLite result codes and
-          // open flags we use (`SQLITE_OK`, `SQLITE_ROW`, `SQLITE_OPEN_*`, …).
-          // `onlyValidMacros` skips the ones with composite expressions (e.g.
-          // `SQLITE_OK_LOAD_PERMANENTLY (SQLITE_OK | (1<<8))`) instead of
-          // erroring out.
-          .withMacros(Set("SQLITE_*"))
-          .withOnlyValidMacros(true)
-          .withLogLevel(bindgen.interface.LogLevel.Info)
-      },
-      tpolecatExcludeOptions ++= Set(
-        ScalacOptions.deprecation,
-        ScalacOptions.warnUnusedImports
-      )
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    vcpkgDependencies := VcpkgDependencies("sqlite3"),
+    bindgenBindings += {
+      // Package `libsqlite` (not `sqlite3`) avoids colliding with the
+      // `sqlite3` struct that lives inside it.
+      bindgen.interface
+        .Binding(
+          vcpkgConfigurator.value.includes("sqlite3") / "sqlite3.h",
+          "libsqlite"
+        )
+        .addCImport("sqlite3.h")
+        // Opt in to `#define` macro rendering for the SQLite result codes and
+        // open flags we use (`SQLITE_OK`, `SQLITE_ROW`, `SQLITE_OPEN_*`, …).
+        // `onlyValidMacros` skips the ones with composite expressions (e.g.
+        // `SQLITE_OK_LOAD_PERMANENTLY (SQLITE_OK | (1<<8))`) instead of
+        // erroring out.
+        .withMacros(Set("SQLITE_*"))
+        .withOnlyValidMacros(true)
+        .withLogLevel(bindgen.interface.LogLevel.Info)
+    },
+    tpolecatExcludeOptions ++= Set(
+      ScalacOptions.deprecation,
+      ScalacOptions.warnUnusedImports
     )
   )
+  .nativePlatform(scalaVersions = scala3Versions)
 
 lazy val main = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
@@ -165,7 +159,9 @@ lazy val main = projectMatrix
   .dependsOn(`porcupine-jvm`.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
-    Seq(
+    // `jvmPlatform` already prepends `VirtualAxis.jvm`.
+    axisValues = Seq.empty,
+    configure = _.settings(
       // The .native(...) projectMatrix dependsOn calls below leak Scala Native
       // transitives (scalalib_native0.5_2.13) into the JVM resolve graph;
       // exclude them here to avoid cross-version-suffix conflicts.
@@ -187,8 +183,6 @@ lazy val main = projectMatrix
     scalaVersions = scala3Versions,
     // `nativePlatform` already prepends `VirtualAxis.native`.
     axisValues = Seq.empty,
-    // TODO: Use this configure method consistently across all modules - plus
-    // review use of nativePlatform vs. module level settings.
     // `VcpkgNativePlugin` (auto-loads `ScalaNativePlugin`) is enabled here on
     // the native row only, not at the projectMatrix level. The native plugin
     // hijacks `%%%` cross-version resolution and adds nscplugin to every row
