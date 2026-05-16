@@ -173,6 +173,10 @@ def exportTransactions(
               output,
               dryRun
             )
+          .onError:
+            // Ensure the refreshed token isn't lost if export fails after
+            // accessToken() has already rotated it.
+            case _ => saveState(state)
       yield updatedState
   _ <- saveState(updatedState)
 yield ()
