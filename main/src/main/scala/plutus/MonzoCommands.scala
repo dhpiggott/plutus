@@ -358,6 +358,7 @@ def exchangeAuthCode(
               authorizationCodeAndStateDeferred.complete(code -> state) *>
                 (verbose:
                   "Received auth code.") *>
+                // TODO: Auto-close the page?
                 Ok:
                   "Authorization code received. Return to Plutus."
           .orNotFound
