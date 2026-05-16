@@ -42,15 +42,6 @@ lazy val `keychain-jvm` = projectMatrix
           "Security/SecItem.h"
         ).map(p => s"#include <$p>\n").mkString
       )
-      // TODO: Switch back to a dotted package once
-      // https://github.com/indoorvivants/sbt-jextract/issues/1 is fixed.
-      // sbt-jextract's source generator does `IO.listFiles(dest / pkg)`,
-      // passing the package name literally as a directory segment — so a
-      // dotted package like "plutus.macos" looks for `dest/plutus.macos/`,
-      // while jextract actually creates `dest/plutus/macos/`. The generator
-      // returns an empty Set, and `sbt clean compile` only picks the Java
-      // sources up on the second run (via unmanagedSourceDirectories). A
-      // single-segment package avoids the mismatch.
       JextractBinding(header, "macos")
         .withArgs(
           Seq(
