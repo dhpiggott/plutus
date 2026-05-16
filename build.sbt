@@ -13,29 +13,7 @@ inThisBuild(
   )
 )
 
-lazy val `smithy4s-schemas` = projectMatrix
-  .enablePlugins(Smithy4sCodegenPlugin)
-  .settings(
-    dependencyUpdatesFailBuild := true,
-    libraryDependencies += "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value
-  )
-  .jvmPlatform(scalaVersions = scala3Versions)
-  .nativePlatform(scalaVersions = scala3Versions)
-
-lazy val `log` = projectMatrix
-  .dependsOn(`smithy4s-schemas`)
-  .settings(
-    dependencyUpdatesFailBuild := true,
-    libraryDependencies ++= Seq(
-      "org.typelevel" %%% "cats-effect" % "3.7.0",
-      "com.lihaoyi" %%% "fansi" % "0.5.1"
-    )
-  )
-  .jvmPlatform(scalaVersions = scala3Versions)
-  .nativePlatform(scalaVersions = scala3Versions)
-
-lazy val `macos-keychain-state-store-jvm` = projectMatrix
-  .dependsOn(`smithy4s-schemas`, log)
+lazy val `keychain-jvm` = projectMatrix
   .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -57,6 +35,7 @@ lazy val `macos-keychain-state-store-jvm` = projectMatrix
         header,
         Seq(
           "CoreFoundation/CFNumber.h",
+          "CoreFoundation/CFData.h",
           "CoreFoundation/CFDictionary.h",
           "CoreFoundation/CFString.h",
           "Security/SecBase.h",
@@ -85,15 +64,14 @@ lazy val `macos-keychain-state-store-jvm` = projectMatrix
         )
     },
     jextractMode := JextractMode.ResourceGenerator,
-    libraryDependencies ++= Seq(
-      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
-      "org.typelevel" %%% "cats-effect" % "3.7.0"
-    )
+    libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0",
+    // Emit MethodParameters into the jextract-generated Java bytecode so
+    // `Keychain.scala` can call those methods with named arguments.
+    javacOptions += "-parameters"
   )
   .jvmPlatform(scalaVersions = scala3Versions)
 
-lazy val `macos-keychain-state-store-native` = projectMatrix
-  .dependsOn(`smithy4s-schemas`, log)
+lazy val `keychain-native` = projectMatrix
   .enablePlugins(BindgenPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -111,7 +89,9 @@ lazy val `macos-keychain-state-store-native` = projectMatrix
       IO.write(
         header,
         Seq(
+          "CoreFoundation.framework/Versions/A/Headers/CFBase.h",
           "CoreFoundation.framework/Versions/A/Headers/CFNumber.h",
+          "CoreFoundation.framework/Versions/A/Headers/CFData.h",
           "CoreFoundation.framework/Versions/A/Headers/CFDictionary.h",
           "CoreFoundation.framework/Versions/A/Headers/CFString.h",
           "Security.framework/Versions/A/Headers/SecBase.h",
@@ -124,10 +104,7 @@ lazy val `macos-keychain-state-store-native` = projectMatrix
         .addCImport("CoreFoundation/CFString.h")
         .withLogLevel(bindgen.interface.LogLevel.Info)
     },
-    libraryDependencies ++= Seq(
-      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
-      "org.typelevel" %%% "cats-effect" % "3.7.0"
-    ),
+    libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0",
     tpolecatExcludeOptions ++= Set(
       ScalacOptions.deprecation,
       ScalacOptions.warnUnusedImports
@@ -151,6 +128,7 @@ lazy val `porcupine-jvm` = projectMatrix
   .dependsOn(porcupine)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // TODO: Replace with jextract generated bindings to sqlite3?
     libraryDependencies += "org.xerial" % "sqlite-jdbc" % "3.53.0.0"
   )
   .jvmPlatform(scalaVersions = scala3Versions)
@@ -187,14 +165,16 @@ lazy val `porcupine-native` = projectMatrix
   .nativePlatform(scalaVersions = scala3Versions)
 
 lazy val main = projectMatrix
-  .dependsOn(`smithy4s-schemas`, log)
-  .enablePlugins(BuildInfoPlugin, JavaAppPackaging)
+  .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
       "co.fs2" %%% "fs2-io" % "3.13.0",
+      "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
+      "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
+      "com.lihaoyi" %%% "fansi" % "0.5.1",
       "com.monovore" %%% "decline-effect" % "2.6.2",
       "org.http4s" %%% "http4s-ember-client" % "0.23.34",
       "org.http4s" %%% "http4s-ember-server" % "0.23.34",
@@ -203,7 +183,7 @@ lazy val main = projectMatrix
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`macos-keychain-state-store-jvm`.jvm(scala3Version))
+  .dependsOn(`keychain-jvm`.jvm(scala3Version))
   .dependsOn(`porcupine-jvm`.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
@@ -225,7 +205,7 @@ lazy val main = projectMatrix
       javaOptions += "--enable-native-access=ALL-UNNAMED"
     )
   )
-  .dependsOn(`macos-keychain-state-store-native`.native(scala3Version))
+  .dependsOn(`keychain-native`.native(scala3Version))
   .dependsOn(`porcupine-native`.native(scala3Version))
   .nativePlatform(
     scalaVersions = scala3Versions,

@@ -177,6 +177,38 @@ def exportTransactions(
   _ <- saveState(updatedState)
 yield ()
 
+def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
+  maybeBytes <- Keychain.load:
+    stateKeychainAccount
+  maybeState = maybeBytes.flatMap: bytes =>
+    Json
+      .read[State]:
+        Blob:
+          bytes
+      .toOption
+  _ <-
+    if maybeState.isDefined then
+      info:
+        "Loaded state from Keychain."
+    else
+      warn:
+        "Couldn't load state from Keychain."
+yield maybeState
+
+private val stateKeychainAccount = "plutus"
+
+def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
+  _ <- Keychain.save(
+    account = stateKeychainAccount,
+    bytes = Json
+      .writeBlob:
+        state
+      .toArray
+  )
+  _ <- info:
+    "Saved state to Keychain."
+yield ()
+
 extension (timestamp: Timestamp)
   def asInstant: Instant =
     Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
@@ -457,7 +489,7 @@ def exportTransactions(
       _.filter: (_, transactions) =>
         transactions.nonEmpty
   _ <- (IO.whenA:
-    verbosity.intValue >= Verbosity.VERBOSE.intValue
+    verbosity.ordinal >= Verbosity.VERBOSE.ordinal
   ):
     IO.println:
       Json.writeDocumentAsPrettyString:

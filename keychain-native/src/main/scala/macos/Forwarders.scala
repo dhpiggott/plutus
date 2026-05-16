@@ -2,7 +2,6 @@ package macos
 
 import scala.scalanative.unsafe.*
 
-// TODO: Lift these and any other common code into a shared module.
 @extern
 object Forwarders:
 

@@ -88,12 +88,10 @@ sbt dependencyUpdates       # also fails the regular build if any dep is stale
 
 | Module | Platforms | Purpose |
 | --- | --- | --- |
-| `smithy4s-schemas` | jvm + native | Smithy IDL for the `StateStore` service, the Monzo API, OFX, and the `Verbosity` enum. |
-| `log` | jvm + native | Tiny `fansi`-coloured logging façade keyed off an implicit `Verbosity`. |
-| `macos-keychain-state-store-jvm` | jvm | `StateStore` backed by the macOS Keychain via Java's Foreign Function & Memory API. |
-| `macos-keychain-state-store-native` | native | `StateStore` backed by the macOS Keychain via sn-bindgen. |
+| `keychain-jvm` | jvm | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain via Java's Foreign Function & Memory API. |
+| `keychain-native` | native | `object Keychain` (same surface) backed by the macOS Keychain via sn-bindgen. |
 | `porcupine` (+ `-jvm`, `-native`) | cross | Inlined Porcupine fork. JVM impl uses `sqlite-jdbc`; Native impl uses direct `sqlite3` C externs. |
-| `main` | jvm + native | The CLI entry point — wires the platform-specific state store and Porcupine impl into `decline`'s `CommandIOApp`. |
+| `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + the Porcupine impl into `decline`'s `CommandIOApp`. |
 
 ## Status
 

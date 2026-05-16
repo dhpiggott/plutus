@@ -6,31 +6,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## sbt projects under projectMatrix
 
-Every module is a `projectMatrix`, so the project names you pass to sbt are not the directory names. JVM projects keep the bare module name suffixed with the Scala major version (`main3`, `log3`, `porcupine-jvm3`). Native projects also append the platform (`mainNative3`, `logNative3`). `sbt main/run` is not a valid task — use `main3/run` (JVM) or `mainNative3/run` (Native).
+Every module is a `projectMatrix`, so the project names you pass to sbt are not the directory names. JVM rows take the bare module name suffixed with the Scala major version (`main3`, `keychain-jvm3`, `porcupine-jvm3`). Native rows also append the platform (`mainNative3`, `keychain-nativeNative3`, `porcupine-nativeNative3`). `sbt main/run` is not a valid task — use `main3/run` (JVM) or `mainNative3/run` (Native).
+
+When a change touches code, build configuration, or smithy IDL that's reachable from both platforms, build both rows before declaring it done — they resolve different transitives and surface different errors:
+
+```
+sbt 'main3/compile' 'mainNative3/compile'
+```
 
 There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module.
 
 ## Smithy codegen output
 
-`Smithy4sCodegenPlugin` regenerates Scala on every compile of `smithy4s-schemas`, into `smithy4s-schemas/target/<platform>-3/src_managed/main/smithy4s/...`. When chasing a "type doesn't compile" error or trying to understand the shape of a generated case class, look there. Don't edit those files; change the corresponding `*.smithy` source under `smithy4s-schemas/src/main/smithy/`.
+`Smithy4sCodegenPlugin` is enabled on `main` and regenerates Scala on every compile of either row, into `main/target/<row>-3/src_managed/main/smithy4s/...` (so the generated sources are duplicated across `main/target/jvm-3/...` and `main/target/native-3/...`). When chasing a "type doesn't compile" error or trying to understand the shape of a generated case class, look there. Don't edit those files; change the corresponding `*.smithy` source under `main/src/main/smithy/`.
 
-The Smithy `StateStore` service is the abstraction boundary between `main` and the platform-specific state-store modules — `main` only sees the generated `StateStore[F[_]]` algebra, never the concrete impl.
+## State-store boundary
+
+The state-store boundary is just `object Keychain` exposed by `keychain-jvm` / `keychain-native` — `load(account: String): IO[Option[Array[Byte]]]` and `save(account: String, bytes: Array[Byte]): IO[Unit]`. `main` JSON-encodes/decodes `State` against those via top-level `loadState` / `saveState` in `MonzoCommands.scala`; whichever platform row is being built supplies the implementation.
 
 ## macOS Keychain FFI gotchas
 
-The Keychain is reached two different ways: `macos-keychain-state-store-native` (Scala Native, sn-bindgen) and `macos-keychain-state-store-jvm` (JVM, Java's Foreign Function & Memory API). Both end up calling `SecItemCopyMatching`/`SecItemAdd`/`SecItemUpdate`; the `extern const CFStringRef` constants (`kSecClass`, …) are the main wrinkle on both sides.
+The Keychain is reached two different ways: `keychain-native` (Scala Native, sn-bindgen) and `keychain-jvm` (JVM, Java's Foreign Function & Memory API). Both end up calling `SecItemCopyMatching`/`SecItemAdd`/`SecItemUpdate`; the `extern const CFStringRef` constants (`kSecClass`, …) are the main wrinkle on both sides.
 
-`macos-keychain-state-store-native`:
+`keychain-native`:
 
 - **`build.sbt` generates `macos.h` at build time** with the macOS SDK path resolved by `xcrun --show-sdk-path` baked into absolute `#include` lines. sn-bindgen filters declarations out of headers it considers "system headers"; angle-bracket includes (`<CoreFoundation/CFNumber.h>`) get that tag, absolute-path includes don't. Don't "simplify" it back to angle-bracket form — the bindings come out silently empty.
 - **`src/main/resources/scala-native/Forwarders.c`** wraps `extern const` globals (`kSecClass`, `kSecAttrAccount`, `kCFBooleanTrue`, …) in trivial getter functions. sn-bindgen only emits Scala bindings for functions, types and structs, not for `extern const` variables, so without the forwarders those constants are unreachable from Scala Native.
 
-`macos-keychain-state-store-jvm`:
+`keychain-jvm`:
 
 - **Frameworks are loaded by absolute path** (`/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation`, same for Security) via `SymbolLookup.libraryLookup(...)`. Using the bare `"CoreFoundation"` name won't work — `System.loadLibrary` only searches `java.library.path` / `DYLD_LIBRARY_PATH`, neither of which covers `/System/Library/Frameworks`.
 - **`extern const CFTypeRef` globals need an extra dereference.** `SymbolLookup.find("kSecClass")` returns the *address* of the symbol — a pointer-sized cell that itself holds the actual `CFTypeRef`. So the value to pass to `SecItem*` is `cell.reinterpret(ADDRESS.byteSize).get(ADDRESS, 0)`, not the segment from `find()` itself. (This is the JVM analogue of `Forwarders.c` on the native side.)
 - **`MethodHandle.invokeWithArguments`, not `invokeExact`.** `invokeExact` is signature-polymorphic and brittle from Scala 3 — small mismatches (e.g. an unboxed `Int` vs. boxed `Integer` return) silently miscompile. `invokeWithArguments` boxes everything, returns `Object`, and a tiny number of keychain calls per CLI run makes the overhead irrelevant.
 - **`--enable-native-access=ALL-UNNAMED`** is set in `main`'s JVM `javaOptions` to suppress the "restricted method" warning on JDK 22+. Required for `sbt main3/run` to not spam stderr, not for correctness.
+- **`javacOptions += "-parameters"`** on `keychain-jvm` keeps jextract's parameter names (`query`, `result`, `attributes`, …) in the generated Java bytecode. Without it, Scala only sees `arg0`/`arg1`/… and the named-arg call style (`SecItemCopyMatching(query = …, result = …)`) used in `Keychain.scala` doesn't compile.
 
 ## porcupine-native sqlite3 FFI gotchas
 
@@ -43,6 +52,6 @@ The Keychain is reached two different ways: `macos-keychain-state-store-native` 
 ## Conventions
 
 - **Scala 3 colon-block / fewer-braces**, enforced by `.scalafmt.conf` (`rewrite.scala3.convertToNewSyntax = true`, `removeOptionalBraces = true`). Match surrounding style — don't introduce braces.
-- **`Verbosity` is implicit, not a parameter**: every logging-aware function takes `using verbosity: Verbosity`.
+- **`Verbosity` is a Scala 3 enum (`Main.scala`), passed implicitly, never as a parameter**: every logging-aware function takes `using verbosity: Verbosity`.
 - **No `// what` comments**: existing comments are exclusively non-obvious *why* (e.g. the `xcrun --show-sdk-path` rationale, the `-L/opt/homebrew/lib` hint about epollcat/s2n in `build.sbt`, the sn-bindgen forwarders rationale in `Forwarders.c`).
 - **`dependencyUpdatesFailBuild := true`** on every module: a regular `sbt compile` fails when any dep has a newer release. When bumping, expect cascading changes across both platforms, and keep the three porcupine modules' deps aligned (`porcupine`, `porcupine-jvm`, `porcupine-native`).

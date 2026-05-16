@@ -29,7 +29,7 @@ def trace(message: String)(using verbosity: Verbosity): IO[Unit] =
 
 def log(level: Verbosity)(a: fansi.Str)(using verbosity: Verbosity): IO[Unit] =
   (IO.whenA:
-    verbosity.intValue >= level.intValue
+    verbosity.ordinal >= level.ordinal
   ):
     IO.println:
       a.render

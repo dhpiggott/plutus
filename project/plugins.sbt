@@ -5,7 +5,6 @@ addSbtPlugin(
 addSbtPlugin("com.eed3si9n" % "sbt-buildinfo" % "0.13.1")
 addSbtPlugin("com.eed3si9n" % "sbt-projectmatrix" % "0.11.0")
 addSbtPlugin("com.github.sbt" % "sbt-dynver" % "5.1.1")
-addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.11.7")
 addSbtPlugin("com.indoorvivants" % "bindgen-sbt-plugin" % "0.4.4")
 addSbtPlugin("com.indoorvivants" % "sbt-jextract" % "0.1.0")
 addSbtPlugin("com.indoorvivants.vcpkg" % "sbt-vcpkg-native" % "0.0.21")
