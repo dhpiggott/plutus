@@ -31,7 +31,7 @@ The Keychain is reached two different ways: `keychain-native` (Scala Native, sn-
 `keychain-native`:
 
 - **`build.sbt` generates `macos.h` at build time** with the macOS SDK path resolved by `xcrun --show-sdk-path` baked into absolute `#include` lines. sn-bindgen filters declarations out of headers it considers "system headers"; angle-bracket includes (`<CoreFoundation/CFNumber.h>`) get that tag, absolute-path includes don't. Don't "simplify" it back to angle-bracket form — the bindings come out silently empty.
-- **`src/main/resources/scala-native/Forwarders.c`** wraps `extern const` globals (`kSecClass`, `kSecAttrAccount`, `kCFBooleanTrue`, …) in trivial getter functions. sn-bindgen only emits Scala bindings for functions, types and structs, not for `extern const` variables, so without the forwarders those constants are unreachable from Scala Native.
+- **`src/main/scala/macos/Globals.scala`** declares `kSecClass`, `kSecAttrAccount`, `kCFBooleanTrue`, … as `var name: T = extern` inside an `@extern object`. sn-bindgen only emits Scala bindings for functions, types and structs, not for `extern const` variables, but Scala Native's `var = extern` reads the C global directly — no C forwarder needed.
 
 `keychain-jvm`:
 
@@ -53,5 +53,5 @@ The Keychain is reached two different ways: `keychain-native` (Scala Native, sn-
 
 - **Scala 3 colon-block / fewer-braces**, enforced by `.scalafmt.conf` (`rewrite.scala3.convertToNewSyntax = true`, `removeOptionalBraces = true`). Match surrounding style — don't introduce braces.
 - **`Verbosity` is a Scala 3 enum (`Main.scala`), passed implicitly, never as a parameter**: every logging-aware function takes `using verbosity: Verbosity`.
-- **No `// what` comments**: existing comments are exclusively non-obvious *why* (e.g. the `xcrun --show-sdk-path` rationale, the `-L/opt/homebrew/lib` hint about epollcat/s2n in `build.sbt`, the sn-bindgen forwarders rationale in `Forwarders.c`).
+- **No `// what` comments**: existing comments are exclusively non-obvious *why* (e.g. the `xcrun --show-sdk-path` rationale, the `-L/opt/homebrew/lib` hint about epollcat/s2n in `build.sbt`, the sn-bindgen `extern const` rationale in `Globals.scala`).
 - **`dependencyUpdatesFailBuild := true`** on every module: a regular `sbt compile` fails when any dep has a newer release. When bumping, expect cascading changes across both platforms, and keep the three porcupine modules' deps aligned (`porcupine`, `porcupine-jvm`, `porcupine-native`).

@@ -1,7 +1,7 @@
 package plutus
 
 import cats.effect.*
-import macos.Forwarders.*
+import macos.Globals.*
 import macos.all.*
 
 import scala.scalanative.unsafe.*
@@ -13,9 +13,9 @@ object Keychain:
     Zone:
       val accountStr = makeCFString(account)
       val query = makeDict(
-        SecClass.value.asCFTypeRef -> SecClassGenericPassword.value.asCFTypeRef,
-        SecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef,
-        SecReturnData.value.asCFTypeRef -> CFBooleanTrue.value.asCFTypeRef
+        kSecClass.value.asCFTypeRef -> kSecClassGenericPassword.value.asCFTypeRef,
+        kSecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef,
+        kSecReturnData.value.asCFTypeRef -> kCFBooleanTrue.value.asCFTypeRef
       )
       val resultPtr = stackalloc[CFTypeRef]()
       val status = SecItemCopyMatching(
@@ -51,13 +51,13 @@ object Keychain:
         val accountStr = makeCFString(account)
         val data = makeData(bytes)
         val attributes = makeDict(
-          SecClass.value.asCFTypeRef -> SecClassGenericPassword.value.asCFTypeRef,
-          SecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef,
-          SecValueData.value.asCFTypeRef -> data.value.asCFTypeRef
+          kSecClass.value.asCFTypeRef -> kSecClassGenericPassword.value.asCFTypeRef,
+          kSecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef,
+          kSecValueData.value.asCFTypeRef -> data.value.asCFTypeRef
         )
         val query = makeDict(
-          SecClass.value.asCFTypeRef -> SecClassGenericPassword.value.asCFTypeRef,
-          SecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef
+          kSecClass.value.asCFTypeRef -> kSecClassGenericPassword.value.asCFTypeRef,
+          kSecAttrAccount.value.asCFTypeRef -> accountStr.value.asCFTypeRef
         )
         // Try update first; on errSecItemNotFound (first run, nothing to
         // update) fall back to add.
