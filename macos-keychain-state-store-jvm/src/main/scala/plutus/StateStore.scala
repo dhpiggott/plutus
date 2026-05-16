@@ -6,8 +6,10 @@ import smithy4s.json.*
 
 import java.lang.foreign.*
 import java.lang.foreign.ValueLayout.*
-import java.lang.invoke.MethodHandle
 import java.nio.charset.StandardCharsets
+
+import macos.macos_h.*
+import macos.macos_h_1.*
 
 import Keychain.*
 
@@ -18,32 +20,24 @@ def loadState()(using verbosity: Verbosity): IO[Option[State]] =
       try
         val query = makeDict(
           arena,
-          kSecClass -> kSecClassGenericPassword,
-          kSecAttrAccount -> secItemName,
-          kSecReturnData -> kCFBooleanTrue
+          kSecClass() -> kSecClassGenericPassword(),
+          kSecAttrAccount() -> secItemName,
+          kSecReturnData() -> kCFBooleanTrue()
         )
         val resultPtr = arena.allocate(ADDRESS)
-        val status = SecItemCopyMatching
-          .invokeWithArguments(query, resultPtr)
-          .asInstanceOf[Integer]
-          .intValue
-        CFRelease.invokeWithArguments(query)
+        val status = SecItemCopyMatching(query, resultPtr)
+        CFRelease(query)
         status match
-          case `errSecItemNotFound` =>
+          case `notFound` =>
             Right:
               None
 
-          case `errSecSuccess` =>
+          case `success` =>
             val data = resultPtr.get(ADDRESS, 0)
-            val length = CFDataGetLength
-              .invokeWithArguments(data)
-              .asInstanceOf[java.lang.Long]
-              .longValue
-            val bytesPtr = CFDataGetBytePtr
-              .invokeWithArguments(data)
-              .asInstanceOf[MemorySegment]
+            val length = CFDataGetLength(data)
+            val bytesPtr = CFDataGetBytePtr(data)
             val bytes = bytesPtr.reinterpret(length).toArray(JAVA_BYTE)
-            CFRelease.invokeWithArguments(data)
+            CFRelease(data)
             Right:
               Some:
                 bytes
@@ -89,35 +83,29 @@ def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
       )
       val attributes = makeDict(
         arena,
-        kSecClass -> kSecClassGenericPassword,
-        kSecAttrAccount -> secItemName,
-        kSecValueData -> data
+        kSecClass() -> kSecClassGenericPassword(),
+        kSecAttrAccount() -> secItemName,
+        kSecValueData() -> data
       )
       val query = makeDict(
         arena,
-        kSecClass -> kSecClassGenericPassword,
-        kSecAttrAccount -> secItemName
+        kSecClass() -> kSecClassGenericPassword(),
+        kSecAttrAccount() -> secItemName
       )
       // Try update first; on errSecItemNotFound (first run, nothing to update)
       // fall back to add.
-      val updateStatus = SecItemUpdate
-        .invokeWithArguments(query, attributes)
-        .asInstanceOf[Integer]
-        .intValue
+      val updateStatus = SecItemUpdate(query, attributes)
       val status =
-        if updateStatus == errSecItemNotFound then
-          SecItemAdd
-            .invokeWithArguments(attributes, MemorySegment.NULL)
-            .asInstanceOf[Integer]
-            .intValue
+        if updateStatus == notFound then
+          SecItemAdd(attributes, MemorySegment.NULL)
         else updateStatus
-      CFRelease.invokeWithArguments(query)
-      CFRelease.invokeWithArguments(attributes)
-      CFRelease.invokeWithArguments(data)
+      CFRelease(query)
+      CFRelease(attributes)
+      CFRelease(data)
       status
     finally arena.close()
   _ <- (IO.unlessA:
-    status == errSecSuccess
+    status == success
   ):
     IO.raiseError:
       Error:
@@ -128,152 +116,28 @@ yield ()
 
 private object Keychain:
 
-  private val linker = Linker.nativeLinker()
-
-  private val coreFoundation = SymbolLookup.libraryLookup(
-    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
-    Arena.global
-  )
-  private val security = SymbolLookup.libraryLookup(
-    "/System/Library/Frameworks/Security.framework/Security",
-    Arena.global
-  )
-
-  private def downcall(
-      lookup: SymbolLookup,
-      name: String,
-      descriptor: FunctionDescriptor
-  ): MethodHandle =
-    linker.downcallHandle(lookupOrThrow(lookup, name), descriptor)
-
-  // `extern const CFStringRef`/`extern const CFBooleanRef` globals: the symbol
-  // address points at a pointer-sized cell holding the actual CFTypeRef value,
-  // so dereference once to get the value the macOS APIs expect at call sites.
-  private def globalCFTypeRef(
-      lookup: SymbolLookup,
-      name: String
-  ): MemorySegment =
-    lookupOrThrow(lookup, name).reinterpret(ADDRESS.byteSize).get(ADDRESS, 0)
-
-  private def lookupOrThrow(
-      lookup: SymbolLookup,
-      name: String
-  ): MemorySegment =
-    lookup
-      .find(name)
-      .orElseThrow(() => UnsatisfiedLinkError(s"Symbol $name not found"))
-
-  val CFStringCreateWithBytes: MethodHandle = downcall(
-    coreFoundation,
-    "CFStringCreateWithBytes",
-    FunctionDescriptor.of(
-      ADDRESS,
-      ADDRESS,
-      ADDRESS,
-      JAVA_LONG,
-      JAVA_INT,
-      JAVA_BYTE
-    )
-  )
-
-  val CFDataCreate: MethodHandle = downcall(
-    coreFoundation,
-    "CFDataCreate",
-    FunctionDescriptor.of(ADDRESS, ADDRESS, ADDRESS, JAVA_LONG)
-  )
-
-  val CFDataGetLength: MethodHandle = downcall(
-    coreFoundation,
-    "CFDataGetLength",
-    FunctionDescriptor.of(JAVA_LONG, ADDRESS)
-  )
-
-  val CFDataGetBytePtr: MethodHandle = downcall(
-    coreFoundation,
-    "CFDataGetBytePtr",
-    FunctionDescriptor.of(ADDRESS, ADDRESS)
-  )
-
-  val CFDictionaryCreate: MethodHandle = downcall(
-    coreFoundation,
-    "CFDictionaryCreate",
-    FunctionDescriptor.of(
-      ADDRESS,
-      ADDRESS,
-      ADDRESS,
-      ADDRESS,
-      JAVA_LONG,
-      ADDRESS,
-      ADDRESS
-    )
-  )
-
-  val CFRelease: MethodHandle = downcall(
-    coreFoundation,
-    "CFRelease",
-    FunctionDescriptor.ofVoid(ADDRESS)
-  )
-
-  val SecItemCopyMatching: MethodHandle = downcall(
-    security,
-    "SecItemCopyMatching",
-    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS)
-  )
-
-  val SecItemAdd: MethodHandle = downcall(
-    security,
-    "SecItemAdd",
-    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS)
-  )
-
-  val SecItemUpdate: MethodHandle = downcall(
-    security,
-    "SecItemUpdate",
-    FunctionDescriptor.of(JAVA_INT, ADDRESS, ADDRESS)
-  )
-
-  val kSecClass: MemorySegment = globalCFTypeRef(security, "kSecClass")
-  val kSecClassGenericPassword: MemorySegment =
-    globalCFTypeRef(security, "kSecClassGenericPassword")
-  val kSecAttrAccount: MemorySegment =
-    globalCFTypeRef(security, "kSecAttrAccount")
-  val kSecValueData: MemorySegment = globalCFTypeRef(security, "kSecValueData")
-  val kSecReturnData: MemorySegment =
-    globalCFTypeRef(security, "kSecReturnData")
-  val kCFBooleanTrue: MemorySegment =
-    globalCFTypeRef(coreFoundation, "kCFBooleanTrue")
-
-  // SecBase.h
-  val errSecSuccess: Int = 0
-  val errSecItemNotFound: Int = -25300
-
-  // CFString.h
-  val kCFStringEncodingUTF8: Int = 0x08000100
+  // Pattern-match guards need a stable val, and jextract emits these as
+  // static methods rather than constants. Renamed to avoid clashing with the
+  // imported methods.
+  val success: Int = errSecSuccess()
+  val notFound: Int = errSecItemNotFound()
 
   def makeCFString(arena: Arena, s: String): MemorySegment =
     val bytes = s.getBytes(StandardCharsets.UTF_8)
     val buf = arena.allocate(bytes.length)
     MemorySegment.copy(bytes, 0, buf, JAVA_BYTE, 0L, bytes.length)
-    CFStringCreateWithBytes
-      .invokeWithArguments(
-        MemorySegment.NULL,
-        buf,
-        java.lang.Long.valueOf(bytes.length),
-        java.lang.Integer.valueOf(kCFStringEncodingUTF8),
-        java.lang.Byte.valueOf(0.toByte)
-      )
-      .asInstanceOf[MemorySegment]
+    CFStringCreateWithBytes(
+      MemorySegment.NULL,
+      buf,
+      bytes.length.toLong,
+      kCFStringEncodingUTF8(),
+      0.toByte
+    )
 
   def makeData(arena: Arena, bytes: Array[Byte]): MemorySegment =
     val buf = arena.allocate(bytes.length.max(1).toLong)
     MemorySegment.copy(bytes, 0, buf, JAVA_BYTE, 0L, bytes.length)
-    CFDataCreate
-      .invokeWithArguments(
-        MemorySegment.NULL,
-        buf,
-        java.lang.Long.valueOf(bytes.length)
-      )
-      .asInstanceOf[MemorySegment]
+    CFDataCreate(MemorySegment.NULL, buf, bytes.length.toLong)
 
   def makeDict(
       arena: Arena,
@@ -285,16 +149,14 @@ private object Keychain:
       val (key, value) = entry
       keys.setAtIndex(ADDRESS, index, key)
       values.setAtIndex(ADDRESS, index, value)
-    CFDictionaryCreate
-      .invokeWithArguments(
-        MemorySegment.NULL,
-        keys,
-        values,
-        java.lang.Long.valueOf(entries.length),
-        MemorySegment.NULL,
-        MemorySegment.NULL
-      )
-      .asInstanceOf[MemorySegment]
+    CFDictionaryCreate(
+      MemorySegment.NULL,
+      keys,
+      values,
+      entries.length.toLong,
+      MemorySegment.NULL,
+      MemorySegment.NULL
+    )
 
   // Process-lifetime CFString — held forever so every query/attributes dict
   // can reference it without per-call retain/release.

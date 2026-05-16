@@ -1,4 +1,5 @@
 import org.typelevel.scalacoptions.ScalacOptions
+import sbt_jextract.*
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
@@ -35,8 +36,55 @@ lazy val `log` = projectMatrix
 
 lazy val `macos-keychain-state-store-jvm` = projectMatrix
   .dependsOn(`smithy4s-schemas`, log)
+  .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    jextractBindings += {
+      val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
+      val managed = (Compile / sourceManaged).value
+      val includeDir = managed / "include"
+      IO.createDirectory(includeDir)
+      Seq("CoreFoundation", "Security").foreach { fw =>
+        val link = (includeDir / fw).toPath
+        val target = file(
+          s"$sdkPath/System/Library/Frameworks/$fw.framework/Headers"
+        ).toPath
+        if (!java.nio.file.Files.exists(link))
+          java.nio.file.Files.createSymbolicLink(link, target)
+      }
+      val header = managed / "macos.h"
+      IO.write(
+        header,
+        Seq(
+          "CoreFoundation/CFNumber.h",
+          "CoreFoundation/CFDictionary.h",
+          "CoreFoundation/CFString.h",
+          "Security/SecBase.h",
+          "Security/SecItem.h"
+        ).map(p => s"#include <$p>\n").mkString
+      )
+      // TODO: Switch back to a dotted package once
+      // https://github.com/indoorvivants/sbt-jextract/issues/1 is fixed.
+      // sbt-jextract's source generator does `IO.listFiles(dest / pkg)`,
+      // passing the package name literally as a directory segment — so a
+      // dotted package like "plutus.macos" looks for `dest/plutus.macos/`,
+      // while jextract actually creates `dest/plutus/macos/`. The generator
+      // returns an empty Set, and `sbt clean compile` only picks the Java
+      // sources up on the second run (via unmanagedSourceDirectories). A
+      // single-segment package avoids the mismatch.
+      JextractBinding(header, "macos")
+        .withArgs(
+          Seq(
+            "-I",
+            includeDir.getAbsolutePath,
+            "-l",
+            ":/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
+            "-l",
+            ":/System/Library/Frameworks/Security.framework/Security"
+          )
+        )
+    },
+    jextractMode := JextractMode.ResourceGenerator,
     libraryDependencies ++= Seq(
       "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
       "org.typelevel" %%% "cats-effect" % "3.7.0"
