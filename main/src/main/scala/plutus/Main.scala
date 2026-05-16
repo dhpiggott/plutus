@@ -73,3 +73,6 @@ lazy val traceOpts: Opts[Verbosity] =
     )
     .as:
       Verbosity.TRACE
+
+enum Verbosity:
+  case ERROR, WARN, INFO, VERBOSE, TRACE
