@@ -4,6 +4,7 @@ import cats.effect.*
 import macos.Globals.*
 import macos.all.*
 
+import scala.scalanative.libc.string.memcpy
 import scala.scalanative.unsafe.*
 import scala.scalanative.unsigned.*
 
@@ -91,11 +92,8 @@ object Keychain:
     // expects either NULL with numBytes 0 or a real backing pointer. The slack
     // byte is never read: the call uses `bytes.length`.
     val buf = alloc[UInt8](bytes.length.max(1))
-    var i = 0
-    while i < bytes.length do
-      buf(i) = UInt8:
-        bytes(i).toUByte
-      i += 1
+    if bytes.nonEmpty then
+      memcpy(buf, bytes.at(0), bytes.length.toSize.toCSize): Unit
     CFStringCreateWithBytes(
       alloc = CFAllocatorRef:
         null
@@ -114,11 +112,8 @@ object Keychain:
   private def makeData(bytes: Array[Byte])(using Zone): CFDataRef =
     // Same `.max(1)` rationale as `makeCFString`.
     val buf = alloc[UInt8](bytes.length.max(1))
-    var i = 0
-    while i < bytes.length do
-      buf(i) = UInt8:
-        bytes(i).toUByte
-      i += 1
+    if bytes.nonEmpty then
+      memcpy(buf, bytes.at(0), bytes.length.toSize.toCSize): Unit
     CFDataCreate(
       allocator = CFAllocatorRef:
         null
