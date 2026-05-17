@@ -16,12 +16,15 @@
 
 package porcupine
 
+import cats.effect.kernel.Async
 import cats.effect.kernel.MonadCancelThrow
 import cats.effect.kernel.Resource
+import cats.effect.std.Mutex
 import cats.syntax.all.*
 import fs2.Chunk
 import fs2.Pipe
 import fs2.Stream
+import scodec.bits.ByteVector
 
 import java.util.NoSuchElementException
 import scala.annotation.targetName
@@ -86,7 +89,71 @@ private abstract class AbstractDatabase[F[_]](using F: MonadCancelThrow[F])
   final def pipe[A, B](query: Query[A, B], chunkSize: Int) =
     in => Stream.resource(prepare(query)).flatMap(_.pipe(chunkSize)(in))
 
-object Database extends DatabasePlatform
+object Database:
+  def open[F[_]](
+      filename: String
+  )(using F: Async[F]): Resource[F, Database[F]] =
+    for
+      mutex <- Resource.eval(Mutex[F])
+      conn <- Resource.fromAutoCloseable(F.blocking(Sqlite.open(filename)))
+    yield new AbstractDatabase[F]:
+      def prepare[A, B](
+          query: Query[A, B]
+      ): Resource[F, Statement[F, A, B]] =
+        Resource
+          .fromAutoCloseable {
+            mutex.lock.surround:
+              F.blocking(conn.prepare(query.sql))
+          }
+          .map { stmt =>
+            new AbstractStatement[F, A, B]:
+              def cursor(args: A): Resource[F, Cursor[F, B]] = mutex.lock *>
+                Resource
+                  .make {
+                    F.blocking {
+                      stmt.reset()
+                      query.encoder.encode(args).zipWithIndex.foreach:
+                        case (LiteValue.Null, i) =>
+                          stmt.bindNull(i + 1)
+                        case (LiteValue.Integer(value), i) =>
+                          stmt.bindLong(i + 1, value)
+                        case (LiteValue.Real(value), i) =>
+                          stmt.bindDouble(i + 1, value)
+                        case (LiteValue.Text(value), i) =>
+                          stmt.bindText(i + 1, value)
+                        case (LiteValue.Blob(value), i) =>
+                          stmt.bindBlob(i + 1, value.toArray)
+                    }
+                  }(_ => F.blocking(stmt.reset()))
+                  .as {
+                    new Cursor[F, B]:
+                      def fetch(maxRows: Int): F[(List[B], Boolean)] = F
+                        .blocking {
+                          val rows = List.newBuilder[List[LiteValue]]
+                          var i = 0
+                          var more = true
+                          while i < maxRows && more do
+                            if stmt.step() then
+                              rows += List.tabulate(stmt.columnCount): j =>
+                                (stmt.column(j): @unchecked) match
+                                  case null         => LiteValue.Null
+                                  case v: Long      => LiteValue.Integer(v)
+                                  case v: Double    => LiteValue.Real(v)
+                                  case v: String    => LiteValue.Text(v)
+                                  case v: Array[Byte] =>
+                                    LiteValue.Blob(ByteVector.view(v))
+                              i += 1
+                            else more = false
+                          (rows.result(), more)
+                        }
+                        .flatMap { (rows, more) =>
+                          rows
+                            .traverse(query.decoder.decode.runA(_))
+                            .tupleRight(more)
+                            .liftTo[F]
+                        }
+                  }
+          }
 
 abstract class Statement[F[_], A, B] private[porcupine]:
   def cursor(args: A): Resource[F, Cursor[F, B]]

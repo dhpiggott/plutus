@@ -103,29 +103,30 @@ lazy val `keychain-native` = projectMatrix
   )
   .nativePlatform(scalaVersions = scala3Versions)
 
-lazy val porcupine = projectMatrix
-  .settings(
-    dependencyUpdatesFailBuild := true,
-    libraryDependencies ++= Seq(
-      "org.typelevel" %%% "cats-effect" % "3.7.0",
-      "co.fs2" %%% "fs2-core" % "3.13.0",
-      "org.scodec" %%% "scodec-bits" % "1.2.4"
-    )
-  )
-  .jvmPlatform(scalaVersions = scala3Versions)
-  .nativePlatform(scalaVersions = scala3Versions)
-
 lazy val `porcupine-jvm` = projectMatrix
-  .dependsOn(porcupine)
+  .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
-    // TODO: Replace with jextract generated bindings to sqlite3?
-    libraryDependencies += "org.xerial" % "sqlite-jdbc" % "3.53.0.0"
+    jextractBindings += {
+      val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
+      val header = (Compile / sourceManaged).value / "libsqlite.h"
+      IO.write(header, s"#include <$sdkPath/usr/include/sqlite3.h>\n")
+      JextractBinding(header, "libsqlite")
+        .withArgs(
+          Seq(
+            "-l",
+            ":/usr/lib/libsqlite3.dylib"
+          )
+        )
+    },
+    jextractMode := JextractMode.ResourceGenerator,
+    // Emit MethodParameters into the jextract-generated Java bytecode so
+    // `Sqlite.scala` can call those methods with named arguments.
+    javacOptions += "-parameters"
   )
   .jvmPlatform(scalaVersions = scala3Versions)
 
 lazy val `porcupine-native` = projectMatrix
-  .dependsOn(porcupine)
   .enablePlugins(BindgenPlugin, VcpkgNativePlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -155,6 +156,20 @@ lazy val `porcupine-native` = projectMatrix
   )
   .nativePlatform(scalaVersions = scala3Versions)
 
+lazy val porcupine = projectMatrix
+  .settings(
+    dependencyUpdatesFailBuild := true,
+    libraryDependencies ++= Seq(
+      "org.typelevel" %%% "cats-effect" % "3.7.0",
+      "co.fs2" %%% "fs2-core" % "3.13.0",
+      "org.scodec" %%% "scodec-bits" % "1.2.4"
+    )
+  )
+  .dependsOn(`porcupine-jvm`.jvm(scala3Version))
+  .jvmPlatform(scalaVersions = scala3Versions)
+  .dependsOn(`porcupine-native`.native(scala3Version))
+  .nativePlatform(scalaVersions = scala3Versions)
+
 lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
   .settings(
@@ -175,7 +190,7 @@ lazy val main = projectMatrix
     buildInfoPackage := "plutus"
   )
   .dependsOn(`keychain-jvm`.jvm(scala3Version))
-  .dependsOn(`porcupine-jvm`.jvm(scala3Version))
+  .dependsOn(porcupine.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
     // `jvmPlatform` already prepends `VirtualAxis.jvm`.
@@ -197,7 +212,7 @@ lazy val main = projectMatrix
     )
   )
   .dependsOn(`keychain-native`.native(scala3Version))
-  .dependsOn(`porcupine-native`.native(scala3Version))
+  .dependsOn(porcupine.native(scala3Version))
   .nativePlatform(
     scalaVersions = scala3Versions,
     // `nativePlatform` already prepends `VirtualAxis.native`.
