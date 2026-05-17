@@ -5,7 +5,7 @@ A small personal-finance CLI that does two unrelated jobs:
 - **GnuCash housekeeping** — archive hidden accounts in a local GnuCash SQLite file, and restore them later.
 - **Monzo → OFX export** — pull transactions from the Monzo API and write a single `monzo.ofx` file suitable for import into GnuCash (or anything else that reads OFX).
 
-It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; both builds store Monzo OAuth credentials in the macOS Keychain — the JVM build via the [Foreign Function & Memory API](https://openjdk.org/jeps/454), the Scala Native build via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
+It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; both builds reach `sqlite3` and the macOS Keychain through the same FFI mechanism per platform — the JVM build via the [Foreign Function & Memory API](https://openjdk.org/jeps/454) (using jextract for bindings), the Scala Native build via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
 
 ## Commands
 
@@ -90,7 +90,9 @@ sbt dependencyUpdates       # also fails the regular build if any dep is stale
 | --- | --- | --- |
 | `keychain-jvm` | jvm | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain via Java's Foreign Function & Memory API. |
 | `keychain-native` | native | `object Keychain` (same surface) backed by the macOS Keychain via sn-bindgen. |
-| `porcupine` (+ `-jvm`, `-native`) | cross | Inlined Porcupine fork. JVM impl uses `sqlite-jdbc`; Native impl uses direct `sqlite3` C externs. |
+| `porcupine-jvm` | jvm | `object Sqlite` (`Connection` / `Statement` over sqlite3) via jextract + Java's Foreign Function & Memory API. |
+| `porcupine-native` | native | `object Sqlite` (same surface) backed by sqlite3 via sn-bindgen. |
+| `porcupine` | cross | Inlined Porcupine fork. Builds the cats-effect `Database` interface on top of whichever `Sqlite` impl is on the classpath. |
 | `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + the Porcupine impl into `decline`'s `CommandIOApp`. |
 
 ## Status
