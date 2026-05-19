@@ -165,10 +165,18 @@ lazy val porcupine = projectMatrix
       "org.scodec" %%% "scodec-bits" % "1.2.4"
     )
   )
-  .dependsOn(`porcupine-jvm`.jvm(scala3Version))
-  .jvmPlatform(scalaVersions = scala3Versions)
-  .dependsOn(`porcupine-native`.native(scala3Version))
-  .nativePlatform(scalaVersions = scala3Versions)
+  .jvmPlatform(
+    scalaVersions = scala3Versions,
+    // `jvmPlatform` already prepends `VirtualAxis.jvm`.
+    axisValues = Seq.empty,
+    configure = _.dependsOn(`porcupine-jvm`.jvm(scala3Version))
+  )
+  .nativePlatform(
+    scalaVersions = scala3Versions,
+    // `nativePlatform` already prepends `VirtualAxis.native`.
+    axisValues = Seq.empty,
+    configure = _.dependsOn(`porcupine-native`.native(scala3Version))
+  )
 
 lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
@@ -189,30 +197,28 @@ lazy val main = projectMatrix
     buildInfoKeys := Seq(version),
     buildInfoPackage := "plutus"
   )
-  .dependsOn(`keychain-jvm`.jvm(scala3Version))
-  .dependsOn(porcupine.jvm(scala3Version))
   .jvmPlatform(
     scalaVersions = scala3Versions,
     // `jvmPlatform` already prepends `VirtualAxis.jvm`.
     axisValues = Seq.empty,
-    configure = _.settings(
-      // The .native(...) projectMatrix dependsOn calls below leak Scala Native
-      // transitives (scalalib_native0.5_2.13) into the JVM resolve graph;
-      // exclude them here to avoid cross-version-suffix conflicts.
-      excludeDependencies ++= Seq(
-        ExclusionRule("org.scala-native"),
-        ExclusionRule("org.portable-scala")
-      ),
-      libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
-      connectInput := true,
-      fork := true,
-      // FFM API is final in JDK 22+; suppress the runtime "restricted method"
-      // warning so stderr stays clean during `main3/run`.
-      javaOptions += "--enable-native-access=ALL-UNNAMED"
-    )
+    configure = _.dependsOn(`keychain-jvm`.jvm(scala3Version))
+      .dependsOn(porcupine.jvm(scala3Version))
+      .settings(
+        // The .native(...) projectMatrix dependsOn calls below leak Scala Native
+        // transitives (scalalib_native0.5_2.13) into the JVM resolve graph;
+        // exclude them here to avoid cross-version-suffix conflicts.
+        excludeDependencies ++= Seq(
+          ExclusionRule("org.scala-native"),
+          ExclusionRule("org.portable-scala")
+        ),
+        libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
+        connectInput := true,
+        fork := true,
+        // FFM API is final in JDK 22+; suppress the runtime "restricted method"
+        // warning so stderr stays clean during `main3/run`.
+        javaOptions += "--enable-native-access=ALL-UNNAMED"
+      )
   )
-  .dependsOn(`keychain-native`.native(scala3Version))
-  .dependsOn(porcupine.native(scala3Version))
   .nativePlatform(
     scalaVersions = scala3Versions,
     // `nativePlatform` already prepends `VirtualAxis.native`.
@@ -221,25 +227,28 @@ lazy val main = projectMatrix
     // the native row only, not at the projectMatrix level. The native plugin
     // hijacks `%%%` cross-version resolution and adds nscplugin to every row
     // it's applied to, so enabling it project-wide poisons JVM compilation.
-    configure = _.enablePlugins(VcpkgNativePlugin).settings(
-      vcpkgDependencies := VcpkgDependencies("sqlite3"),
-      // Append rather than replace: VcpkgNativePlugin has already injected
-      // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
-      // `withLinkingOptions(Seq(...))` would discard.
-      nativeConfig ~= (c =>
-        c.withLinkingOptions(
-          c.linkingOptions ++ Seq(
-            "-framework",
-            "CoreFoundation",
-            "-framework",
-            "Security",
-            // Homebrew install path for s2n, pulled in by epollcat for TLS.
-            "-L/opt/homebrew/lib"
+    configure = _.enablePlugins(VcpkgNativePlugin)
+      .dependsOn(`keychain-native`.native(scala3Version))
+      .dependsOn(porcupine.native(scala3Version))
+      .settings(
+        vcpkgDependencies := VcpkgDependencies("sqlite3"),
+        // Append rather than replace: VcpkgNativePlugin has already injected
+        // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
+        // `withLinkingOptions(Seq(...))` would discard.
+        nativeConfig ~= (c =>
+          c.withLinkingOptions(
+            c.linkingOptions ++ Seq(
+              "-framework",
+              "CoreFoundation",
+              "-framework",
+              "Security",
+              // Homebrew install path for s2n, pulled in by epollcat for TLS.
+              "-L/opt/homebrew/lib"
+            )
           )
-        )
-      ),
-      crossPaths := false
-    )
+        ),
+        crossPaths := false
+      )
   )
 
 lazy val scala3Versions = Seq(scala3Version)
