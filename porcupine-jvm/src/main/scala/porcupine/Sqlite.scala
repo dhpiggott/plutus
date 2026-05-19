@@ -38,11 +38,17 @@ object Sqlite:
         zVfs = MemorySegment.NULL
       )
       val db = dbPtr.get(ADDRESS, 0)
-      if rc != SQLITE_OK() then
-        if !db.equals(MemorySegment.NULL) then sqlite3_close(db): Unit
-        throw RuntimeException(errstr(rc))
+      if rc != SQLITE_OK() && !db.equals(MemorySegment.NULL) then
+        sqlite3_close(db): Unit
+      guard(rc)
       ConnectionImpl(db)
     finally arena.close()
+
+  private def guard(rc: Int): Unit =
+    if rc != SQLITE_OK() then throw RuntimeException(errstr(rc))
+
+  private def guard(db: MemorySegment)(rc: Int): Unit =
+    if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
 
   // SQLITE_TRANSIENT is `(sqlite3_destructor_type)-1`. Passed as the destructor
   // for sqlite3_bind_text/blob it tells sqlite to copy the buffer, so we can
@@ -67,35 +73,29 @@ object Sqlite:
         val sqlSeg = arena.allocate(sqlBytes.length.toLong.max(1L))
         MemorySegment.copy(sqlBytes, 0, sqlSeg, JAVA_BYTE, 0L, sqlBytes.length)
         val stmtPtr = arena.allocate(ADDRESS)
-        val rc = sqlite3_prepare_v2(
-          db = db,
-          zSql = sqlSeg,
-          nByte = sqlBytes.length,
-          ppStmt = stmtPtr,
-          pzTail = MemorySegment.NULL
-        )
-        if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+        guard(db):
+          sqlite3_prepare_v2(
+            db = db,
+            zSql = sqlSeg,
+            nByte = sqlBytes.length,
+            ppStmt = stmtPtr,
+            pzTail = MemorySegment.NULL
+          )
         StatementImpl(db, stmtPtr.get(ADDRESS, 0))
       finally arena.close()
 
-    def close(): Unit =
-      val rc = sqlite3_close(db)
-      if rc != SQLITE_OK() then throw RuntimeException(errstr(rc))
+    def close(): Unit = guard(sqlite3_close(db))
 
   private final class StatementImpl(db: MemorySegment, stmt: MemorySegment)
       extends Statement:
 
-    def bindNull(i: Int): Unit =
-      val rc = sqlite3_bind_null(stmt, i)
-      if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
 
     def bindLong(i: Int, value: Long): Unit =
-      val rc = sqlite3_bind_int64(stmt, i, value)
-      if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+      guard(db)(sqlite3_bind_int64(stmt, i, value))
 
     def bindDouble(i: Int, value: Double): Unit =
-      val rc = sqlite3_bind_double(stmt, i, value)
-      if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+      guard(db)(sqlite3_bind_double(stmt, i, value))
 
     def bindText(i: Int, value: String): Unit =
       val arena = Arena.ofConfined()
@@ -103,8 +103,7 @@ object Sqlite:
         val bytes = value.getBytes(StandardCharsets.UTF_8)
         val seg = arena.allocate(bytes.length.toLong.max(1L))
         MemorySegment.copy(bytes, 0, seg, JAVA_BYTE, 0L, bytes.length)
-        val rc = sqlite3_bind_text(stmt, i, seg, bytes.length, SqliteTransient)
-        if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+        guard(db)(sqlite3_bind_text(stmt, i, seg, bytes.length, SqliteTransient))
       finally arena.close()
 
     def bindBlob(i: Int, value: Array[Byte]): Unit =
@@ -112,19 +111,18 @@ object Sqlite:
       try
         val seg = arena.allocate(value.length.toLong.max(1L))
         MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
-        val rc = sqlite3_bind_blob(stmt, i, seg, value.length, SqliteTransient)
-        if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+        guard(db)(sqlite3_bind_blob(stmt, i, seg, value.length, SqliteTransient))
       finally arena.close()
 
     def step(): Boolean =
       sqlite3_step(stmt) match
         case rc if rc == SQLITE_ROW()  => true
         case rc if rc == SQLITE_DONE() => false
-        case _                         => throw RuntimeException(errmsg(db))
+        case other                     =>
+          guard(db)(other)
+          false
 
-    def reset(): Unit =
-      val rc = sqlite3_reset(stmt)
-      if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+    def reset(): Unit = guard(db)(sqlite3_reset(stmt))
 
     def columnCount: Int = sqlite3_column_count(stmt)
 
@@ -145,6 +143,4 @@ object Sqlite:
           else
             sqlite3_column_blob(stmt, i).reinterpret(len.toLong).toArray(JAVA_BYTE)
 
-    def close(): Unit =
-      val rc = sqlite3_finalize(stmt)
-      if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
