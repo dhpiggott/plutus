@@ -50,11 +50,6 @@ object Sqlite:
   private def guard(db: MemorySegment)(rc: Int): Unit =
     if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
 
-  // SQLITE_TRANSIENT is `(sqlite3_destructor_type)-1`. Passed as the destructor
-  // for sqlite3_bind_text/blob it tells sqlite to copy the buffer, so we can
-  // release the bind allocations as soon as the call returns.
-  private val SqliteTransient: MemorySegment = MemorySegment.ofAddress(-1L)
-
   private def errstr(rc: Int): String =
     val msg = sqlite3_errstr(rc)
     if msg.equals(MemorySegment.NULL) then s"sqlite3 error $rc"
@@ -88,6 +83,12 @@ object Sqlite:
 
   private final class StatementImpl(db: MemorySegment, stmt: MemorySegment)
       extends Statement:
+    // sqlite3_bind_text/blob receive raw pointers into these segments with the
+    // SQLITE_STATIC destructor (MemorySegment.NULL below). The segments must
+    // outlive the statement's last step(); reset() closes the arena. Heap
+    // arrays can't take their place — JVM GC moves them, so any pointer
+    // sqlite saved would dangle as soon as the bind call returned.
+    private var bindArena: Arena = Arena.ofConfined()
 
     def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
 
@@ -98,21 +99,15 @@ object Sqlite:
       guard(db)(sqlite3_bind_double(stmt, i, value))
 
     def bindText(i: Int, value: String): Unit =
-      val arena = Arena.ofConfined()
-      try
-        val bytes = value.getBytes(StandardCharsets.UTF_8)
-        val seg = arena.allocate(bytes.length.toLong.max(1L))
-        MemorySegment.copy(bytes, 0, seg, JAVA_BYTE, 0L, bytes.length)
-        guard(db)(sqlite3_bind_text(stmt, i, seg, bytes.length, SqliteTransient))
-      finally arena.close()
+      val bytes = value.getBytes(StandardCharsets.UTF_8)
+      val seg = bindArena.allocate(bytes.length.toLong.max(1L))
+      MemorySegment.copy(bytes, 0, seg, JAVA_BYTE, 0L, bytes.length)
+      guard(db)(sqlite3_bind_text(stmt, i, seg, bytes.length, MemorySegment.NULL))
 
     def bindBlob(i: Int, value: Array[Byte]): Unit =
-      val arena = Arena.ofConfined()
-      try
-        val seg = arena.allocate(value.length.toLong.max(1L))
-        MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
-        guard(db)(sqlite3_bind_blob(stmt, i, seg, value.length, SqliteTransient))
-      finally arena.close()
+      val seg = bindArena.allocate(value.length.toLong.max(1L))
+      MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
+      guard(db)(sqlite3_bind_blob(stmt, i, seg, value.length, MemorySegment.NULL))
 
     def step(): Boolean =
       sqlite3_step(stmt) match
@@ -122,7 +117,10 @@ object Sqlite:
           guard(db)(other)
           false
 
-    def reset(): Unit = guard(db)(sqlite3_reset(stmt))
+    def reset(): Unit =
+      guard(db)(sqlite3_reset(stmt))
+      bindArena.close()
+      bindArena = Arena.ofConfined()
 
     def columnCount: Int = sqlite3_column_count(stmt)
 
@@ -143,4 +141,6 @@ object Sqlite:
           else
             sqlite3_column_blob(stmt, i).reinterpret(len.toLong).toArray(JAVA_BYTE)
 
-    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
+    def close(): Unit =
+      guard(db)(sqlite3_finalize(stmt))
+      bindArena.close()
