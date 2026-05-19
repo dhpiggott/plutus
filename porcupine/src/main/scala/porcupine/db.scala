@@ -135,7 +135,7 @@ object Database:
                           while i < maxRows && more do
                             if stmt.step() then
                               rows += List.tabulate(stmt.columnCount): j =>
-                                (stmt.column(j): @unchecked) match
+                                stmt.column(j) match
                                   case null         => LiteValue.Null
                                   case v: Long      => LiteValue.Integer(v)
                                   case v: Double    => LiteValue.Real(v)
