@@ -8,20 +8,6 @@ import scala.scalanative.unsigned.*
 
 object Sqlite:
 
-  trait Connection extends AutoCloseable:
-    def prepare(sql: String): Statement
-
-  trait Statement extends AutoCloseable:
-    def bindNull(i: Int): Unit
-    def bindLong(i: Int, value: Long): Unit
-    def bindDouble(i: Int, value: Double): Unit
-    def bindText(i: Int, value: String): Unit
-    def bindBlob(i: Int, value: Array[Byte]): Unit
-    def step(): Boolean
-    def reset(): Unit
-    def columnCount: Int
-    def column(i: Int): Long | Double | String | Array[Byte] | Null
-
   def open(filename: String): Connection =
     val fn = (filename + 0.toChar).getBytes
     val dbPtr = stackalloc[Ptr[sqlite3]]()
@@ -31,7 +17,7 @@ object Sqlite:
       case t: Throwable =>
         if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
         throw t
-    ConnectionImpl(!dbPtr)
+    Connection(!dbPtr)
 
   inline private def guard(rc: CInt): Unit =
     if rc != SQLITE_OK then
@@ -41,18 +27,18 @@ object Sqlite:
     if rc != SQLITE_OK then
       throw RuntimeException(fromCString(sqlite3_errmsg(db)))
 
-  private final class ConnectionImpl(db: Ptr[sqlite3]) extends Connection:
+  final class Connection private[Sqlite] (db: Ptr[sqlite3]) extends AutoCloseable:
     def prepare(sql: String): Statement =
       val sqlBytes = sql.getBytes
       val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
       guard(db):
         sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
-      StatementImpl(db, !stmtPtr)
+      Statement(db, !stmtPtr)
 
     def close(): Unit = guard(sqlite3_close(db))
 
-  private final class StatementImpl(db: Ptr[sqlite3], stmt: Ptr[sqlite3_stmt])
-      extends Statement:
+  final class Statement private[Sqlite] (db: Ptr[sqlite3], stmt: Ptr[sqlite3_stmt])
+      extends AutoCloseable:
     // sqlite3_bind_text/blob receive raw pointers into these arrays with the
     // SQLITE_STATIC destructor (passed as `null` below). The arrays must
     // outlive the statement's last `step()`; `reset()` clears them.
