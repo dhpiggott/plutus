@@ -20,7 +20,7 @@ object Sqlite:
     def step(): Boolean
     def reset(): Unit
     def columnCount: Int
-    def column(i: Int): Any | Null
+    def column(i: Int): Long | Double | String | Array[Byte] | Null
 
   def open(filename: String): Connection =
     val arena = Arena.ofConfined()
@@ -128,7 +128,7 @@ object Sqlite:
 
     def columnCount: Int = sqlite3_column_count(stmt)
 
-    def column(i: Int): Any | Null =
+    def column(i: Int): Long | Double | String | Array[Byte] | Null =
       sqlite3_column_type(stmt, i) match
         case t if t == SQLITE_NULL()    => null
         case t if t == SQLITE_INTEGER() => sqlite3_column_int64(stmt, i)
