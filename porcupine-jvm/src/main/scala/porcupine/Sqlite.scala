@@ -8,20 +8,6 @@ import java.nio.charset.StandardCharsets
 
 object Sqlite:
 
-  trait Connection extends AutoCloseable:
-    def prepare(sql: String): Statement
-
-  trait Statement extends AutoCloseable:
-    def bindNull(i: Int): Unit
-    def bindLong(i: Int, value: Long): Unit
-    def bindDouble(i: Int, value: Double): Unit
-    def bindText(i: Int, value: String): Unit
-    def bindBlob(i: Int, value: Array[Byte]): Unit
-    def step(): Boolean
-    def reset(): Unit
-    def columnCount: Int
-    def column(i: Int): Long | Double | String | Array[Byte] | Null
-
   def open(filename: String): Connection =
     val arena = Arena.ofConfined()
     try
@@ -41,7 +27,7 @@ object Sqlite:
       if rc != SQLITE_OK() && !db.equals(MemorySegment.NULL) then
         sqlite3_close(db): Unit
       guard(rc)
-      ConnectionImpl(db)
+      Connection(db)
     finally arena.close()
 
   private def guard(rc: Int): Unit =
@@ -62,7 +48,7 @@ object Sqlite:
     if msg.equals(MemorySegment.NULL) then "sqlite3 error"
     else msg.reinterpret(Long.MaxValue).getString(0L)
 
-  private final class ConnectionImpl(db: MemorySegment) extends Connection:
+  final class Connection private[Sqlite] (db: MemorySegment) extends AutoCloseable:
     def prepare(sql: String): Statement =
       val arena = Arena.ofConfined()
       try
@@ -78,13 +64,13 @@ object Sqlite:
             ppStmt = stmtPtr,
             pzTail = MemorySegment.NULL
           )
-        StatementImpl(db, stmtPtr.get(ADDRESS, 0))
+        Statement(db, stmtPtr.get(ADDRESS, 0))
       finally arena.close()
 
     def close(): Unit = guard(sqlite3_close(db))
 
-  private final class StatementImpl(db: MemorySegment, stmt: MemorySegment)
-      extends Statement:
+  final class Statement private[Sqlite] (db: MemorySegment, stmt: MemorySegment)
+      extends AutoCloseable:
     // sqlite3_bind_text/blob receive raw pointers into these segments with the
     // SQLITE_STATIC destructor (MemorySegment.NULL below). The segments must
     // outlive the statement's last step(); reset() closes the arena. Heap
@@ -138,7 +124,7 @@ object Sqlite:
             // sqlite3_column_text comes back as a zero-sized MemorySegment;
             // bound it with the known length before reading.
             val ptr = sqlite3_column_text(stmt, i).reinterpret(len.toLong)
-            new String(ptr.toArray(JAVA_BYTE), StandardCharsets.UTF_8)
+            String(ptr.toArray(JAVA_BYTE), StandardCharsets.UTF_8)
         case t if t == SQLITE_BLOB() =>
           val len = sqlite3_column_bytes(stmt, i)
           if len == 0 then new Array[Byte](0)
