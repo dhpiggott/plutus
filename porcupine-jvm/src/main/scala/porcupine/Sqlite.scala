@@ -50,6 +50,8 @@ object Sqlite:
   private def guard(db: MemorySegment)(rc: Int): Unit =
     if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
 
+  // jextract types `const char*` returns as a zero-sized MemorySegment, so
+  // reinterpret widens the bound for getString to scan up to the NUL.
   private def errstr(rc: Int): String =
     val msg = sqlite3_errstr(rc)
     if msg.equals(MemorySegment.NULL) then s"sqlite3 error $rc"
@@ -133,12 +135,15 @@ object Sqlite:
           val len = sqlite3_column_bytes(stmt, i)
           if len == 0 then ""
           else
+            // sqlite3_column_text comes back as a zero-sized MemorySegment;
+            // bound it with the known length before reading.
             val ptr = sqlite3_column_text(stmt, i).reinterpret(len.toLong)
             new String(ptr.toArray(JAVA_BYTE), StandardCharsets.UTF_8)
         case t if t == SQLITE_BLOB() =>
           val len = sqlite3_column_bytes(stmt, i)
           if len == 0 then new Array[Byte](0)
           else
+            // Same zero-sized return as SQLITE_TEXT — bound with the length.
             sqlite3_column_blob(stmt, i).reinterpret(len.toLong).toArray(JAVA_BYTE)
 
     def close(): Unit =
