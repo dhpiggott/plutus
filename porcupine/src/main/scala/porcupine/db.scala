@@ -189,13 +189,13 @@ private abstract class AbstractStatement[F[_], A, B](using
   final def option(args: A) = cursor(args).use(_.fetch(2).flatMap {
     case (Nil, _)         => F.pure(None)
     case (head :: Nil, _) => F.pure(Some(head))
-    case _ => F.raiseError(new RuntimeException("More than 1 row"))
+    case _ => F.raiseError(RuntimeException("More than 1 row"))
   })
 
   final def unique(args: A) = cursor(args).use(_.fetch(2).flatMap {
-    case (Nil, _)         => F.raiseError(new NoSuchElementException)
+    case (Nil, _)         => F.raiseError(NoSuchElementException())
     case (head :: Nil, _) => F.pure(head)
-    case _ => F.raiseError(new RuntimeException("More than 1 row"))
+    case _ => F.raiseError(RuntimeException("More than 1 row"))
   })
 
   final def stream(args: A, chunkSize: Int) =

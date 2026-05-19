@@ -108,7 +108,7 @@ object Codec:
     def decode = StateT {
       case (l: Long) :: tail => Right((tail, l))
       case other             =>
-        Left(new RuntimeException(s"Expected integer, got ${other.headOption}"))
+        Left(RuntimeException(s"Expected integer, got ${other.headOption}"))
     }
 
   val real: Codec[Double] = new:
@@ -116,7 +116,7 @@ object Codec:
     def decode = StateT {
       case (d: Double) :: tail => Right((tail, d))
       case other               =>
-        Left(new RuntimeException(s"Expected real, got ${other.headOption}"))
+        Left(RuntimeException(s"Expected real, got ${other.headOption}"))
     }
 
   val text: Codec[String] = new:
@@ -124,7 +124,7 @@ object Codec:
     def decode = StateT {
       case (s: String) :: tail => Right((tail, s))
       case other               =>
-        Left(new RuntimeException(s"Expected text, got ${other.headOption}"))
+        Left(RuntimeException(s"Expected text, got ${other.headOption}"))
     }
 
   val blob: Codec[ByteVector] = new:
@@ -132,7 +132,7 @@ object Codec:
     def decode = StateT {
       case (b: ByteVector) :: tail => Right((tail, b))
       case other                   =>
-        Left(new RuntimeException(s"Expected blob, got ${other.headOption}"))
+        Left(RuntimeException(s"Expected blob, got ${other.headOption}"))
     }
 
   val `null`: Codec[None.type] = new:
@@ -140,7 +140,7 @@ object Codec:
     def decode = StateT {
       case null :: tail => Right((tail, None))
       case other        =>
-        Left(new RuntimeException(s"Expected NULL, got ${other.headOption}"))
+        Left(RuntimeException(s"Expected NULL, got ${other.headOption}"))
     }
 
   def unit: Codec[Unit] = new:
