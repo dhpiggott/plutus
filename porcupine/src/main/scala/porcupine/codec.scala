@@ -104,42 +104,42 @@ trait Codec[A] extends Encoder[A], Decoder[A]:
 
 object Codec:
   val integer: Codec[Long] = new:
-    def encode(l: Long) = LiteValue.Integer(l) :: Nil
+    def encode(l: Long) = l :: Nil
     def decode = StateT {
-      case LiteValue.Integer(l) :: tail => Right((tail, l))
-      case other                        =>
+      case (l: Long) :: tail => Right((tail, l))
+      case other             =>
         Left(new RuntimeException(s"Expected integer, got ${other.headOption}"))
     }
 
   val real: Codec[Double] = new:
-    def encode(d: Double) = LiteValue.Real(d) :: Nil
+    def encode(d: Double) = d :: Nil
     def decode = StateT {
-      case LiteValue.Real(d) :: tail => Right((tail, d))
-      case other                     =>
+      case (d: Double) :: tail => Right((tail, d))
+      case other               =>
         Left(new RuntimeException(s"Expected real, got ${other.headOption}"))
     }
 
   val text: Codec[String] = new:
-    def encode(s: String) = LiteValue.Text(s) :: Nil
+    def encode(s: String) = s :: Nil
     def decode = StateT {
-      case LiteValue.Text(s) :: tail => Right((tail, s))
-      case other                     =>
+      case (s: String) :: tail => Right((tail, s))
+      case other               =>
         Left(new RuntimeException(s"Expected text, got ${other.headOption}"))
     }
 
   val blob: Codec[ByteVector] = new:
-    def encode(b: ByteVector) = LiteValue.Blob(b) :: Nil
+    def encode(b: ByteVector) = b :: Nil
     def decode = StateT {
-      case LiteValue.Blob(b) :: tail => Right((tail, b))
-      case other                     =>
+      case (b: ByteVector) :: tail => Right((tail, b))
+      case other                   =>
         Left(new RuntimeException(s"Expected blob, got ${other.headOption}"))
     }
 
   val `null`: Codec[None.type] = new:
-    def encode(n: None.type) = LiteValue.Null :: Nil
+    def encode(n: None.type) = null :: Nil
     def decode = StateT {
-      case LiteValue.Null :: tail => Right((tail, None))
-      case other                  =>
+      case null :: tail => Right((tail, None))
+      case other        =>
         Left(new RuntimeException(s"Expected NULL, got ${other.headOption}"))
     }
 

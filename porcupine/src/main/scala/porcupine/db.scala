@@ -113,16 +113,12 @@ object Database:
                     F.blocking {
                       stmt.reset()
                       query.encoder.encode(args).zipWithIndex.foreach:
-                        case (LiteValue.Null, i) =>
-                          stmt.bindNull(i + 1)
-                        case (LiteValue.Integer(value), i) =>
-                          stmt.bindLong(i + 1, value)
-                        case (LiteValue.Real(value), i) =>
-                          stmt.bindDouble(i + 1, value)
-                        case (LiteValue.Text(value), i) =>
-                          stmt.bindText(i + 1, value)
-                        case (LiteValue.Blob(value), i) =>
-                          stmt.bindBlob(i + 1, value.toArray)
+                        case (null, i)            => stmt.bindNull(i + 1)
+                        case (v: Long, i)         => stmt.bindLong(i + 1, v)
+                        case (v: Double, i)       => stmt.bindDouble(i + 1, v)
+                        case (v: String, i)       => stmt.bindText(i + 1, v)
+                        case (v: ByteVector, i)   =>
+                          stmt.bindBlob(i + 1, v.toArray)
                     }
                   }(_ => F.blocking(stmt.reset()))
                   .as {
@@ -136,12 +132,11 @@ object Database:
                             if stmt.step() then
                               rows += List.tabulate(stmt.columnCount): j =>
                                 stmt.column(j) match
-                                  case null         => LiteValue.Null
-                                  case v: Long      => LiteValue.Integer(v)
-                                  case v: Double    => LiteValue.Real(v)
-                                  case v: String    => LiteValue.Text(v)
-                                  case v: Array[Byte] =>
-                                    LiteValue.Blob(ByteVector.view(v))
+                                  case null           => null
+                                  case v: Long        => v
+                                  case v: Double      => v
+                                  case v: String      => v
+                                  case v: Array[Byte] => ByteVector.view(v)
                               i += 1
                             else more = false
                           (rows.result(), more)

@@ -18,9 +18,4 @@ package porcupine
 
 import scodec.bits.ByteVector
 
-enum LiteValue:
-  case Null
-  case Integer(value: Long)
-  case Real(value: Double)
-  case Text(value: String)
-  case Blob(value: ByteVector)
+type LiteValue = Long | Double | String | ByteVector | Null
