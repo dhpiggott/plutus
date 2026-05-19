@@ -235,9 +235,9 @@ lazy val main = projectMatrix
         // Append rather than replace: VcpkgNativePlugin has already injected
         // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
         // `withLinkingOptions(Seq(...))` would discard.
-        nativeConfig ~= (c =>
-          c.withLinkingOptions(
-            c.linkingOptions ++ Seq(
+        nativeConfig ~= (nativeConfig =>
+          nativeConfig.withLinkingOptions(
+            nativeConfig.linkingOptions ++ Seq(
               "-framework",
               "CoreFoundation",
               "-framework",
