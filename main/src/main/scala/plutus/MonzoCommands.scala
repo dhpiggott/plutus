@@ -240,9 +240,10 @@ def accessToken(
           case None =>
             IO.blocking:
               Prompts.sync.use: prompts =>
-                val clientId = prompts.text("Enter client ID").getOrThrow
+                val clientId =
+                  prompts.text("Enter your Monzo client ID:").getOrThrow
                 val clientSecret =
-                  prompts.password("Enter client secret").getOrThrow
+                  prompts.password("Enter your Monzo client secret:").getOrThrow
                 (
                   monzo.ClientId(clientId),
                   monzo.ClientSecret(clientSecret.raw)
@@ -395,7 +396,7 @@ def exchangeAuthCode(
           authorizationCodeAndStateDeferred.get
         _ <- IO.raiseUnless(generatedState == receivedState):
           Error:
-            s"generatedState != receivedState ($generatedState != ${receivedState})"
+            s"Authorization failed: OAuth state mismatch — expected $generatedState but received $receivedState."
         _ <- verbose:
           "Exchanging auth code for tokens…"
         createAccessTokenOutput <- monzoTokenApi.createAccessToken(
@@ -407,10 +408,11 @@ def exchangeAuthCode(
         )
         scaComplete <- IO.blocking:
           Prompts.sync.use:
+            // TODO: getOrThrow means we crash if they cancel...
             _.confirm("Have you approved the request in your Monzo app?").getOrThrow
         _ <- IO.raiseUnless(scaComplete):
           Error:
-            "SCA not completed."
+            "Monzo app approval not completed."
       yield createAccessTokenOutput
 yield createAccessTokenOutput
 
