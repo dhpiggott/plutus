@@ -407,7 +407,7 @@ def exchangeAuthCode(
         )
         scaComplete <- IO.blocking:
           Prompts.sync.use:
-            _.confirm("Complete SCA in app, then continue?").getOrThrow
+            _.confirm("Have you approved the request in your Monzo app?").getOrThrow
         _ <- IO.raiseUnless(scaComplete):
           Error:
             "SCA not completed."
