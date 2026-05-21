@@ -359,8 +359,11 @@ def exchangeAuthCode(
                 (verbose:
                   "Received auth code.") *>
                 // window.close() is best-effort: browsers only honour it for
-                // windows opened by script, and this tab was opened by `open`
-                // following Monzo's redirect — hence the visible fallback.
+                // windows opened by script, or windows that haven't been
+                // navigated (history length 1). Monzo's redirect opens the
+                // callback in a fresh tab, so its history length is 1 and the
+                // close succeeds — but that's not guaranteed across browsers,
+                // hence the visible fallback.
                 Ok:
                   """<!DOCTYPE html>
                     |<html lang="en">
