@@ -358,9 +358,26 @@ def exchangeAuthCode(
               authorizationCodeAndStateDeferred.complete(code -> state) *>
                 (verbose:
                   "Received auth code.") *>
-                // TODO: Auto-close the page?
+                // window.close() is best-effort: browsers only honour it for
+                // windows opened by script, and this tab was opened by `open`
+                // following Monzo's redirect — hence the visible fallback.
                 Ok:
-                  "Authorization code received. Return to Plutus."
+                  """<!DOCTYPE html>
+                    |<html lang="en">
+                    |<head>
+                    |<meta charset="utf-8">
+                    |<title>Plutus — authorization complete</title>
+                    |</head>
+                    |<body>
+                    |<p>Authorization complete — you can close this tab and return to Plutus.</p>
+                    |<script>window.close()</script>
+                    |</body>
+                    |</html>
+                    |""".stripMargin
+                .map:
+                  _.withContentType:
+                    `Content-Type`:
+                      MediaType.text.html
           .orNotFound
       )
     .withShutdownTimeout:
