@@ -27,7 +27,8 @@ object Sqlite:
     if rc != SQLITE_OK then
       throw RuntimeException(fromCString(sqlite3_errmsg(db)))
 
-  final class Connection private[Sqlite] (db: Ptr[sqlite3]) extends AutoCloseable:
+  final class Connection private[Sqlite] (db: Ptr[sqlite3])
+      extends AutoCloseable:
     def prepare(sql: String): Statement =
       val sqlBytes = sql.getBytes
       val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
@@ -37,8 +38,10 @@ object Sqlite:
 
     def close(): Unit = guard(sqlite3_close(db))
 
-  final class Statement private[Sqlite] (db: Ptr[sqlite3], stmt: Ptr[sqlite3_stmt])
-      extends AutoCloseable:
+  final class Statement private[Sqlite] (
+      db: Ptr[sqlite3],
+      stmt: Ptr[sqlite3_stmt]
+  ) extends AutoCloseable:
     // sqlite3_bind_text/blob receive raw pointers into these arrays with the
     // SQLITE_STATIC destructor (passed as `null` below). The arrays must
     // outlive the statement's last `step()`; `reset()` clears them.

@@ -10,7 +10,9 @@ extension [A](completion: Completion[A])
     completion match
       case Completion.Finished(value) =>
         value
+
       case Completion.Fail(CompletionError.Interrupted) =>
         throw Error("Cancelled.")
+
       case Completion.Fail(CompletionError.Error(message)) =>
         throw Error(message)

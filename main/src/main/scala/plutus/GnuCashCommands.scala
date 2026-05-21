@@ -98,7 +98,7 @@ def restoreAccount(
         archivedAccountPath <- IO.blocking:
           Prompts.sync.use:
             _.singleChoice(
-              "Choose account to restore:",
+              "Choose account to restore",
               archivedAccountsByPath.keys.toList
             ).getOrRaise
         archivedAccount = archivedAccountsByPath(archivedAccountPath)

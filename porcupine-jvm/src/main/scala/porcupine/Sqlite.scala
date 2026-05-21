@@ -48,7 +48,8 @@ object Sqlite:
     if msg.equals(MemorySegment.NULL) then "sqlite3 error"
     else msg.reinterpret(Long.MaxValue).getString(0L)
 
-  final class Connection private[Sqlite] (db: MemorySegment) extends AutoCloseable:
+  final class Connection private[Sqlite] (db: MemorySegment)
+      extends AutoCloseable:
     def prepare(sql: String): Statement =
       val arena = Arena.ofConfined()
       try
@@ -90,12 +91,16 @@ object Sqlite:
       val bytes = value.getBytes(StandardCharsets.UTF_8)
       val seg = bindArena.allocate(bytes.length.toLong.max(1L))
       MemorySegment.copy(bytes, 0, seg, JAVA_BYTE, 0L, bytes.length)
-      guard(db)(sqlite3_bind_text(stmt, i, seg, bytes.length, MemorySegment.NULL))
+      guard(db)(
+        sqlite3_bind_text(stmt, i, seg, bytes.length, MemorySegment.NULL)
+      )
 
     def bindBlob(i: Int, value: Array[Byte]): Unit =
       val seg = bindArena.allocate(value.length.toLong.max(1L))
       MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
-      guard(db)(sqlite3_bind_blob(stmt, i, seg, value.length, MemorySegment.NULL))
+      guard(db)(
+        sqlite3_bind_blob(stmt, i, seg, value.length, MemorySegment.NULL)
+      )
 
     def step(): Boolean =
       sqlite3_step(stmt) match
@@ -130,7 +135,9 @@ object Sqlite:
           if len == 0 then new Array[Byte](0)
           else
             // Same zero-sized return as SQLITE_TEXT — bound with the length.
-            sqlite3_column_blob(stmt, i).reinterpret(len.toLong).toArray(JAVA_BYTE)
+            sqlite3_column_blob(stmt, i)
+              .reinterpret(len.toLong)
+              .toArray(JAVA_BYTE)
 
     def close(): Unit =
       guard(db)(sqlite3_finalize(stmt))

@@ -1,13 +1,12 @@
 package plutus
 
 import cats.effect.*
+import macos.macos_h.*
+import macos.macos_h_1.*
 
 import java.lang.foreign.*
 import java.lang.foreign.ValueLayout.*
 import java.nio.charset.StandardCharsets
-
-import macos.macos_h.*
-import macos.macos_h_1.*
 
 object Keychain:
 

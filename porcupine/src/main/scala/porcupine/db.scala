@@ -112,13 +112,16 @@ object Database:
                   .make {
                     F.blocking {
                       stmt.reset()
-                      query.encoder.encode(args).zipWithIndex.foreach:
-                        case (null, i)            => stmt.bindNull(i + 1)
-                        case (v: Long, i)         => stmt.bindLong(i + 1, v)
-                        case (v: Double, i)       => stmt.bindDouble(i + 1, v)
-                        case (v: String, i)       => stmt.bindText(i + 1, v)
-                        case (v: ByteVector, i)   =>
-                          stmt.bindBlob(i + 1, v.toArray)
+                      query.encoder
+                        .encode(args)
+                        .zipWithIndex
+                        .foreach:
+                          case (null, i)          => stmt.bindNull(i + 1)
+                          case (v: Long, i)       => stmt.bindLong(i + 1, v)
+                          case (v: Double, i)     => stmt.bindDouble(i + 1, v)
+                          case (v: String, i)     => stmt.bindText(i + 1, v)
+                          case (v: ByteVector, i) =>
+                            stmt.bindBlob(i + 1, v.toArray)
                     }
                   }(_ => F.blocking(stmt.reset()))
                   .as {
@@ -189,13 +192,13 @@ private abstract class AbstractStatement[F[_], A, B](using
   final def option(args: A) = cursor(args).use(_.fetch(2).flatMap {
     case (Nil, _)         => F.pure(None)
     case (head :: Nil, _) => F.pure(Some(head))
-    case _ => F.raiseError(RuntimeException("More than 1 row"))
+    case _                => F.raiseError(RuntimeException("More than 1 row"))
   })
 
   final def unique(args: A) = cursor(args).use(_.fetch(2).flatMap {
     case (Nil, _)         => F.raiseError(NoSuchElementException())
     case (head :: Nil, _) => F.pure(head)
-    case _ => F.raiseError(RuntimeException("More than 1 row"))
+    case _                => F.raiseError(RuntimeException("More than 1 row"))
   })
 
   final def stream(args: A, chunkSize: Int) =
