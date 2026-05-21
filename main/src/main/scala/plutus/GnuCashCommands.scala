@@ -100,7 +100,7 @@ def restoreAccount(
             _.singleChoice(
               "Choose account to restore:",
               archivedAccountsByPath.keys.toList
-            ).getOrThrow
+            ).getOrRaise
         archivedAccount = archivedAccountsByPath(archivedAccountPath)
         nonArchiveParent <- archivedAccount.createOrRetrieveMirrorParent(
           from = archiveSubroot,

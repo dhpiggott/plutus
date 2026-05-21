@@ -241,9 +241,9 @@ def accessToken(
             IO.blocking:
               Prompts.sync.use: prompts =>
                 val clientId =
-                  prompts.text("Enter your Monzo client ID:").getOrThrow
+                  prompts.text("Enter your Monzo client ID:").getOrRaise
                 val clientSecret =
-                  prompts.password("Enter your Monzo client secret:").getOrThrow
+                  prompts.password("Enter your Monzo client secret:").getOrRaise
                 (
                   monzo.ClientId(clientId),
                   monzo.ClientSecret(clientSecret.raw)
@@ -408,8 +408,7 @@ def exchangeAuthCode(
         )
         scaComplete <- IO.blocking:
           Prompts.sync.use:
-            // TODO: getOrThrow means we crash if they cancel...
-            _.confirm("Have you approved the request in your Monzo app?").getOrThrow
+            _.confirm("Have you approved the request in your Monzo app?").getOrRaise
         _ <- IO.raiseUnless(scaComplete):
           Error:
             "Monzo app approval not completed."
