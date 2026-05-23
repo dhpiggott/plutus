@@ -212,8 +212,8 @@ lazy val main = projectMatrix
           ExclusionRule("org.portable-scala")
         ),
         libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
-        connectInput := true,
         fork := true,
+        connectInput := true,
         // FFM API is final in JDK 22+; suppress the runtime "restricted method"
         // warning so stderr stays clean during `main3/run`.
         javaOptions += "--enable-native-access=ALL-UNNAMED"
