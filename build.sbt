@@ -246,8 +246,7 @@ lazy val main = projectMatrix
               "-L/opt/homebrew/lib"
             )
           )
-        ),
-        crossPaths := false
+        )
       )
   )
 
