@@ -74,7 +74,11 @@ lazy val `keychain-native` = projectMatrix
       // (resolved via `xcrun --show-sdk-path`) baked in, rather than
       // hardcoding it.
       //
-      // TODO: Check if this is an upstream bug and if so if it can be fixed.
+      // The documented escape hatch is `--exclude-system-path`
+      // (`Binding.addExcludedSystemPath`), but on macOS it has no effect:
+      // `loc.isFromSystemHeader` short-circuits the exclude check in
+      // sn-bindgen's `ClangVisitor.scala`. Tracked upstream as
+      // indoorvivants/sn-bindgen#361.
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val header = (Compile / sourceManaged).value / "macos.h"
       IO.write(
