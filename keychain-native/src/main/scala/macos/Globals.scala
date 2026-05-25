@@ -10,8 +10,9 @@ import scala.scalanative.unsafe.*
 // Native's own `var name: T = extern` reads the C global fine, so we declare
 // them directly here.
 //
-// TODO: Patch sn-bindgen upstream to emit `var = extern` for `extern const`
-// globals so this file can go away.
+// TODO(https://github.com/indoorvivants/sn-bindgen/issues/150): Patch
+// sn-bindgen upstream to emit `var = extern` for `extern const` globals so
+// this file can go away.
 @extern
 object Globals:
 
