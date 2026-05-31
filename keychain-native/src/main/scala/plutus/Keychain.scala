@@ -1,7 +1,6 @@
 package plutus
 
 import cats.effect.*
-import macos.Globals.*
 import macos.all.*
 
 import scala.scalanative.libc.string.memcpy

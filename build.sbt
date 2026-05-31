@@ -67,36 +67,43 @@ lazy val `keychain-native` = projectMatrix
   .settings(
     dependencyUpdatesFailBuild := true,
     bindgenBindings += {
-      // sn-bindgen filters out declarations from headers that clang tags as
-      // system headers. Includes via the angle-bracket form (e.g.
-      // `<CoreFoundation/CFNumber.h>`) get that tag; absolute-path includes
-      // do not. So macos.h is generated at build time with the SDK path
-      // (resolved via `xcrun --show-sdk-path`) baked in, rather than
-      // hardcoding it.
+      // CoreFoundation/Security framework headers reached via the
+      // angle-bracket form (e.g. `<CoreFoundation/CFNumber.h>`) are tagged as
+      // system headers by clang, which sn-bindgen skips by default. We mark
+      // the SDK frameworks directory as non-system via `addExcludedSystemPath`
+      // so the declarations we need are still generated.
       //
-      // The documented escape hatch is `--exclude-system-path`
-      // (`Binding.addExcludedSystemPath`), but on macOS it has no effect:
-      // `loc.isFromSystemHeader` short-circuits the exclude check in
-      // sn-bindgen's `ClangVisitor.scala`. Tracked upstream as
-      // indoorvivants/sn-bindgen#361.
+      // This relies on the `--exclude-system-path` fix from
+      // indoorvivants/sn-bindgen#408: previously `loc.isFromSystemHeader`
+      // short-circuited the exclude check in `ClangVisitor.scala`, so on macOS
+      // the only workaround was to bypass clang's system-header tagging with
+      // absolute-path `#include`s. Tracked upstream as #361.
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val header = (Compile / sourceManaged).value / "macos.h"
       IO.write(
         header,
         Seq(
-          "CoreFoundation.framework/Versions/A/Headers/CFBase.h",
-          "CoreFoundation.framework/Versions/A/Headers/CFNumber.h",
-          "CoreFoundation.framework/Versions/A/Headers/CFData.h",
-          "CoreFoundation.framework/Versions/A/Headers/CFDictionary.h",
-          "CoreFoundation.framework/Versions/A/Headers/CFString.h",
-          "Security.framework/Versions/A/Headers/SecBase.h",
-          "Security.framework/Versions/A/Headers/SecItem.h"
-        ).map(p => s"#include <$sdkPath/System/Library/Frameworks/$p>\n")
-          .mkString
+          "CoreFoundation/CFBase.h",
+          "CoreFoundation/CFNumber.h",
+          "CoreFoundation/CFData.h",
+          "CoreFoundation/CFDictionary.h",
+          "CoreFoundation/CFString.h",
+          "Security/SecBase.h",
+          "Security/SecItem.h"
+        ).map(p => s"#include <$p>\n").mkString
       )
       bindgen.interface
         .Binding(header, "macos")
         .addCImport("CoreFoundation/CFString.h")
+        // Point clang at the SDK via `-isysroot` so the angle-bracket
+        // framework includes resolve (and resolve to paths *under* the SDK
+        // frameworks dir, which is what `addExcludedSystemPath` matches on).
+        // The headers come back tagged as system headers, which
+        // `addExcludedSystemPath` then overrides (see #408 above).
+        .addClangFlag(Seq("-isysroot", sdkPath))
+        .addExcludedSystemPath(
+          file(s"$sdkPath/System/Library/Frameworks").toPath
+        )
         .withLogLevel(bindgen.interface.LogLevel.Info)
     },
     libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0",
