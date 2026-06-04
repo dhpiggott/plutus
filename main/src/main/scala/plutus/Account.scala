@@ -21,12 +21,46 @@ object Account:
   def root(using db: Database[IO]): IO[Account] =
     db.unique:
       sql"""
-        select *
-        from accounts
-        where parent_guid is null
-          and name = 'Root Account'
+        ${Account.selectAccountsWithFlags}
+        where accounts.parent_guid is null
+          and accounts.name = 'Root Account'
       """.query:
         decoder
+
+  def get(guid: String)(using db: Database[IO]): IO[Option[Account]] =
+    db.option(
+      query = sql"""
+        ${Account.selectAccountsWithFlags}
+        where accounts.guid = $text
+      """.query:
+        decoder
+      ,
+      args = guid
+    )
+
+  def setHiddenColumn(guid: String, value: Boolean)(using
+      db: Database[IO]
+  ): IO[Unit] =
+    db.execute(
+      query = sql"""
+        update accounts
+        set hidden = $boolean
+        where guid = $text
+      """.command,
+      args = (value, guid)
+    )
+
+  def setPlaceholderColumn(guid: String, value: Boolean)(using
+      db: Database[IO]
+  ): IO[Unit] =
+    db.execute(
+      query = sql"""
+        update accounts
+        set placeholder = $boolean
+        where guid = $text
+      """.command,
+      args = (value, guid)
+    )
 
   val decoder: Decoder[Account] =
     (text *:
@@ -41,6 +75,44 @@ object Account:
       boolean *:
       boolean *:
       nil).pmap[Account]
+
+  // hidden and placeholder live in KVP slots, not the eponymous accounts
+  // columns — GnuCash reads the flags only from the slot and keeps the column
+  // as a denormalised cache. Every read derives both flags from the slot,
+  // matching GnuCash's read semantics: the flag is true iff a slot exists and
+  // is truthy (string_val = 'true' or a non-zero int64_val). Interpolated as a
+  // plain String (literal SQL, no bind parameter), so every read site shares
+  // the projection + joins and supplies only its own `where`. See Slot.scala.
+  private val selectAccountsWithFlags: String =
+    """
+      select
+        accounts.guid,
+        accounts.name,
+        accounts.account_type,
+        accounts.commodity_guid,
+        accounts.commodity_scu,
+        accounts.non_std_scu,
+        accounts.parent_guid,
+        accounts.code,
+        accounts.description,
+        coalesce(
+          hidden_slot.string_val = 'true',
+          hidden_slot.int64_val != 0,
+          0
+        ) as hidden,
+        coalesce(
+          placeholder_slot.string_val = 'true',
+          placeholder_slot.int64_val != 0,
+          0
+        ) as placeholder
+      from accounts
+      left join slots hidden_slot
+        on hidden_slot.obj_guid = accounts.guid
+        and hidden_slot.name = 'hidden'
+      left join slots placeholder_slot
+        on placeholder_slot.obj_guid = accounts.guid
+        and placeholder_slot.name = 'placeholder'
+    """
 
 /** sqlite> .schema accounts CREATE TABLE accounts( guid text(32) PRIMARY KEY
   * NOT NULL, name text(2048) NOT NULL, account_type text(2048) NOT NULL,
@@ -58,10 +130,9 @@ final case class Account(
     parentGuid: Option[String],
     code: Option[String],
     description: Option[String],
-    // FIXME: Per https://wiki.gnucash.org/wiki/images/8/86/Gnucash_erd.png,
-    // these are implemented as slots. Only updating these accounts columns
-    // results in inconsistencies between Plutus' view of the world and GnuCash
-    // itself.
+    // Derived on read from KVP slots and written to both the slot and the
+    // column on insert — GnuCash stores these flags in slots and treats the
+    // columns as a denormalised cache. See Slot.scala and selectAccountsWithFlags.
     hidden: Boolean,
     placeholder: Boolean
 ):
@@ -94,13 +165,14 @@ final case class Account(
     db.execute(
       query = sql"""
         with recursive descendants as (
-          select * from accounts where parent_guid = $text
+          select guid from accounts where parent_guid = $text
           union all
-          select accounts.*
+          select accounts.guid
           from accounts
           join descendants on accounts.parent_guid = descendants.guid
         )
-        select * from descendants
+        ${Account.selectAccountsWithFlags}
+        where accounts.guid in (select guid from descendants)
       """.query:
         Account.decoder
       ,
@@ -134,19 +206,17 @@ final case class Account(
     db.execute(
       query = sql"""
         with recursive ancestors as (
-          select accounts.*, 0 as depth
+          select guid, parent_guid, 0 as depth
           from accounts
           where guid = $text
           union all
-          select accounts.*, ancestors.depth + 1
+          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
           from accounts
           join ancestors on accounts.guid = ancestors.parent_guid
         )
-        select
-          guid, name, account_type, commodity_guid, commodity_scu,
-          non_std_scu, parent_guid, code, description, hidden, placeholder
-        from ancestors
-        order by depth desc
+        ${Account.selectAccountsWithFlags}
+        join ancestors on ancestors.guid = accounts.guid
+        order by ancestors.depth desc
       """.query:
         Account.decoder
       ,
@@ -188,6 +258,9 @@ final case class Account(
           )
         yield mirrorParent
 
+  // Only parent_guid changes here; hidden/placeholder (both column and slot)
+  // are set once at insert time and Plutus never toggles them on an existing
+  // account, so there is no slot to keep in sync.
   def update(parent: Account)(using db: Database[IO]): IO[Account] =
     db.execute(
       query = sql"""
@@ -205,10 +278,9 @@ final case class Account(
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(
       query = sql"""
-        select *
-        from accounts
-        where parent_guid = $text
-          and name = $text
+        ${Account.selectAccountsWithFlags}
+        where accounts.parent_guid = $text
+          and accounts.name = $text
       """.query:
         Account.decoder
       ,
@@ -216,55 +288,69 @@ final case class Account(
     )
 
   def insert(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        insert
-        into accounts
-        values (
-          $text,
-          $text,
-          $text,
-          ${text.opt},
-          $integer,
-          $integer,
-          ${text.opt},
-          ${text.opt},
-          ${text.opt},
-          $boolean,
-          $boolean
+    for
+      _ <- db.execute(
+        query = sql"""
+          insert
+          into accounts
+          values (
+            $text,
+            $text,
+            $text,
+            ${text.opt},
+            $integer,
+            $integer,
+            ${text.opt},
+            ${text.opt},
+            ${text.opt},
+            $boolean,
+            $boolean
+          )
+        """.command,
+        args = (
+          guid,
+          name,
+          accountType,
+          commodityGuid,
+          commodityScu,
+          nonStdScu,
+          parentGuid,
+          code,
+          description,
+          hidden,
+          placeholder
         )
-      """.command,
-      args = (
-        guid,
-        name,
-        accountType,
-        commodityGuid,
-        commodityScu,
-        nonStdScu,
-        parentGuid,
-        code,
-        description,
-        hidden,
-        placeholder
       )
-    )
+      // Write the slot too (the column above is just GnuCash's cache); a false
+      // flag is the slot's absence, so only write when true. See Slot.scala.
+      _ <- IO.whenA(hidden):
+        Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
+      _ <- IO.whenA(placeholder):
+        Slot
+          .stringSlot(objGuid = guid, name = "placeholder", value = "true")
+          .insert
+    yield ()
 
   def delete(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        delete from accounts
-        where guid = $text
-      """.command,
-      args = guid
-    )
+    for
+      // Drop all of the account's slots, not just hidden/placeholder: slots
+      // have no foreign key to accounts, so any left behind would be orphaned.
+      _ <- Slot.deleteAll(guid)
+      _ <- db.execute(
+        query = sql"""
+          delete from accounts
+          where guid = $text
+        """.command,
+        args = guid
+      )
+    yield ()
 
   def directChildren(using db: Database[IO]): IO[List[Account]] =
     db.execute(
       query = sql"""
-        select *
-        from accounts
-        where parent_guid = $text
-        order by name
+        ${Account.selectAccountsWithFlags}
+        where accounts.parent_guid = $text
+        order by accounts.name
       """.query:
         Account.decoder
       ,
@@ -274,9 +360,8 @@ final case class Account(
   def parent(using db: Database[IO]): IO[Option[Account]] =
     db.option(
       query = sql"""
-        select *
-        from accounts
-        where guid = ${text.opt}
+        ${Account.selectAccountsWithFlags}
+        where accounts.guid = ${text.opt}
       """.query:
         Account.decoder
       ,

@@ -12,6 +12,7 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ```
 plutus gnucash archive-accounts    [--input PATH] [verbosity]
 plutus gnucash restore-account     [--input PATH] [verbosity]
+plutus gnucash audit-slots         [--input PATH] [--dry-run] [verbosity]
 plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
                                    [--output PATH] [--dry-run] [verbosity]
 ```
@@ -25,6 +26,10 @@ Finds hidden accounts in the GnuCash file at `--input` (default `./Accounts.gnuc
 ### `restore-account`
 
 Lists archived accounts and prompts (via [cue4s](https://github.com/neandertech/cue4s)) for one to move back to its original parent.
+
+### `audit-slots`
+
+GnuCash stores the `hidden` and `placeholder` flags as KVP `slots`, treating the eponymous `accounts` columns as a denormalised cache; it reads the flags only from the slot. This command reconciles the two for the file at `--input`, with the slot as the source of truth: it adds a missing slot for a set column, syncs a column to its slot, and deletes orphan `hidden`/`placeholder` slots whose account no longer exists. `--dry-run` reports what it would change without writing.
 
 ### `export-transactions`
 
