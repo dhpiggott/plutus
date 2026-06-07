@@ -27,41 +27,6 @@ object Account:
       """.query:
         decoder
 
-  def get(guid: String)(using db: Database[IO]): IO[Option[Account]] =
-    db.option(
-      query = sql"""
-        ${Account.selectAccountsWithFlags}
-        where accounts.guid = $text
-      """.query:
-        decoder
-      ,
-      args = guid
-    )
-
-  def setHiddenColumn(guid: String, value: Boolean)(using
-      db: Database[IO]
-  ): IO[Unit] =
-    db.execute(
-      query = sql"""
-        update accounts
-        set hidden = $boolean
-        where guid = $text
-      """.command,
-      args = (value, guid)
-    )
-
-  def setPlaceholderColumn(guid: String, value: Boolean)(using
-      db: Database[IO]
-  ): IO[Unit] =
-    db.execute(
-      query = sql"""
-        update accounts
-        set placeholder = $boolean
-        where guid = $text
-      """.command,
-      args = (value, guid)
-    )
-
   val decoder: Decoder[Account] =
     (text *:
       text *:

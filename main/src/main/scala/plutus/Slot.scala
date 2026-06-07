@@ -25,16 +25,6 @@ object Slot:
       int64Val = None
     )
 
-  def delete(objGuid: String, name: String)(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        delete from slots
-        where obj_guid = $text
-          and name = $text
-      """.command,
-      args = (objGuid, name)
-    )
-
   def deleteAll(objGuid: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""
