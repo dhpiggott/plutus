@@ -240,14 +240,14 @@ def auditSlots(
             union all
             select
               accounts.guid,
-              'placeholder',
-              coalesce(accounts.placeholder, 0),
-              placeholder_slot.obj_guid is not null,
+              'placeholder' as flag,
+              coalesce(accounts.placeholder, 0) as col,
+              placeholder_slot.obj_guid is not null as slot_exists,
               coalesce(
                 placeholder_slot.string_val = 'true',
                 placeholder_slot.int64_val != 0,
                 0
-              )
+              ) as slot_truthy
             from accounts
             left join slots placeholder_slot
               on placeholder_slot.obj_guid = accounts.guid
@@ -258,6 +258,13 @@ def auditSlots(
           flagStates
         ):
           case (guid, flag, col, slotExists, slotTruthy) =>
+            // A set column with no slot at all is the fingerprint of a pre-fix
+            // Plutus write, where the column was the only record of the flag —
+            // so we materialise the slot rather than clear the column. Every
+            // other drift defers to the slot, GnuCash's source of truth: a
+            // truthy slot with a clear column sets the column; an explicit falsy
+            // slot (rare — GnuCash and Plutus both encode false as the slot's
+            // absence, not a falsy slot) clears it.
             (col, slotExists, slotTruthy) match
               case (true, false, _) =>
                 fix(
