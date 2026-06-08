@@ -198,7 +198,13 @@ lazy val main = projectMatrix
       "org.http4s" %%% "http4s-ember-server" % "0.23.34",
       "tech.neander" %%% "cue4s" % "0.0.12"
     ),
-    buildInfoKeys := Seq(version),
+    buildInfoKeys := Seq[BuildInfoKey](
+      libraryDependencies,
+      sbtVersion,
+      scalaVersion,
+      version
+    ),
+    buildInfoOptions ++= Seq(BuildInfoOption.BuildTime, BuildInfoOption.ToMap),
     buildInfoPackage := "plutus"
   )
   .jvmPlatform(

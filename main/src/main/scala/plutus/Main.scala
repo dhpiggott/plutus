@@ -9,7 +9,18 @@ object Plutus
     extends CommandIOApp(
       name = "plutus",
       header = "Personal finance utility.",
-      version = plutus.BuildInfo.version
+      version = plutus.BuildInfo.toMap.toSeq
+        .sortBy((key, _) => key)
+        .map:
+          case (key, values: Seq[?]) =>
+            (s"$key:" +: values
+              .map(_.toString)
+              .sorted
+              .map(value => s"  $value"))
+              .mkString("\n")
+          case (key, value) =>
+            s"$key: $value"
+        .mkString("\n")
     ):
 
   override def main: Opts[IO[ExitCode]] =
