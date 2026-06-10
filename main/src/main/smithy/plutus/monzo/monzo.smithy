@@ -201,8 +201,21 @@ structure Transaction {
     @required
     notes: Notes
 
+    metadata: Metadata
+
     @jsonUnknown
     unknown: UnknownProperties
+}
+
+/// Documented as string-to-string, but modelled with document values so an
+/// unexpected non-string value can't fail the decode of a whole transaction
+/// page. The key we care about is pot_account_id: pots are backed by real
+/// account objects whose transactions (interest, in particular) are only
+/// reachable by passing that ID to /transactions. See
+/// https://community.monzo.com/t/-/193089/11 — undocumented, may change.
+map Metadata {
+    key: String
+    value: Document
 }
 
 string TransactionId
