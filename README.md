@@ -13,7 +13,8 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 plutus gnucash archive-accounts    [--input PATH] [verbosity]
 plutus gnucash restore-account     [--input PATH] [verbosity]
 plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
-                                   [--output PATH] [--dry-run] [verbosity]
+                                   [--output PATH] [--dry-run] [--only-pots]
+                                   [verbosity]
 ```
 
 Verbosity flags (mutually exclusive, default `--info`): `--error`, `--warn`, `--info`, `--verbose`, `--trace`.
@@ -31,6 +32,15 @@ Lists archived accounts and prompts (via [cue4s](https://github.com/neandertech/
 Fetches Monzo transactions and writes them to `--output` (default `./monzo.ofx`).
 
 By default the export starts from each account's last-exported transaction (a per-account bookmark held in the state store) and ends at the current time; pass `--since` / `--before` (ISO-8601 timestamps) to override. `--dry-run` writes the OFX file without advancing the bookmarks.
+
+#### Pot transactions
+
+Interest paid into a pot never appears in the main account's feed — it only exists on the pot's backing account, which `/accounts` doesn't list. The export reaches it via an [undocumented API behaviour](https://community.monzo.com/t/expose-pot-transaction-data-via-public-api-parity-with-main-account-transactions/193089/11): pot-transfer transactions carry the backing account's ID in their metadata (`pot_account_id`), and `/transactions` accepts it like any other account ID.
+
+- On a `--since` run, every pot referenced by a pot transfer in the window is exported in full — transfer legs and interest credits — as its own OFX statement, and gets its own bookmark.
+- On bookmark runs, already-bookmarked pots keep syncing like any other account. Pots discovered in the window but not yet bookmarked are skipped with a warning; re-run with `--since` to onboard them.
+- `--only-pots` restricts the export to pot accounts: main-account transactions are still listed (discovery needs their metadata) but are left out of the OFX, and their bookmarks aren't advanced. Use `--only-pots --since <timestamp>` to onboard pots when your main accounts are already up to date, without re-exporting their transactions.
+- A pot whose transfers all fall outside the windows you export is never discovered, and pot spending via virtual cards isn't returned by the API at all. Being undocumented, the whole mechanism may break without notice.
 
 On first run there is no saved state, so the command will:
 

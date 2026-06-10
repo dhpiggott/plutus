@@ -46,14 +46,21 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "export-transactions",
   help = "Export Monzo transactions to OFX format."
 ):
-  (verbosityOpts, sinceOpts, beforeOpts, outputOpts, dryRunOpts).tupled.map:
-    (verbosity, since, before, output, dryRun) =>
-      exportTransactions(
-        since,
-        before,
-        output,
-        dryRun
-      )(using verbosity)
+  (
+    verbosityOpts,
+    sinceOpts,
+    beforeOpts,
+    outputOpts,
+    dryRunOpts,
+    onlyPotsOpts
+  ).tupled.map: (verbosity, since, before, output, dryRun, onlyPots) =>
+    exportTransactions(
+      since,
+      before,
+      output,
+      dryRun,
+      onlyPots
+    )(using verbosity)
 
 lazy val sinceOpts: Opts[Option[Instant]] =
   Opts
@@ -95,11 +102,21 @@ lazy val dryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
+lazy val onlyPotsOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "only-pots",
+      help =
+        "Only export pot transactions. Main-account transactions are still listed (pot discovery needs their metadata) but aren't exported, and main-account bookmarks aren't advanced. Combine with --since to onboard pots without re-exporting main-account transactions."
+    )
+    .orFalse
+
 def exportTransactions(
     since: Option[Instant],
     before: Option[Instant],
     output: fs2.io.file.Path,
-    dryRun: Boolean
+    dryRun: Boolean,
+    onlyPots: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   maybeState <- loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
@@ -171,7 +188,8 @@ def exportTransactions(
               since,
               before = before.getOrElse(now),
               output,
-              dryRun
+              dryRun,
+              onlyPots
             )
           .onError:
             // Ensure the refreshed token isn't lost if export fails after
@@ -482,7 +500,8 @@ def exportTransactions(
     since: Option[Instant],
     before: Instant,
     output: fs2.io.file.Path,
-    dryRun: Boolean
+    dryRun: Boolean,
+    onlyPots: Boolean
 )(using verbosity: Verbosity): IO[State] = for
   _ <- info:
     "Listing accounts…"
@@ -504,25 +523,55 @@ def exportTransactions(
             (account, ListTransactionsSince.IdAndTimestamp(since))
   _ <- info:
     "Listing transactions for accounts…"
-  accountsAndTransactions <- accountsAndSince
-    .parTraverse: (account, since) =>
-      listTransactions(
-        monzoApi,
-        accountId = account.id,
-        since,
-        before
-      ).map: transactions =>
-        account -> transactions
-    .map:
-      _.filter: (_, transactions) =>
-        transactions.nonEmpty
+  accountsAndTransactions <- listTransactionsForAccounts(
+    monzoApi,
+    accountsAndSince,
+    before
+  )
+  potAccountsAndSince = discoverPotAccounts(
+    state,
+    accounts,
+    accountsAndTransactions,
+    since
+  )
+  _ <- (IO.whenA(potAccountsAndSince.nonEmpty)):
+    info:
+      "Listing transactions for pot accounts…"
+  potAccountsAndTransactions <- listTransactionsForAccounts(
+    monzoApi,
+    potAccountsAndSince,
+    before
+  )
+  newPotAccountIds = discoveredPotAccountIds(accountsAndTransactions)
+    .diff:
+      accounts
+        .map:
+          _.id
+        .toSet
+        .union:
+          potAccountsAndSince
+            .map: (account, _) =>
+              account.id
+            .toSet
+  _ <- (IO.whenA(newPotAccountIds.nonEmpty)):
+    warn:
+      s"Found pot accounts with no last recorded transaction; specify --since to export their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
+  allAccountsAndTransactions = accountsAndTransactions ++
+    potAccountsAndTransactions
+  // Main accounts are still listed under --only-pots because pot discovery
+  // needs their metadata, but they're excluded from the OFX and from the
+  // bookmark update — their transactions remain unexported, so advancing
+  // their bookmarks would silently skip them on the next run.
+  exportedAccountsAndTransactions =
+    if onlyPots then potAccountsAndTransactions
+    else allAccountsAndTransactions
   _ <- (IO.whenA:
     verbosity.ordinal >= Verbosity.VERBOSE.ordinal
   ):
     IO.println:
       Json.writeDocumentAsPrettyString:
         Document.array:
-          accountsAndTransactions.map: (account, transactions) =>
+          allAccountsAndTransactions.map: (account, transactions) =>
             Document.obj(
               "account" -> Document.encode:
                 account
@@ -531,7 +580,7 @@ def exportTransactions(
                 transactions.map:
                   Document.encode(_)
             )
-  materialAccountIdsAndTransactions = accountsAndTransactions.map:
+  materialAccountIdsAndTransactions = exportedAccountsAndTransactions.map:
     (account, transactions) =>
       account.id -> transactions.filterNot: transaction =>
         // Active card check.
@@ -553,7 +602,7 @@ def exportTransactions(
     else
       state.copy(
         lastTransactions = state.lastTransactions ++
-          accountsAndTransactions
+          exportedAccountsAndTransactions
             .map: (account, transactions) =>
               account.id -> transactions.lastOption
             .collect:
@@ -564,6 +613,84 @@ def exportTransactions(
                 )
       )
 yield updatedState
+
+def listTransactionsForAccounts(
+    monzoApi: monzo.Api[IO],
+    accountsAndSince: List[(monzo.Account, ListTransactionsSince)],
+    before: Instant
+): IO[List[(monzo.Account, List[monzo.Transaction])]] =
+  accountsAndSince
+    .parTraverse: (account, since) =>
+      listTransactions(
+        monzoApi,
+        accountId = account.id,
+        since,
+        before
+      ).map: transactions =>
+        account -> transactions
+    .map:
+      _.filter: (_, transactions) =>
+        transactions.nonEmpty
+
+// Pots are backed by account objects that /accounts doesn't list. Their IDs
+// only surface as pot_account_id in the metadata of pot-transfer transactions,
+// but passing one to /transactions returns the pot's own statement — including
+// interest credits, which appear nowhere else. Once a pot has a bookmark in
+// the state store it's recognisable there as a key /accounts doesn't return,
+// so it keeps syncing even when no transfer falls in the export window. (That
+// inference assumes /accounts never stops listing a main account — it keeps
+// returning closed ones, so in practice only pots can be in state but not in
+// /accounts.)
+def discoverPotAccounts(
+    state: State,
+    accounts: List[monzo.Account],
+    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])],
+    since: Option[Instant]
+): List[(monzo.Account, ListTransactionsSince)] =
+  val mainAccountIds = accounts
+    .map:
+      _.id
+    .toSet
+  val bookmarked = state.lastTransactions.keySet.diff:
+    mainAccountIds
+  since match
+    case Some(since) =>
+      val discovered = discoveredPotAccountIds(accountsAndTransactions).diff:
+        mainAccountIds
+      bookmarked
+        .union:
+          discovered
+        .toList
+        .sortBy:
+          _.value
+        .map: accountId =>
+          monzo.Account(accountId) -> ListTransactionsSince.Timestamp(since)
+
+    case None =>
+      bookmarked.toList
+        .sortBy:
+          _.value
+        .map: accountId =>
+          monzo.Account(accountId) -> ListTransactionsSince.IdAndTimestamp(
+            state.lastTransactions(accountId)
+          )
+
+def discoveredPotAccountIds(
+    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
+): Set[monzo.AccountId] =
+  accountsAndTransactions
+    .flatMap: (_, transactions) =>
+      transactions.flatMap:
+        potAccountId
+    .toSet
+
+def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
+  transaction.metadata
+    .flatMap:
+      _.get("pot_account_id")
+    .collect:
+      case Document.DString(value) =>
+        monzo.AccountId(value)
 
 enum ListTransactionsSince:
   case Timestamp(instant: Instant)
