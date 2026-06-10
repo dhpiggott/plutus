@@ -640,7 +640,10 @@ def listTransactionsForAccounts(
 // so it keeps syncing even when no transfer falls in the export window. (That
 // inference assumes /accounts never stops listing a main account — it keeps
 // returning closed ones, so in practice only pots can be in state but not in
-// /accounts.)
+// /accounts.) Note that SCA verification doesn't extend to pot accounts: a
+// window reaching back more than 90 days fails with
+// forbidden.verification_required even right after authorisation, when main
+// accounts would return their full history.
 def discoverPotAccounts(
     state: State,
     accounts: List[monzo.Account],
