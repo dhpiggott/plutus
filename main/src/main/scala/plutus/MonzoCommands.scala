@@ -635,7 +635,11 @@ def listTransactionsForAccounts(
 // Pots are backed by account objects that /accounts doesn't list. Their IDs
 // only surface as pot_account_id in the metadata of pot-transfer transactions,
 // but passing one to /transactions returns the pot's own statement — including
-// interest credits, which appear nowhere else. Once a pot has a bookmark in
+// interest credits, which appear nowhere else. /pots is no alternative source:
+// its live responses carry many undocumented fields, but none reference the
+// pot's backing account — current_account_id is the owning account, and the
+// pot id shares only its creation-timestamp prefix with the backing-account
+// ID, so one can't be derived from the other. Once a pot has a bookmark in
 // the state store it's recognisable there as a key /accounts doesn't return,
 // so it keeps syncing even when no transfer falls in the export window. (That
 // inference assumes /accounts never stops listing a main account — it keeps
