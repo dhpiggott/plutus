@@ -52,6 +52,10 @@ On first run there is no saved state, so the command will:
 
 You will need to register an OAuth client at <https://developers.monzo.com> with `http://localhost:8080/oauth/callback` as the redirect URI.
 
+#### Refresh-token expiry reminder
+
+Monzo's token endpoint doesn't tell you when a refresh token expires, so Plutus infers it: at authorization it records the grant time and assumes a 90-day lifetime. From 45 days before that inferred expiry, every `export-transactions` run warns that access is approaching expiry and asks you to use the **refresh** (extend-access) feature in the Monzo app. After you've done so, answer the follow-up prompt — only a `yes` rolls the inferred expiry forward another 90 days, so the reminder keeps nagging until you've actually extended access. (Because the app-side extension isn't visible over the API, this is a best-effort estimate; if you've extended but Plutus still warns, just confirm at the prompt to record it.)
+
 ## Building and running
 
 The build is sbt with `sbt-projectmatrix`. The two interesting projects are `main3` (JVM) and `mainNative3` (Scala Native).
