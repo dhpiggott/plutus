@@ -840,6 +840,17 @@ def writeOfx(
             ofx.Ofx.schema
           .encode:
             content
+      // GnuCash imports OFX through libofx, an SGML parser that doesn't
+      // recognise the &apos; / &quot; entities smithy4s escapes apostrophes
+      // and quotes to; both are valid literally in element text, so undo the
+      // escapes.
+      .map:
+        case fs2.data.xml.XmlEvent.XmlString(s, isCDATA) =>
+          fs2.data.xml.XmlEvent.XmlString(
+            s.replace("&apos;", "'").replace("&quot;", "\""),
+            isCDATA
+          )
+        case event => event
       .through:
         fs2.data.xml.render.prettyPrint(width = 60, indent = 4)
   )
