@@ -269,15 +269,6 @@ def warnIfRefreshTokenNearExpiry(
             .as(state)
     yield updatedState
 
-def inferredRefreshTokenExpiry(state: State): Instant =
-  state.refreshTokenExpiresAt
-    .map:
-      _.value.asInstant
-    .getOrElse:
-      state.authorizedAt.value.asInstant
-        .plus:
-          refreshTokenTtl
-
 private val stateKeychainAccount = "plutus"
 
 def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
@@ -426,6 +417,15 @@ def lessThanFiveMinutesAgo(
 // warnIfRefreshTokenNearExpiry.
 val refreshTokenTtl: Period = Period.ofDays:
   90
+
+def inferredRefreshTokenExpiry(state: State): Instant =
+  state.refreshTokenExpiresAt
+    .map:
+      _.value.asInstant
+    .getOrElse:
+      state.authorizedAt.value.asInstant
+        .plus:
+          refreshTokenTtl
 
 // Start reminding at the half-life, leaving ~45 days to act before access
 // would lapse.
