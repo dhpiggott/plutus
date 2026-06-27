@@ -375,6 +375,11 @@ val refreshTokenTtl: Period = Period.ofDays:
 val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
   45
 
+// Where the extend-access feature lives in the Monzo app, so the reminder can
+// point straight at it rather than leaving the user to hunt.
+val monzoRefreshPermissionsPath: String =
+  "Settings > Privacy & security > Manage apps > Refresh permissions"
+
 def inferredRefreshTokenExpiry(state: State): Instant =
   state.refreshTokenExpiresAt
     .map:
@@ -400,13 +405,13 @@ def warnIfRefreshTokenNearExpiry(
     for
       _ <- warn:
         if daysRemaining < 0 then
-          s"Monzo access has likely expired (inferred expiry $expiryDate). Use the refresh feature in the Monzo app to extend it, otherwise the next run may require full re-authentication."
+          s"Monzo access has likely expired (inferred expiry $expiryDate). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
         else
-          s"Monzo access expires in about $daysRemaining day(s) (inferred expiry $expiryDate). Use the refresh feature in the Monzo app to extend it."
+          s"Monzo access expires in about $daysRemaining day(s) (inferred expiry $expiryDate). Extend it in the Monzo app under $monzoRefreshPermissionsPath."
       didRefresh <- IO.blocking:
         Prompts.sync.use:
           _.confirm(
-            "Did you just use the refresh feature in the Monzo app?"
+            s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
           ).getOrRaise
       updatedState <-
         if didRefresh then
