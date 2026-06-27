@@ -222,28 +222,6 @@ def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
         "Couldn't load state from Keychain."
 yield maybeState
 
-private val stateKeychainAccount = "plutus"
-
-def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
-  _ <- Keychain.save(
-    account = stateKeychainAccount,
-    bytes = Json
-      .writeBlob:
-        state
-      .toArray
-  )
-  _ <- info:
-    "Saved state to Keychain."
-yield ()
-
-extension (timestamp: Timestamp)
-  def asInstant: Instant =
-    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
-
-extension (instant: Instant)
-  def asSmithyTimestamp: Timestamp =
-    Timestamp(instant.getEpochSecond, instant.getNano)
-
 def warnIfRefreshTokenNearExpiry(
     state: State,
     now: Instant
@@ -299,6 +277,28 @@ def inferredRefreshTokenExpiry(state: State): Instant =
       state.authorizedAt.value.asInstant
         .plus:
           refreshTokenTtl
+
+private val stateKeychainAccount = "plutus"
+
+def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
+  _ <- Keychain.save(
+    account = stateKeychainAccount,
+    bytes = Json
+      .writeBlob:
+        state
+      .toArray
+  )
+  _ <- info:
+    "Saved state to Keychain."
+yield ()
+
+extension (timestamp: Timestamp)
+  def asInstant: Instant =
+    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
+
+extension (instant: Instant)
+  def asSmithyTimestamp: Timestamp =
+    Timestamp(instant.getEpochSecond, instant.getNano)
 
 def accessToken(
     client: Client[IO],
