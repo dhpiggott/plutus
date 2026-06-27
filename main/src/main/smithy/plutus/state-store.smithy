@@ -27,6 +27,9 @@ structure State {
     @jsonName("refresh_token")
     refreshToken: RefreshToken
 
+    @jsonName("refresh_token_expires_at")
+    refreshTokenExpiresAt: RefreshTokenExpiresAt
+
     @required
     @jsonName("last_transactions")
     lastTransactions: LastTransactions
@@ -34,6 +37,9 @@ structure State {
 
 @timestampFormat("epoch-seconds")
 timestamp AuthorizedAt
+
+@timestampFormat("epoch-seconds")
+timestamp RefreshTokenExpiresAt
 
 map LastTransactions {
     key: AccountId

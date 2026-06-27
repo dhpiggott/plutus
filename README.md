@@ -56,6 +56,10 @@ On first run there is no saved state, so the command will:
 
 You will need to register an OAuth client at <https://developers.monzo.com> with `http://localhost:8080/oauth/callback` as the redirect URI.
 
+#### Refresh-token expiry reminder
+
+Monzo's token endpoint doesn't tell you when a refresh token expires, but the Monzo app's **Settings > Privacy & security > Manage apps** screen states that access lasts 90 days, so Plutus computes the expiry from the grant time it records at authorization plus that 90-day lifetime. From 45 days before expiry, every `export-transactions` run warns that access is approaching expiry and asks you to extend it in the Monzo app under **Manage apps > Refresh permissions**. After you've done so, answer the follow-up prompt — only a `yes` resets the expiry to 90 days from when you confirm, so the reminder keeps nagging until you've actually extended access. (After a refresh the Manage apps screen shows the session valid for 90 days from that moment — it resets the lifetime rather than stacking onto the time remaining — so Plutus anchors the new expiry on when you confirm, not on the old deadline. The 90-day lifetime is fixed, but the app-side extension itself isn't visible over the API, so if you've extended but Plutus still warns, just confirm at the prompt to record it.)
+
 ### `import-transactions`
 
 Fetches Monzo transactions exactly as `export-transactions` does (same OAuth/refresh flow, same pot discovery, same `--since` / `--before` window) and writes them straight into the GnuCash SQLite book at `--input` (default `./Accounts.gnucash`), instead of producing an OFX file.
