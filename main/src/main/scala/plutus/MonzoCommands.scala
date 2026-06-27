@@ -123,7 +123,7 @@ def exportTransactions(
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
       finiteDuration.toMillis
-  // Remind (and, if confirmed, record) before the inferred refresh-token expiry
+  // Remind (and, if confirmed, record) before the computed refresh-token expiry
   // passes, while there's still a working refresh token to extend in the app.
   checkedState <- maybeState.traverse:
     warnIfRefreshTokenNearExpiry(_, now)
@@ -362,11 +362,12 @@ def lessThanFiveMinutesAgo(
     .isAfter:
       fiveMinutesAgo
 
-// Monzo's token response carries no refresh-token expiry, so we infer one from
-// when access was last granted (recorded in State at authorization) and the
-// observed ~90-day lifetime, persisting it so it survives across runs. A user
-// can extend access from the Monzo app, which we can't observe — hence the
-// confirm-then-record handshake in warnIfRefreshTokenNearExpiry.
+// Monzo's token response carries no refresh-token expiry, so we compute one
+// from when access was last granted (recorded in State at authorization) plus
+// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
+// it survives across runs. A user can extend access from the Monzo app, which
+// we can't observe — hence the confirm-then-record handshake in
+// warnIfRefreshTokenNearExpiry.
 val refreshTokenTtl: Period = Period.ofDays:
   90
 
@@ -399,15 +400,17 @@ def warnIfRefreshTokenNearExpiry(
   val warnFrom = expiresAt.minus:
     refreshTokenExpiryWarningWindow
   if now.isBefore(warnFrom) then
-    verbose(s"Monzo refresh token expiry inferred as $expiryDate.").as(state)
+    verbose(
+      s"Monzo access expires $expiryDate (90 days from when it was last granted)."
+    ).as(state)
   else
     val daysRemaining = ChronoUnit.DAYS.between(now, expiresAt)
     for
       _ <- warn:
         if daysRemaining < 0 then
-          s"Monzo access has likely expired (inferred expiry $expiryDate). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
+          s"Monzo access expired on $expiryDate (unless you've since extended it in-app). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
         else
-          s"Monzo access expires in about $daysRemaining day(s) (inferred expiry $expiryDate). Extend it in the Monzo app under $monzoRefreshPermissionsPath."
+          s"Monzo access expires in $daysRemaining day(s), on $expiryDate. Extend it in the Monzo app under $monzoRefreshPermissionsPath."
       didRefresh <- IO.blocking:
         Prompts.sync.use:
           _.confirm(
