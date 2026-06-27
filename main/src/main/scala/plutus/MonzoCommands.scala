@@ -25,6 +25,7 @@ import java.time.Instant
 import java.time.Period
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import scala.concurrent.duration.*
 
 lazy val monzoOpts: Opts[IO[Unit]] = Opts.subcommand(
@@ -122,6 +123,10 @@ def exportTransactions(
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
       finiteDuration.toMillis
+  // Remind (and, if confirmed, record) before the computed refresh-token expiry
+  // passes, while there's still a working refresh token to extend in the app.
+  checkedState <- maybeState.traverse:
+    warnIfRefreshTokenNearExpiry(_, now)
   // From https://docs.monzo.com/?shell#list-transactions:
   //
   // Strong Customer Authentication
@@ -130,7 +135,7 @@ def exportTransactions(
   // transactions, and after 5 minutes, it can only sync the last 90 days of
   // transactions. If you need the user’s entire transaction history, you
   // should consider fetching and storing it right after authentication.
-  requireStrongCustomerAuthentication = maybeState match
+  requireStrongCustomerAuthentication = checkedState match
     case None =>
       // n/a - there's no refresh token anyway, so we'll need to authenticate
       // for the first time, and that will happen regardless of whether we
@@ -167,7 +172,7 @@ def exportTransactions(
       for
         (state, accessToken) <- accessToken(
           client,
-          maybeState,
+          checkedState,
           now,
           requireStrongCustomerAuthentication
         )
@@ -216,6 +221,53 @@ def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
       warn:
         "Couldn't load state from Keychain."
 yield maybeState
+
+def warnIfRefreshTokenNearExpiry(
+    state: State,
+    now: Instant
+)(using verbosity: Verbosity): IO[State] =
+  val expiresAt = inferredRefreshTokenExpiry:
+    state
+  val expiryDate = expiresAt.atOffset(ZoneOffset.UTC).toLocalDate
+  val warnFrom = expiresAt.minus:
+    refreshTokenExpiryWarningWindow
+  if now.isBefore(warnFrom) then
+    verbose(
+      s"Monzo access expires $expiryDate (90 days from when it was last granted)."
+    ).as(state)
+  else
+    val daysRemaining = ChronoUnit.DAYS.between(now, expiresAt)
+    for
+      _ <- warn:
+        if daysRemaining < 0 then
+          s"Monzo access expired on $expiryDate (unless you've since extended it in-app). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
+        else
+          s"Monzo access expires in $daysRemaining day(s), on $expiryDate. Extend it in the Monzo app under $monzoRefreshPermissionsPath."
+      didRefresh <- IO.blocking:
+        Prompts.sync.use:
+          _.confirm(
+            s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
+          ).getOrRaise
+      updatedState <-
+        if didRefresh then
+          // Anchor the extension on now, not the existing deadline: after a
+          // refresh the Manage apps screen shows the session valid for 90 days
+          // from that moment (it resets the lifetime, it doesn't stack onto the
+          // remaining time), so an early refresh is exactly now + 90 days.
+          // expiresAt + 90 would over-count by however long was left.
+          val extendedExpiry = RefreshTokenExpiresAt:
+            now
+              .plus:
+                refreshTokenTtl
+              .asSmithyTimestamp
+          val extended = state.copy(
+            refreshTokenExpiresAt = Some(extendedExpiry)
+          )
+          saveState(extended).as(extended)
+        else
+          info("No refresh recorded; you'll be reminded again next run.")
+            .as(state)
+    yield updatedState
 
 private val stateKeychainAccount = "plutus"
 
@@ -279,6 +331,11 @@ def accessToken(
             authorizedAt = AuthorizedAt:
               now.asSmithyTimestamp
             refreshToken = createAccessTokenOutput.refreshToken
+            inferredExpiry = RefreshTokenExpiresAt:
+              now
+                .plus:
+                  refreshTokenTtl
+                .asSmithyTimestamp
             state = maybeState match
               case None =>
                 State(
@@ -286,13 +343,15 @@ def accessToken(
                   clientSecret,
                   authorizedAt,
                   refreshToken,
+                  refreshTokenExpiresAt = Some(inferredExpiry),
                   lastTransactions = Map.empty
                 )
 
               case Some(state) =>
                 state.copy(
                   authorizedAt = authorizedAt,
-                  refreshToken = refreshToken
+                  refreshToken = refreshToken,
+                  refreshTokenExpiresAt = Some(inferredExpiry)
                 )
           yield (state, createAccessTokenOutput.accessToken)
         (state, accessToken) <- maybeState match
@@ -349,6 +408,34 @@ def lessThanFiveMinutesAgo(
       leeway
     .isAfter:
       fiveMinutesAgo
+
+def inferredRefreshTokenExpiry(state: State): Instant =
+  state.refreshTokenExpiresAt
+    .map:
+      _.value.asInstant
+    .getOrElse:
+      state.authorizedAt.value.asInstant
+        .plus:
+          refreshTokenTtl
+
+// Monzo's token response carries no refresh-token expiry, so we compute one
+// from when access was last granted (recorded in State at authorization) plus
+// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
+// it survives across runs. A user can extend access from the Monzo app, which
+// we can't observe — hence the confirm-then-record handshake in
+// warnIfRefreshTokenNearExpiry.
+val refreshTokenTtl: Period = Period.ofDays:
+  90
+
+// Start reminding at the half-life, leaving ~45 days to act before access
+// would lapse.
+val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
+  45
+
+// Where the extend-access feature lives in the Monzo app, so the reminder can
+// point straight at it rather than leaving the user to hunt.
+val monzoRefreshPermissionsPath: String =
+  "Settings > Privacy & security > Manage apps > Refresh permissions"
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
