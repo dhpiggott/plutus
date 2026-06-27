@@ -6,7 +6,24 @@ import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
+// GnuCash GUIDs are 32-char hex with the UUID dashes stripped. Factored out of
+// createOrRetrieveMirror, which inlined exactly this, so the import path's
+// transaction/split GUIDs are minted the same way.
+val newGuid: IO[String] =
+  UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))
+
 object Account:
+
+  // Resolve a path of names from the root ("Expenses" :: "Groceries" :: Nil),
+  // reusing the existing `child` navigation. None if any segment is missing, so
+  // the importer can fail fast rather than silently mis-file.
+  def atPath(
+      segments: List[String]
+  )(using db: Database[IO]): IO[Option[Account]] =
+    Account.root.flatMap: root =>
+      segments.foldLeftM(Option(root)):
+        case (Some(parent), segment) => parent.child(segment)
+        case (None, _)               => IO.pure(None)
 
   def createOrRetrieveArchiveSubroot(using db: Database[IO]): IO[Account] =
     for
@@ -111,9 +128,9 @@ final case class Account(
     .flatMap:
       case None =>
         for
-          guid <- UUIDGen[IO].randomUUID
+          guid <- newGuid
           mirror = copy(
-            guid = guid.toString.replaceAll("-", ""),
+            guid = guid,
             name = name,
             parentGuid = Some(parent.guid),
             hidden = hidden,
