@@ -244,6 +244,62 @@ extension (instant: Instant)
   def asSmithyTimestamp: Timestamp =
     Timestamp(instant.getEpochSecond, instant.getNano)
 
+def warnIfRefreshTokenNearExpiry(
+    state: State,
+    now: Instant
+)(using verbosity: Verbosity): IO[State] =
+  val expiresAt = inferredRefreshTokenExpiry:
+    state
+  val expiryDate = expiresAt.atOffset(ZoneOffset.UTC).toLocalDate
+  val warnFrom = expiresAt.minus:
+    refreshTokenExpiryWarningWindow
+  if now.isBefore(warnFrom) then
+    verbose(
+      s"Monzo access expires $expiryDate (90 days from when it was last granted)."
+    ).as(state)
+  else
+    val daysRemaining = ChronoUnit.DAYS.between(now, expiresAt)
+    for
+      _ <- warn:
+        if daysRemaining < 0 then
+          s"Monzo access expired on $expiryDate (unless you've since extended it in-app). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
+        else
+          s"Monzo access expires in $daysRemaining day(s), on $expiryDate. Extend it in the Monzo app under $monzoRefreshPermissionsPath."
+      didRefresh <- IO.blocking:
+        Prompts.sync.use:
+          _.confirm(
+            s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
+          ).getOrRaise
+      updatedState <-
+        if didRefresh then
+          // Anchor the extension on now, not the existing deadline: after a
+          // refresh the Manage apps screen shows the session valid for 90 days
+          // from that moment (it resets the lifetime, it doesn't stack onto the
+          // remaining time), so an early refresh is exactly now + 90 days.
+          // expiresAt + 90 would over-count by however long was left.
+          val extendedExpiry = RefreshTokenExpiresAt:
+            now
+              .plus:
+                refreshTokenTtl
+              .asSmithyTimestamp
+          val extended = state.copy(
+            refreshTokenExpiresAt = Some(extendedExpiry)
+          )
+          saveState(extended).as(extended)
+        else
+          info("No refresh recorded; you'll be reminded again next run.")
+            .as(state)
+    yield updatedState
+
+def inferredRefreshTokenExpiry(state: State): Instant =
+  state.refreshTokenExpiresAt
+    .map:
+      _.value.asInstant
+    .getOrElse:
+      state.authorizedAt.value.asInstant
+        .plus:
+          refreshTokenTtl
+
 def accessToken(
     client: Client[IO],
     maybeState: Option[State],
@@ -361,62 +417,6 @@ def lessThanFiveMinutesAgo(
       leeway
     .isAfter:
       fiveMinutesAgo
-
-def warnIfRefreshTokenNearExpiry(
-    state: State,
-    now: Instant
-)(using verbosity: Verbosity): IO[State] =
-  val expiresAt = inferredRefreshTokenExpiry:
-    state
-  val expiryDate = expiresAt.atOffset(ZoneOffset.UTC).toLocalDate
-  val warnFrom = expiresAt.minus:
-    refreshTokenExpiryWarningWindow
-  if now.isBefore(warnFrom) then
-    verbose(
-      s"Monzo access expires $expiryDate (90 days from when it was last granted)."
-    ).as(state)
-  else
-    val daysRemaining = ChronoUnit.DAYS.between(now, expiresAt)
-    for
-      _ <- warn:
-        if daysRemaining < 0 then
-          s"Monzo access expired on $expiryDate (unless you've since extended it in-app). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
-        else
-          s"Monzo access expires in $daysRemaining day(s), on $expiryDate. Extend it in the Monzo app under $monzoRefreshPermissionsPath."
-      didRefresh <- IO.blocking:
-        Prompts.sync.use:
-          _.confirm(
-            s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
-          ).getOrRaise
-      updatedState <-
-        if didRefresh then
-          // Anchor the extension on now, not the existing deadline: after a
-          // refresh the Manage apps screen shows the session valid for 90 days
-          // from that moment (it resets the lifetime, it doesn't stack onto the
-          // remaining time), so an early refresh is exactly now + 90 days.
-          // expiresAt + 90 would over-count by however long was left.
-          val extendedExpiry = RefreshTokenExpiresAt:
-            now
-              .plus:
-                refreshTokenTtl
-              .asSmithyTimestamp
-          val extended = state.copy(
-            refreshTokenExpiresAt = Some(extendedExpiry)
-          )
-          saveState(extended).as(extended)
-        else
-          info("No refresh recorded; you'll be reminded again next run.")
-            .as(state)
-    yield updatedState
-
-def inferredRefreshTokenExpiry(state: State): Instant =
-  state.refreshTokenExpiresAt
-    .map:
-      _.value.asInstant
-    .getOrElse:
-      state.authorizedAt.value.asInstant
-        .plus:
-          refreshTokenTtl
 
 // Monzo's token response carries no refresh-token expiry, so we compute one
 // from when access was last granted (recorded in State at authorization) plus
