@@ -418,11 +418,11 @@ def warnIfRefreshTokenNearExpiry(
           ).getOrRaise
       updatedState <-
         if didRefresh then
-          // Anchor the extension on now, not the existing inferred deadline:
-          // the app's refresh resets the lifetime from the moment it's used, so
-          // confirming early must not push the estimate past the real expiry —
-          // erring towards under-estimating keeps us reminding rather than
-          // going quiet while access is actually lapsing.
+          // Anchor the extension on now, not the existing deadline: after a
+          // refresh the Manage apps screen shows the session valid for 90 days
+          // from that moment (it resets the lifetime, it doesn't stack onto the
+          // remaining time), so an early refresh is exactly now + 90 days.
+          // expiresAt + 90 would over-count by however long was left.
           val extendedExpiry = RefreshTokenExpiresAt:
             now
               .plus:
