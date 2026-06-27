@@ -362,25 +362,6 @@ def lessThanFiveMinutesAgo(
     .isAfter:
       fiveMinutesAgo
 
-// Monzo's token response carries no refresh-token expiry, so we compute one
-// from when access was last granted (recorded in State at authorization) plus
-// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
-// it survives across runs. A user can extend access from the Monzo app, which
-// we can't observe — hence the confirm-then-record handshake in
-// warnIfRefreshTokenNearExpiry.
-val refreshTokenTtl: Period = Period.ofDays:
-  90
-
-// Start reminding at the half-life, leaving ~45 days to act before access
-// would lapse.
-val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
-  45
-
-// Where the extend-access feature lives in the Monzo app, so the reminder can
-// point straight at it rather than leaving the user to hunt.
-val monzoRefreshPermissionsPath: String =
-  "Settings > Privacy & security > Manage apps > Refresh permissions"
-
 def warnIfRefreshTokenNearExpiry(
     state: State,
     now: Instant
@@ -436,6 +417,25 @@ def inferredRefreshTokenExpiry(state: State): Instant =
       state.authorizedAt.value.asInstant
         .plus:
           refreshTokenTtl
+
+// Monzo's token response carries no refresh-token expiry, so we compute one
+// from when access was last granted (recorded in State at authorization) plus
+// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
+// it survives across runs. A user can extend access from the Monzo app, which
+// we can't observe — hence the confirm-then-record handshake in
+// warnIfRefreshTokenNearExpiry.
+val refreshTokenTtl: Period = Period.ofDays:
+  90
+
+// Start reminding at the half-life, leaving ~45 days to act before access
+// would lapse.
+val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
+  45
+
+// Where the extend-access feature lives in the Monzo app, so the reminder can
+// point straight at it rather than leaving the user to hunt.
+val monzoRefreshPermissionsPath: String =
+  "Settings > Privacy & security > Manage apps > Refresh permissions"
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
