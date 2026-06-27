@@ -296,8 +296,8 @@ def accessToken(
                   clientSecret,
                   authorizedAt,
                   refreshToken,
-                  lastTransactions = Map.empty,
-                  refreshTokenExpiresAt = Some(inferredExpiry)
+                  refreshTokenExpiresAt = Some(inferredExpiry),
+                  lastTransactions = Map.empty
                 )
 
               case Some(state) =>
@@ -381,15 +381,6 @@ val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
 val monzoRefreshPermissionsPath: String =
   "Settings > Privacy & security > Manage apps > Refresh permissions"
 
-def inferredRefreshTokenExpiry(state: State): Instant =
-  state.refreshTokenExpiresAt
-    .map:
-      _.value.asInstant
-    .getOrElse:
-      state.authorizedAt.value.asInstant
-        .plus:
-          refreshTokenTtl
-
 def warnIfRefreshTokenNearExpiry(
     state: State,
     now: Instant
@@ -436,6 +427,15 @@ def warnIfRefreshTokenNearExpiry(
           info("No refresh recorded; you'll be reminded again next run.")
             .as(state)
     yield updatedState
+
+def inferredRefreshTokenExpiry(state: State): Instant =
+  state.refreshTokenExpiresAt
+    .map:
+      _.value.asInstant
+    .getOrElse:
+      state.authorizedAt.value.asInstant
+        .plus:
+          refreshTokenTtl
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
