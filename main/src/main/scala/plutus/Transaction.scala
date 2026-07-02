@@ -8,12 +8,13 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-// GnuCash 3.x stores SQLite timestamps as a 14-char UTC string with no
-// separators (older books used "yyyy-MM-dd HH:mm:ss"). VERIFY against the book
-// before the first live run:
-//   sqlite> select post_date from transactions limit 1;
+// GnuCash's SQLite backend stores post_date/enter_date (and reconcile_date) as
+// a UTC "yyyy-MM-dd HH:mm:ss" string — confirmed against the book, whose
+// unreconciled splits carry reconcile_date '1970-01-01 00:00:00'. (The column
+// is declared text(14), but SQLite doesn't enforce the length, so the 19-char
+// form is stored as-is.)
 val gnuCashTimestamp: DateTimeFormatter =
-  DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+  DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
 def formatTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(gnuCashTimestamp)
