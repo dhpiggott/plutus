@@ -730,18 +730,18 @@ def listAllTransactions(
 yield (accountsAndTransactions, potAccountsAndTransactions)
 
 // Fetch every transaction (main accounts and discovered pots) for the window,
-// grouped by account so import can post each account's transactions to its own
-// GnuCash asset account. Used by import, which dedups on the Monzo ID rather
-// than bookmarks, so it leaves the persisted state untouched. Returns `now`
-// too, so import can stamp enter_date with the session's single clock read
-// rather than taking a second one.
+// grouped by account so import can post each account's transactions to the
+// asset account its type maps to (see AssetAccounts). Used by import, which
+// dedups on the Monzo ID rather than bookmarks, so it leaves the persisted
+// state untouched. Returns `now` too, so import can stamp enter_date with the
+// session's single clock read rather than taking a second one.
 def fetchTransactionsByAccount(
     since: Option[Instant],
     before: Option[Instant]
 )(using
     verbosity: Verbosity
 ): IO[
-  (now: Instant, byAccount: List[(monzo.AccountId, List[monzo.Transaction])])
+  (now: Instant, byAccount: List[(monzo.Account, List[monzo.Transaction])])
 ] =
   withMonzoApi(since): (monzoApi, state, now) =>
     listAllTransactions(
@@ -750,9 +750,7 @@ def fetchTransactionsByAccount(
       since,
       before = before.getOrElse(now)
     ).map: (accountsAndTransactions, potAccountsAndTransactions) =>
-      val byAccount = (accountsAndTransactions ++ potAccountsAndTransactions)
-        .map: (account, transactions) =>
-          account.id -> transactions
+      val byAccount = accountsAndTransactions ++ potAccountsAndTransactions
       (state = state, result = (now = now, byAccount = byAccount))
 
 def listTransactionsForAccounts(
