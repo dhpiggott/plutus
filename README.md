@@ -1,10 +1,10 @@
 # Plutus
 
-A small personal-finance CLI that does two unrelated jobs:
+A small personal-finance CLI that does three related jobs:
 
 - **GnuCash housekeeping** — archive hidden accounts in a local GnuCash SQLite file, and restore them later.
 - **Monzo → OFX export** — pull transactions from the Monzo API and write a single `monzo.ofx` file suitable for import into GnuCash (or anything else that reads OFX).
-- **Monzo → GnuCash import** — pull the same transactions and write them straight into a GnuCash SQLite book, applying categorisation rules, skipping rows already imported.
+- **Monzo → GnuCash import** — pull the same transactions and write them straight into a GnuCash SQLite book, filing each by its Monzo category and skipping rows already imported.
 
 It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; both builds reach `sqlite3` and the macOS Keychain through the same FFI mechanism per platform — the JVM build via the [Foreign Function & Memory API](https://openjdk.org/jeps/454) (using jextract for bindings), the Scala Native build via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
 
@@ -13,12 +13,12 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ```
 plutus gnucash archive-accounts    [--input PATH] [verbosity]
 plutus gnucash restore-account     [--input PATH] [verbosity]
-plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
-                                   [--output PATH] [--dry-run] [--only-pots]
-                                   [verbosity]
-plutus monzo   import-transactions [--input PATH] [--asset-account PATH]
+plutus gnucash import-transactions [--input PATH]
+                                   --asset-account MONZO_ACCOUNT_ID=PATH …
                                    [--since INSTANT] [--before INSTANT]
                                    [--dry-run] [verbosity]
+plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
+                                   [--output PATH] [--dry-run] [verbosity]
 ```
 
 Verbosity flags (mutually exclusive, default `--info`): `--error`, `--warn`, `--info`, `--verbose`, `--trace`.
@@ -43,7 +43,6 @@ Interest paid into a pot never appears in the main account's feed — it only ex
 
 - On a `--since` run, every pot referenced by a pot transfer in the window is exported in full — transfer legs and interest credits — as its own OFX statement, and gets its own bookmark.
 - On bookmark runs, already-bookmarked pots keep syncing like any other account. Pots discovered in the window but not yet bookmarked are skipped with a warning; re-run with `--since` to onboard them.
-- `--only-pots` restricts the export to pot accounts: main-account transactions are still listed (discovery needs their metadata) but are left out of the OFX, and their bookmarks aren't advanced. Use `--only-pots --since <timestamp>` to onboard pots when your main accounts are already up to date, without re-exporting their transactions.
 - **Pot windows are capped at 90 days.** Strong Customer Authentication verification only covers the accounts on the OAuth consent screen, which pot backing accounts never are — so asking for pot transactions older than 90 days fails with `forbidden.verification_required`, even inside the 5-minute full-history window that main accounts get after authorisation. Keep `--since` within the last 90 days whenever pots are involved (a run with an older `--since` fails outright once it reaches the pots), and run exports at least every 90 days so pot bookmarks never fall off the back of the window. For older pot history, download the pot's statement from the app (Pot → Pot documents → Pot statement; QIF imports straight into GnuCash).
 - A pot whose transfers all fall outside the windows you export is never discovered, and pot spending via virtual cards isn't returned by the API at all. Being undocumented, the whole mechanism may break without notice.
 
@@ -62,13 +61,16 @@ Monzo's token endpoint doesn't tell you when a refresh token expires, but the Mo
 
 ### `import-transactions`
 
-Fetches Monzo transactions exactly as `export-transactions` does (same OAuth/refresh flow, same pot discovery, same `--since` / `--before` window) and writes them straight into the GnuCash SQLite book at `--input` (default `./Accounts.gnucash`), instead of producing an OFX file.
+Fetches Monzo transactions the same way `export-transactions` does (same OAuth/refresh flow, same pot discovery, same `--since` / `--before` window) but writes them straight into the GnuCash SQLite book at `--input` (default `./Accounts.gnucash`) instead of producing an OFX file. It lives under `gnucash` rather than `monzo` because it's conceptually a GnuCash import — a future variant could read the CSVs the Monzo app exports instead of the API.
 
-Each Monzo transaction becomes one balanced GnuCash transaction with two splits: the signed amount on the asset account given by `--asset-account` (a colon-separated path, e.g. `Assets:Current Assets:Monzo:Current`), and its negation on a category account chosen by the categorisation rules in `ImportRules.default`. First matching rule wins; anything unmatched lands in `Expenses:Uncategorised` (accounts are never auto-created, so review what accumulates there and teach it a rule). Every target account must already exist — a missing one fails the run before anything is written.
+A single fetch spans your current account, savings and pots, so you map **each** Monzo account (or pot) to its own GnuCash asset account with a repeated `--asset-account MONZO_ACCOUNT_ID=Assets:…:Path` option. Transactions from a Monzo account you haven't mapped are skipped with a warning (so run once, read the warnings to learn the ids, then add mappings). Each transaction becomes one balanced GnuCash transaction with two splits: the signed amount on that account's asset account, and its negation on a category account.
 
-Re-runs are idempotent: the Monzo transaction id is written into an `online_id` KVP slot (the same id `export-transactions` uses as the OFX `FITID`), and any transaction already carrying that id is skipped. GnuCash's own import matcher recognises these rows too.
+The category account is chosen from Monzo's own transaction `category` via the map in `ImportRules.default` (e.g. `groceries → Expenses:Groceries`); a category not in the map — or a transaction with none — lands in `Expenses:Uncategorised`. Accounts are never auto-created, so review what accumulates there and add a mapping. Every target account (asset and category) must already exist — a missing one fails the run before anything is written.
+
+Re-runs are idempotent: the Monzo transaction ID is written into an `online_id` KVP slot on the asset split (the same ID `export-transactions` uses as the OFX `FITID`, and where GnuCash's generic importer stores it), and any transaction already carrying that ID is skipped. GnuCash's own import matcher recognises these rows too.
 
 - Unlike `export-transactions`, this command doesn't advance the state-store bookmarks — dedup is by `online_id`, not by bookmark — so `--since` defaults to each account's bookmark only for choosing the fetch window.
+- Both splits are written unreconciled; you reconcile them against a statement yourself, as with an OFX import.
 - Before any non-dry run the book is copied to `<input>.bak`. The whole write runs in a single SQLite transaction, so a mid-run failure rolls back to the pre-run state (and the backup is the belt-and-braces restore).
 - `--dry-run` prints the plan (filed / to-Uncategorised / already-present counts) without writing to the book and without taking a backup.
 - The same 90-day pot-window cap as `export-transactions` applies, for the same SCA reason.

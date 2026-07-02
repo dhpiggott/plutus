@@ -1,18 +1,20 @@
 package plutus
 
+import cats.data.Validated
 import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
 import cue4s.*
 import porcupine.*
 
+import java.time.Instant
 import scala.collection.immutable.SortedMap
 
 lazy val gnucashOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "gnucash",
   help = "GnuCash housekeeping."
 ):
-  archiveAccountsOpts orElse restoreAccountOpts
+  archiveAccountsOpts orElse restoreAccountOpts orElse importTransactionsOpts
 
 lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
@@ -161,3 +163,133 @@ def cleanUpRedundantMirror(
           s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
       yield ()
   yield ()
+
+// Lives here rather than under `monzo` because it's conceptually a GnuCash
+// import — a future variant could read the CSVs the Monzo app exports instead
+// of the API. The Monzo session plumbing it borrows (fetchTransactionsByAccount)
+// stays in MonzoCommands.
+lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
+  name = "import-transactions",
+  help = "Import Monzo transactions directly into the GnuCash book."
+):
+  (
+    verbosityOpts,
+    inputOpts,
+    sinceOpts,
+    beforeOpts,
+    assetAccountsOpts,
+    importDryRunOpts
+  ).tupled.map: (verbosity, input, since, before, assetAccountPaths, dryRun) =>
+    importTransactions(input, since, before, assetAccountPaths, dryRun)(using
+      verbosity
+    )
+
+// Each Monzo account (or pot) maps to its own GnuCash asset account, because a
+// single import can span the current account, savings and pots — flattening
+// them onto one asset account would misattribute the lot. Keyed by Monzo
+// account id (the same opaque id the state store bookmarks by); an account with
+// no mapping is skipped rather than guessed at.
+lazy val assetAccountsOpts: Opts[Map[String, List[String]]] =
+  Opts
+    .options[String](
+      "asset-account",
+      help = "Map a Monzo account or pot id to the GnuCash asset account its " +
+        "transactions post into, as '<monzo-account-id>=<Assets:...:Path>'. " +
+        "Repeat once per account; transactions from an account with no " +
+        "mapping are skipped with a warning."
+    )
+    .mapValidated: values =>
+      values
+        .traverse: value =>
+          value.split("=", 2) match
+            case Array(id, path) if id.nonEmpty && path.nonEmpty =>
+              Validated.validNel(id -> path.split(':').toList)
+            case _ =>
+              Validated.invalidNel(
+                s"Expected '<monzo-account-id>=<gnucash:path>' but got '$value'."
+              )
+        .map(_.toList.toMap)
+
+lazy val importDryRunOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "dry-run",
+      help =
+        "Print the plan (filed / uncategorised / skipped) without writing to the book and without taking a backup."
+    )
+    .orFalse
+
+def importTransactions(
+    input: fs2.io.file.Path,
+    since: Option[Instant],
+    before: Option[Instant],
+    assetAccountPaths: Map[String, List[String]],
+    dryRun: Boolean
+)(using verbosity: Verbosity): IO[Unit] = for
+  (now, byAccount) <- fetchTransactionsByAccount(since, before)
+  // Snapshot first: a bad run becomes a restore, not a rebuild.
+  _ <- IO.unlessA(dryRun):
+    val backup = fs2.io.file.Path(s"$input.bak")
+    fs2.io.file.Files[IO].copy(input, backup) *> info(s"Backed up to $backup.")
+  _ <- Database
+    .open[IO](input.toString)
+    .use: db =>
+      given Database[IO] = db
+      val rules = ImportRules.default
+      val run = for
+        currency <- Commodity.gbp
+        // Resolve every configured account once, up front, so a missing target
+        // (asset or category) fails the run before anything is written.
+        assetAccounts <- assetAccountPaths.toList
+          .traverse: (monzoAccountId, path) =>
+            Account
+              .atPath(path)
+              .flatMap:
+                IO.fromOption(_):
+                  Error(s"No account at ${path.mkString(":")}")
+              .map(monzoAccountId -> _)
+          .map(_.toMap)
+        targets <- rules.resolve
+        results <- byAccount.flatTraverse: (accountId, transactions) =>
+          val material = materialTransactions(transactions)
+          assetAccounts.get(accountId.value) match
+            case None =>
+              warn(
+                s"No --asset-account mapping for Monzo account ${accountId.value}; skipping its ${material.size} transaction(s)."
+              ).as(List.empty[Imported])
+
+            case Some(assetAccount) =>
+              material.traverse: transaction =>
+                Slot
+                  .hasOnlineId(transaction.id)
+                  .flatMap:
+                    case true  => Imported.Skipped.pure[IO]
+                    case false =>
+                      val path = rules.accountPathFor(transaction)
+                      val categoryAccount = targets(path)
+                      Posting
+                        .fromMonzo(
+                          transaction,
+                          assetAccount,
+                          categoryAccount,
+                          currency,
+                          now
+                        )
+                        .flatMap: posting =>
+                          IO.unlessA(dryRun)(posting.insert)
+                            .as:
+                              if path == rules.fallback then
+                                Imported.Uncategorised
+                              else Imported.Filed
+        _ <- info:
+          val filed = results.count(_ == Imported.Filed)
+          val uncategorised = results.count(_ == Imported.Uncategorised)
+          val skipped = results.count(_ == Imported.Skipped)
+          s"$filed filed, $uncategorised to Uncategorised, $skipped already present."
+      yield ()
+      // Everything-or-nothing, unless we're only previewing.
+      if dryRun then run else db.transact(run)
+yield ()
+
+enum Imported:
+  case Filed, Uncategorised, Skipped
