@@ -201,6 +201,8 @@ structure Transaction {
     @required
     notes: Notes
 
+    category: Category
+
     metadata: Metadata
 
     @jsonUnknown
@@ -230,6 +232,12 @@ string DeclineReason
 string Description
 
 string Notes
+
+// Monzo's own categorisation (general, eating_out, groceries, transport, …).
+// Modelled as an open string rather than an enum so a category Monzo adds later
+// can't fail the decode of a whole transaction page; unmapped values fall back
+// to Uncategorised in ImportRules.
+string Category
 
 structure Counterparty {
     name: Name

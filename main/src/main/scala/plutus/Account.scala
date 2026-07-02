@@ -6,9 +6,7 @@ import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
-// GnuCash GUIDs are 32-char hex with the UUID dashes stripped. Factored out of
-// createOrRetrieveMirror, which inlined exactly this, so the import path's
-// transaction/split GUIDs are minted the same way.
+// GnuCash GUIDs are 32-char hex with the UUID dashes stripped.
 val newGuid: IO[String] =
   UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))
 

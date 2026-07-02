@@ -34,6 +34,19 @@ object Slot:
       args = objGuid
     )
 
+  // True if a transaction carrying this Monzo id as an online_id slot already
+  // exists — the idempotency check the importer runs before writing a Posting.
+  // Mirrors GnuCash's own OFX-import dedup, which recognises the same slot.
+  def hasOnlineId(
+      transactionId: monzo.TransactionId
+  )(using db: Database[IO]): IO[Boolean] =
+    db.option(
+      query = sql"""
+        select 1 from slots where name = 'online_id' and string_val = $text
+      """.query(integer),
+      args = transactionId.value
+    ).map(_.isDefined)
+
 /** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
   * AUTOINCREMENT NOT NULL, obj_guid text(32) NOT NULL, name text(4096) NOT
   * NULL, slot_type integer NOT NULL, int64_val integer, string_val text(4096),

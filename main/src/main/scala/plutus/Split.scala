@@ -67,7 +67,9 @@ final case class Split(
     )
 
 object Split:
+  // Imported splits are written unreconciled, the state GnuCash gives any fresh
+  // entry; you reconcile them against a statement yourself, exactly as with an
+  // OFX import. GnuCash stores the epoch sentinel (not an empty string, which
+  // the NOT NULL column forbids) as the reconcile_date of an 'n' split.
   val NotReconciled: String = "n"
-  // VERIFY: copy whatever the book's existing unreconciled ('n') splits carry —
-  //   sqlite> select reconcile_date from splits where reconcile_state='n' limit 1;
   val ReconcileEpoch: String = "19700101000000"
