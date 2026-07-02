@@ -20,6 +20,7 @@ import smithy4s.time.Timestamp
 import smithy4s.xml.*
 
 import java.lang.Runtime
+import java.nio.file.FileAlreadyExistsException
 import java.time.Duration
 import java.time.Instant
 import java.time.Period
@@ -52,15 +53,13 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     sinceOpts,
     beforeOpts,
     outputOpts,
-    dryRunOpts,
-    onlyPotsOpts
-  ).tupled.map: (verbosity, since, before, output, dryRun, onlyPots) =>
+    dryRunOpts
+  ).tupled.map: (verbosity, since, before, output, dryRun) =>
     exportTransactions(
       since,
       before,
       output,
-      dryRun,
-      onlyPots
+      dryRun
     )(using verbosity)
 
 lazy val sinceOpts: Opts[Option[Instant]] =
@@ -103,22 +102,36 @@ lazy val dryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
-lazy val onlyPotsOpts: Opts[Boolean] =
-  Opts
-    .flag(
-      "only-pots",
-      help =
-        "Only export pot transactions. Main-account transactions are still listed (pot discovery needs their metadata) but aren't exported, and main-account bookmarks aren't advanced. Combine with --since to onboard pots without re-exporting main-account transactions."
-    )
-    .orFalse
-
 def exportTransactions(
     since: Option[Instant],
     before: Option[Instant],
     output: fs2.io.file.Path,
-    dryRun: Boolean,
-    onlyPots: Boolean
-)(using verbosity: Verbosity): IO[Unit] = for
+    dryRun: Boolean
+)(using verbosity: Verbosity): IO[Unit] =
+  withMonzoApi(since): (monzoApi, state, now) =>
+    exportTransactions(
+      monzoApi,
+      state,
+      since,
+      before = before.getOrElse(now),
+      output,
+      dryRun
+    ).map: updatedState =>
+      (state = updatedState, result = ())
+
+// Shared Monzo session scaffolding for both export and import: load state,
+// decide whether Strong Customer Authentication is required for the window,
+// build the HTTP client (whose trace-level logger prints full request and
+// response headers and bodies — including the bearer token, hence trace only),
+// rotate/obtain an access token, and run `use` against the authenticated API.
+// `use` returns the State to persist — export advances bookmarks, import leaves
+// it untouched — alongside its own result, and the rotated refresh token is
+// saved even if `use` fails, so it isn't lost.
+def withMonzoApi[A](
+    since: Option[Instant]
+)(
+    use: (monzo.Api[IO], State, Instant) => IO[(state: State, result: A)]
+)(using verbosity: Verbosity): IO[A] = for
   maybeState <- loadState()
   now <- Clock[IO].realTime.map: finiteDuration =>
     Instant.ofEpochMilli:
@@ -158,7 +171,7 @@ def exportTransactions(
                 90
             .plus:
               leeway
-  updatedState <- EmberClientBuilder
+  result <- EmberClientBuilder
     .default[IO]
     .build
     .map:
@@ -176,7 +189,7 @@ def exportTransactions(
           now,
           requireStrongCustomerAuthentication
         )
-        updatedState <- SimpleRestJsonBuilder:
+        used <- SimpleRestJsonBuilder:
           monzo.Api
         .client:
           client
@@ -186,23 +199,15 @@ def exportTransactions(
           BearerAuthMiddleware:
             accessToken
         .resource
-          .use:
-            exportTransactions(
-              _,
-              state,
-              since,
-              before = before.getOrElse(now),
-              output,
-              dryRun,
-              onlyPots
-            )
+          .use: monzoApi =>
+            use(monzoApi, state, now)
           .onError:
-            // Ensure the refreshed token isn't lost if export fails after
+            // Ensure the refreshed token isn't lost if `use` fails after
             // accessToken() has already rotated it.
             case _ => saveState(state)
-      yield updatedState
-  _ <- saveState(updatedState)
-yield ()
+        _ <- saveState(used.state)
+      yield used.result
+yield result
 
 def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
   maybeBytes <- Keychain.load:
@@ -587,9 +592,72 @@ def exportTransactions(
     since: Option[Instant],
     before: Instant,
     output: fs2.io.file.Path,
-    dryRun: Boolean,
-    onlyPots: Boolean
+    dryRun: Boolean
 )(using verbosity: Verbosity): IO[State] = for
+  (accountsAndTransactions, potAccountsAndTransactions) <- listAllTransactions(
+    monzoApi,
+    state,
+    since,
+    before
+  )
+  exportedAccountsAndTransactions = accountsAndTransactions ++
+    potAccountsAndTransactions
+  materialAccountIdsAndTransactions = exportedAccountsAndTransactions.map:
+    (account, transactions) => account.id -> materialTransactions(transactions)
+  _ <- writeOfx(
+    toOfx:
+      materialAccountIdsAndTransactions
+    ,
+    output,
+    overwrite = since.isDefined
+  ).adaptError:
+    case _: FileAlreadyExistsException =>
+      Error:
+        s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
+  updatedState =
+    if dryRun then state
+    else
+      state.copy(
+        lastTransactions = state.lastTransactions ++
+          exportedAccountsAndTransactions
+            .map: (account, transactions) =>
+              account.id -> transactions.lastOption
+            .collect:
+              case (accountId, Some(lastTransaction)) =>
+                accountId -> LastTransaction(
+                  lastTransaction.id,
+                  lastTransaction.created
+                )
+      )
+yield updatedState
+
+// Skip £0 active-card checks and declined authorisations: neither is real
+// spend, so export leaves them out of the OFX and import leaves them out of the
+// book. Shared so both paths filter identically.
+def materialTransactions(
+    transactions: List[monzo.Transaction]
+): List[monzo.Transaction] =
+  transactions.filterNot: transaction =>
+    transaction.amount.value == 0 || transaction.declineReason.isDefined
+
+// List every main account's transactions, then the pot accounts discovered
+// from their metadata (plus any already bookmarked in state). Shared by export
+// and import; returns the main and pot results separately because pots are
+// discovered from the main accounts' metadata, so the two are produced in
+// distinct phases. The verbose entity dump lives here so both commands emit it.
+def listAllTransactions(
+    monzoApi: monzo.Api[IO],
+    state: State,
+    since: Option[Instant],
+    before: Instant
+)(using
+    verbosity: Verbosity
+): IO[
+  (
+      List[(monzo.Account, List[monzo.Transaction])],
+      List[(monzo.Account, List[monzo.Transaction])]
+  )
+] = for
   _ <- info:
     "Listing accounts…"
   accounts <- monzoApi
@@ -643,63 +711,47 @@ def exportTransactions(
   _ <- (IO.whenA(newPotAccountIds.nonEmpty)):
     warn:
       s"Found pot accounts with no last recorded transaction; specify --since to export their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
-  allAccountsAndTransactions = accountsAndTransactions ++
-    potAccountsAndTransactions
-  // Main accounts are still listed under --only-pots because pot discovery
-  // needs their metadata, but they're excluded from the OFX and from the
-  // bookmark update — their transactions remain unexported, so advancing
-  // their bookmarks would silently skip them on the next run.
-  exportedAccountsAndTransactions =
-    if onlyPots then potAccountsAndTransactions
-    else allAccountsAndTransactions
   _ <- (IO.whenA:
     verbosity.ordinal >= Verbosity.VERBOSE.ordinal
   ):
     IO.println:
       Json.writeDocumentAsPrettyString:
         Document.array:
-          allAccountsAndTransactions.map: (account, transactions) =>
-            Document.obj(
-              "account" -> Document.encode:
-                account
-              ,
-              "transactions" -> Document.array:
-                transactions.map:
-                  Document.encode(_)
-            )
-  materialAccountIdsAndTransactions = exportedAccountsAndTransactions.map:
-    (account, transactions) =>
-      account.id -> transactions.filterNot: transaction =>
-        // Active card check.
-        transaction.amount.value == 0 ||
-          // What it says.
-          transaction.declineReason.isDefined
-  _ <- writeOfx(
-    toOfx:
-      materialAccountIdsAndTransactions
-    ,
-    output,
-    overwrite = since.isDefined
-  ).adaptError:
-    case _: java.nio.file.FileAlreadyExistsException =>
-      Error:
-        s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
-  updatedState =
-    if dryRun then state
-    else
-      state.copy(
-        lastTransactions = state.lastTransactions ++
-          exportedAccountsAndTransactions
-            .map: (account, transactions) =>
-              account.id -> transactions.lastOption
-            .collect:
-              case (accountId, Some(lastTransaction)) =>
-                accountId -> LastTransaction(
-                  lastTransaction.id,
-                  lastTransaction.created
-                )
-      )
-yield updatedState
+          (accountsAndTransactions ++ potAccountsAndTransactions).map:
+            (account, transactions) =>
+              Document.obj(
+                "account" -> Document.encode:
+                  account
+                ,
+                "transactions" -> Document.array:
+                  transactions.map:
+                    Document.encode(_)
+              )
+yield (accountsAndTransactions, potAccountsAndTransactions)
+
+// Fetch every transaction (main accounts and discovered pots) for the window,
+// grouped by account so import can post each account's transactions to the
+// asset account its type maps to (see AssetAccounts). Used by import, which
+// dedups on the Monzo ID rather than bookmarks, so it leaves the persisted
+// state untouched. Returns `now` too, so import can stamp enter_date with the
+// session's single clock read rather than taking a second one.
+def fetchTransactionsByAccount(
+    since: Option[Instant],
+    before: Option[Instant]
+)(using
+    verbosity: Verbosity
+): IO[
+  (now: Instant, byAccount: List[(monzo.Account, List[monzo.Transaction])])
+] =
+  withMonzoApi(since): (monzoApi, state, now) =>
+    listAllTransactions(
+      monzoApi,
+      state,
+      since,
+      before = before.getOrElse(now)
+    ).map: (accountsAndTransactions, potAccountsAndTransactions) =>
+      val byAccount = accountsAndTransactions ++ potAccountsAndTransactions
+      (state = state, result = (now = now, byAccount = byAccount))
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
