@@ -1,6 +1,5 @@
 package plutus
 
-import cats.data.Validated
 import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
@@ -177,38 +176,9 @@ lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     inputOpts,
     sinceOpts,
     beforeOpts,
-    assetAccountsOpts,
     importDryRunOpts
-  ).tupled.map: (verbosity, input, since, before, assetAccountPaths, dryRun) =>
-    importTransactions(input, since, before, assetAccountPaths, dryRun)(using
-      verbosity
-    )
-
-// Each Monzo account (or pot) maps to its own GnuCash asset account, because a
-// single import can span the current account, savings and pots — flattening
-// them onto one asset account would misattribute the lot. Keyed by Monzo
-// account id (the same opaque id the state store bookmarks by); an account with
-// no mapping is skipped rather than guessed at.
-lazy val assetAccountsOpts: Opts[Map[String, List[String]]] =
-  Opts
-    .options[String](
-      "asset-account",
-      help = "Map a Monzo account or pot id to the GnuCash asset account its " +
-        "transactions post into, as '<monzo-account-id>=<Assets:...:Path>'. " +
-        "Repeat once per account; transactions from an account with no " +
-        "mapping are skipped with a warning."
-    )
-    .mapValidated: values =>
-      values
-        .traverse: value =>
-          value.split("=", 2) match
-            case Array(id, path) if id.nonEmpty && path.nonEmpty =>
-              Validated.validNel(id -> path.split(':').toList)
-            case _ =>
-              Validated.invalidNel(
-                s"Expected '<monzo-account-id>=<gnucash:path>' but got '$value'."
-              )
-        .map(_.toList.toMap)
+  ).tupled.map: (verbosity, input, since, before, dryRun) =>
+    importTransactions(input, since, before, dryRun)(using verbosity)
 
 lazy val importDryRunOpts: Opts[Boolean] =
   Opts
@@ -223,7 +193,6 @@ def importTransactions(
     input: fs2.io.file.Path,
     since: Option[Instant],
     before: Option[Instant],
-    assetAccountPaths: Map[String, List[String]],
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   (now, byAccount) <- fetchTransactionsByAccount(since, before)
@@ -236,29 +205,37 @@ def importTransactions(
     .use: db =>
       given Database[IO] = db
       val rules = ImportRules.default
+      val assetAccounts = AssetAccounts.default
+      val mapped = byAccount.map: (account, transactions) =>
+        (account, assetAccounts.pathFor(account), transactions)
       val run = for
         currency <- Commodity.gbp
-        // Resolve every configured account once, up front, so a missing target
-        // (asset or category) fails the run before anything is written.
-        assetAccounts <- assetAccountPaths.toList
-          .traverse: (monzoAccountId, path) =>
+        // Resolve every account this run will write to once, up front, so a
+        // missing target (asset or category) fails before anything is written.
+        assets <- mapped
+          .flatMap: (_, path, _) =>
+            path
+          .distinct
+          .traverse: path =>
             Account
               .atPath(path)
               .flatMap:
                 IO.fromOption(_):
                   Error(s"No account at ${path.mkString(":")}")
-              .map(monzoAccountId -> _)
+              .map(path -> _)
           .map(_.toMap)
         targets <- rules.resolve
-        results <- byAccount.flatTraverse: (accountId, transactions) =>
+        results <- mapped.flatTraverse: (account, maybePath, transactions) =>
           val material = materialTransactions(transactions)
-          assetAccounts.get(accountId.value) match
+          maybePath match
             case None =>
               warn(
-                s"No --asset-account mapping for Monzo account ${accountId.value}; skipping its ${material.size} transaction(s)."
+                s"No asset account mapped for Monzo account type '${account.accountType
+                    .fold("<none>")(_.value)}' (${account.id.value}); skipping its ${material.size} transaction(s)."
               ).as(List.empty[Imported])
 
-            case Some(assetAccount) =>
+            case Some(assetPath) =>
+              val assetAccount = assets(assetPath)
               material.traverse: transaction =>
                 Slot
                   .hasOnlineId(transaction.id)

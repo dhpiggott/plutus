@@ -157,6 +157,12 @@ list Accounts {
 
 string AccountId
 
+/// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
+/// a type Monzo adds later can't fail a decode. Optional because pot backing
+/// accounts are discovered from transaction metadata rather than /accounts, so
+/// no type is ever seen for them — AssetAccounts treats its absence as "pot".
+string AccountType
+
 /// This can be a date-time string or a transaction ID. Ideally we'd model it as
 /// a union, but because it's a query parameter, we can't.
 string Since
@@ -172,6 +178,9 @@ list Transactions {
 structure Account {
     @required
     id: AccountId
+
+    @jsonName("type")
+    accountType: AccountType
 
     @jsonUnknown
     unknown: UnknownProperties

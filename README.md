@@ -14,7 +14,6 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 plutus gnucash archive-accounts    [--input PATH] [verbosity]
 plutus gnucash restore-account     [--input PATH] [verbosity]
 plutus gnucash import-transactions [--input PATH]
-                                   --asset-account MONZO_ACCOUNT_ID=PATH …
                                    [--since INSTANT] [--before INSTANT]
                                    [--dry-run] [verbosity]
 plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
@@ -63,7 +62,7 @@ Monzo's token endpoint doesn't tell you when a refresh token expires, but the Mo
 
 Fetches Monzo transactions the same way `export-transactions` does (same OAuth/refresh flow, same pot discovery, same `--since` / `--before` window) but writes them straight into the GnuCash SQLite book at `--input` (default `./Accounts.gnucash`) instead of producing an OFX file. It lives under `gnucash` rather than `monzo` because it's conceptually a GnuCash import — a future variant could read the CSVs the Monzo app exports instead of the API.
 
-A single fetch spans your current account, savings and pots, so you map **each** Monzo account (or pot) to its own GnuCash asset account with a repeated `--asset-account MONZO_ACCOUNT_ID=Assets:…:Path` option. Transactions from a Monzo account you haven't mapped are skipped with a warning (so run once, read the warnings to learn the ids, then add mappings). Each transaction becomes one balanced GnuCash transaction with two splits: the signed amount on that account's asset account, and its negation on a category account.
+A single fetch spans your current account, joint account and pots, and each Monzo account maps deterministically to a GnuCash asset account by its **type** via `AssetAccounts.default` (e.g. `uk_retail → Assets:Current Assets:Monzo:Current`) — no per-account flags. Pot backing accounts carry no type (or name) over the API, so all pot activity posts into the single `Pots` asset account. Transactions from an account type not in the map are skipped with a warning. Each transaction becomes one balanced GnuCash transaction with two splits: the signed amount on that account's asset account, and its negation on a category account.
 
 The category account is chosen from Monzo's own transaction `category` via the map in `ImportRules.default` (e.g. `groceries → Expenses:Groceries`); a category not in the map — or a transaction with none — lands in `Expenses:Uncategorised`. Accounts are never auto-created, so review what accumulates there and add a mapping. Every target account (asset and category) must already exist — a missing one fails the run before anything is written.
 
