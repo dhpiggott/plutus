@@ -187,6 +187,11 @@ string Currency
 
 boolean Deleted
 
+/// The archive trigger for main accounts, as Deleted is for pots. Optional
+/// because pot backing accounts are constructed from transfer metadata rather
+/// than decoded from /accounts, so no closed flag is ever seen for them.
+boolean Closed
+
 /// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
 /// a type Monzo adds later can't fail a decode. Optional because pot backing
 /// accounts are discovered from transaction metadata rather than /accounts, so
@@ -208,6 +213,8 @@ list Transactions {
 structure Account {
     @required
     id: AccountId
+
+    closed: Closed
 
     @jsonName("type")
     accountType: AccountType

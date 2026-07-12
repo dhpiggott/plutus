@@ -348,8 +348,8 @@ def importTransactions(
                     .flatMap: posting =>
                       IO.unlessA(dryRun)(posting.insert)
                         .as(Imported.Filed)
-        // After posting, so a pot deleted mid-window still receives its final
-        // transactions before its account is archived.
+        // Archiving runs after posting, so an account retired mid-window
+        // still receives its final transactions.
         _ <- pots.toList
           .collect:
             case (accountId, pot) if pot.deleted.value => accountId
@@ -361,8 +361,37 @@ def importTransactions(
               case Some(account) => IO.pure(Some(account))
               case None => Account.bySlot(onlineIdSlot, accountId.value)
             maybeAccount.flatMap:
-              case Some(account) => archiveDeletedPotAccount(account, dryRun)
-              case None          => IO.unit
+              case Some(account) =>
+                archiveRetiredAccount(account, "its pot is deleted", dryRun)
+              case None => IO.unit
+        // Closed main accounts get the same treatment — /accounts keeps
+        // listing them (closed: true), so the trigger persists across runs.
+        // Because the mapping is type-keyed, an asset account is archived
+        // only once every Monzo account of its type is closed: a closed
+        // account replaced by an open one of the same type shares its asset
+        // account, which must stay live.
+        closedAssetPaths = byAccount
+          .flatMap: (account, _) =>
+            account.accountType
+              .flatMap: accountType =>
+                assetAccounts.byAccountType.get(accountType.value)
+              .map(_ -> account)
+          .groupMap(_._1)(_._2)
+          .collect:
+            case (path, accounts)
+                if accounts.forall(_.closed.exists(_.value)) =>
+              path
+        _ <- closedAssetPaths.toList.traverse: path =>
+          Account
+            .atPath(path)
+            .flatMap:
+              case Some(account) =>
+                archiveRetiredAccount(
+                  account,
+                  "its Monzo account is closed",
+                  dryRun
+                )
+              case None => IO.unit
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -432,14 +461,15 @@ def createOrRetrievePotChild(
         .insert
   yield child
 
-// Monzo is authoritative about deletion: a deleted pot can never see new
-// activity, so its asset account is swept under Archive with the same
-// mechanics as archive-accounts — and an account restored while its pot stays
-// deleted is simply re-archived on the next run. An account already under
-// Archive is left where it is: re-archiving it would mirror Archive inside
-// itself.
-def archiveDeletedPotAccount(
+// Monzo is authoritative about retirement — a deleted pot or a closed account
+// can never see new activity — so the asset account is swept under Archive
+// with the same mechanics as archive-accounts, and an account restored while
+// its Monzo side stays retired is simply re-archived on the next run. An
+// account already under Archive is left where it is: re-archiving it would
+// mirror Archive inside itself.
+def archiveRetiredAccount(
     account: Account,
+    reason: String,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
@@ -452,7 +482,7 @@ def archiveDeletedPotAccount(
           info(
             s"Would archive ${
                 if path.isEmpty then account.name else path
-              }: its pot is deleted."
+              }: $reason."
           )
       else
         for
