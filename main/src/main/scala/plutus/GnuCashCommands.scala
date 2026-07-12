@@ -77,12 +77,9 @@ def archiveAccount(
 // Which side of the archive boundary a mirror sits on. Only ever rendered
 // into cleanUpRedundantMirror's warnings — behaviour never branches on it —
 // but an enum keeps the two valid values from being spelled ad hoc.
-enum MirrorKind:
-  case Archive, NonArchive
-
-  def label: String = this match
-    case Archive    => "Archive"
-    case NonArchive => "Non-archive"
+enum MirrorKind(val label: String):
+  case Archive extends MirrorKind("Archive")
+  case NonArchive extends MirrorKind("Non-archive")
 
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
