@@ -33,6 +33,27 @@ object Account:
       )
     yield archiveSubroot
 
+  // The account carrying a slot with this exact name and value — how the
+  // importer finds a pot's asset account by the backing-account ID it was
+  // tagged with at creation, wherever (and whatever) that account has since
+  // been moved or renamed to. See GnuCashCommands.monzoAccountIdSlot.
+  def bySlot(
+      name: String,
+      value: String
+  )(using db: Database[IO]): IO[Option[Account]] =
+    db.option(
+      query = sql"""
+        ${Account.selectAccountsWithFlags}
+        join slots tag
+          on tag.obj_guid = accounts.guid
+          and tag.name = $text
+          and tag.string_val = $text
+      """.query:
+        decoder
+      ,
+      args = (name, value)
+    )
+
   def root(using db: Database[IO]): IO[Account] =
     db.unique:
       sql"""

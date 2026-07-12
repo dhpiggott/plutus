@@ -815,11 +815,12 @@ def potLinks(
 // Pot backing accounts carry no name of their own, but /pots lists every
 // pot's name keyed by pot ID, and State.potIds links backing accounts to pot
 // IDs. A backing account with no recorded link (bookmarked before links were
-// recorded, and no transfer leg seen since) stays unnamed, and import refuses
-// to run rather than mis-file — one run whose window spans a transfer for the
-// pot records the link. Pots are listed per owning account; byAccount carries
-// every main account, even those with no transactions in the window, so the
-// owners are complete.
+// recorded, and no transfer leg seen since) stays unnamed; unless the book
+// already carries a tagged account for it, import refuses to run rather than
+// mis-file — one run whose window spans a transfer for the pot records the
+// link. Pots are listed per owning account; byAccount carries every main
+// account, even those with no transactions in the window, so the owners are
+// complete.
 def potNamesByAccountId(
     monzoApi: monzo.Api[IO],
     byAccount: List[(monzo.Account, List[monzo.Transaction])],

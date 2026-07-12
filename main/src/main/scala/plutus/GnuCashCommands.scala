@@ -226,16 +226,32 @@ def importTransactions(
           Error(
             s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
           )
-        // Likewise a pot with no recorded link: it can't be filed into its own
-        // account, and a mis-filed row would be permanent — online_id dedup
-        // skips it on every later run. One run whose window spans a transfer
-        // for the pot records the link.
         potAccountIds = materialByAccount.collect:
           case (account, _) if account.accountType.isEmpty => account.id
-        unnamedPots = potAccountIds.filterNot(potNames.contains)
+        // The book is the durable home of the pot association: each pot child
+        // is tagged at creation with its backing-account ID in a
+        // monzo-account-id slot, so a book that outlives the state store (say,
+        // moved to a new machine) — or a pot child since renamed or moved in
+        // GnuCash — still resolves by tag.
+        taggedPotAssets <- potAccountIds
+          .traverse: accountId =>
+            Account
+              .bySlot(monzoAccountIdSlot, accountId.value)
+              .map(accountId -> _)
+          .map:
+            _.collect:
+              case (accountId, Some(account)) => accountId -> account
+            .toMap
+        // Likewise fail fast on a pot the book doesn't know and no recorded
+        // link names: it can't be filed into its own account, and a mis-filed
+        // row would be permanent — online_id dedup skips it on every later
+        // run. One run whose window spans a transfer for the pot records the
+        // link.
+        unnamedPots = potAccountIds.filterNot: accountId =>
+          taggedPotAssets.contains(accountId) || potNames.contains(accountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
-            s"No recorded pot link names the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")}; re-run with --since spanning a transfer for each to record the missing link(s)."
+            s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
           )
         currency <- Commodity.gbp
         // Resolve the fixed targets once, up front, so a missing account fails
@@ -249,16 +265,22 @@ def importTransactions(
           .traverse: path =>
             existingAccountAt(path).map(path -> _)
           .map(_.toMap)
+        untaggedPotAccountIds = potAccountIds.filterNot(
+          taggedPotAssets.contains
+        )
         potAssets <-
-          if potAccountIds.isEmpty then
-            IO.pure(Map.empty[monzo.AccountId, Account])
+          if untaggedPotAccountIds.isEmpty then IO.pure(taggedPotAssets)
           else
             existingAccountAt(assetAccounts.pots).flatMap: potsParent =>
-              potAccountIds
+              untaggedPotAccountIds
                 .traverse: accountId =>
-                  createOrRetrieveChild(potsParent, potNames(accountId), dryRun)
-                    .map(accountId -> _)
-                .map(_.toMap)
+                  createOrRetrievePotChild(
+                    potsParent,
+                    potNames(accountId),
+                    accountId,
+                    dryRun
+                  ).map(accountId -> _)
+                .map(taggedPotAssets ++ _.toMap)
         // Monzo's categories are authoritative: each files into the account
         // categoryTarget names, created on first sight — no mapping to
         // maintain.
@@ -333,6 +355,34 @@ def titleCased(category: String): String =
     .filter(_.nonEmpty)
     .map(_.capitalize)
     .mkString(" ")
+
+// The slot a pot child is tagged with at creation, holding its Monzo
+// backing-account ID. A Plutus-specific name: GnuCash's own account-level
+// online_id slots belong to its importers' account-matching, and squatting
+// that name could confuse them.
+val monzoAccountIdSlot: String = "monzo-account-id"
+
+// Get-or-create a pot's asset account under the pots parent, tagging it with
+// the backing-account ID so future runs (and future homes of the book) resolve
+// it by tag rather than name. Retrieval tags too: a same-named child that
+// predates tagging, or was created by hand, gets adopted.
+def createOrRetrievePotChild(
+    potsParent: Account,
+    name: String,
+    accountId: monzo.AccountId,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  for
+    child <- createOrRetrieveChild(potsParent, name, dryRun)
+    _ <- IO.unlessA(dryRun):
+      Slot
+        .stringSlot(
+          objGuid = child.guid,
+          name = monzoAccountIdSlot,
+          value = accountId.value
+        )
+        .insert
+  yield child
 
 def existingAccountAt(
     path: List[String]
