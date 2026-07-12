@@ -206,6 +206,20 @@ def importTransactions(
       given Database[IO] = db
       val assetAccounts = AssetAccounts.default
       val run = for
+        // A pot with no recorded link can't be filed into its own account, and
+        // a mis-filed row would be permanent — online_id dedup skips it on
+        // every later run — so refuse the whole run instead of guessing. One
+        // run whose window spans a transfer for the pot records the link.
+        unnamedPots = byAccount.collect:
+          case (account, transactions)
+              if account.accountType.isEmpty &&
+                !potNames.contains(account.id) &&
+                materialTransactions(transactions).nonEmpty =>
+            account.id.value
+        _ <- IO.raiseUnless(unnamedPots.isEmpty):
+          Error(
+            s"No recorded pot link names the pot(s) behind ${unnamedPots.mkString(", ")}; re-run with --since spanning a transfer for each to record the missing link(s)."
+          )
         currency <- Commodity.gbp
         // Resolve the fixed targets once, up front, so a missing account fails
         // before anything is written. Only the leaf accounts — category legs
@@ -256,9 +270,9 @@ def importTransactions(
                       .map(Some(_))
 
                   case None =>
-                    warn(
-                      s"No recorded pot link names the pot behind ${account.id.value}; posting to ${assetAccounts.pots.mkString(":")} itself. A run whose window spans a transfer for the pot records the link."
-                    ).as(potsParent)
+                    // Unnamed pots with material transactions already failed
+                    // the run up front; this one has nothing to post.
+                    IO.pure(None)
           maybeAssetAccount.flatMap:
             case None               => IO.pure(List.empty[Imported])
             case Some(assetAccount) =>
@@ -293,18 +307,20 @@ enum Imported:
 
 // Where a transaction's category leg posts, as (existing parent, on-demand
 // child). Monzo's categories are authoritative, but not all of them are
-// spending: income is income, and the two transfer-ish categories share one
-// wash account under Assets — the two legs of a pot transfer cancel there,
-// and what remains is money moved to institutions the book imports nothing
-// from (still an asset, not an expense), awaiting manual re-filing.
-// Everything else is an expense, named by title-casing the category
-// (eating_out -> "Eating Out"; no category -> "General", Monzo's default). A
-// refund arrives sign-flipped in its spending category and negates the
-// expense, which is why the amount's sign plays no part here.
+// spending: income files under Income — as "General", mirroring the expense
+// side's catch-all, since title-casing the category itself would produce
+// Income:Income — and the two transfer-ish categories share one wash account
+// under Assets: the two legs of a pot transfer cancel there, and what remains
+// is money moved to institutions the book imports nothing from (still an
+// asset, not an expense), awaiting manual re-filing. Everything else is an
+// expense, named by title-casing the category (eating_out -> "Eating Out"; no
+// category -> "General", Monzo's default). A refund arrives sign-flipped in
+// its spending category and negates the expense, which is why the amount's
+// sign plays no part here.
 def categoryTarget(transaction: monzo.Transaction): (List[String], String) =
   transaction.category.fold("general")(_.value) match
     case "transfers" | "savings" => (List("Assets"), "Transfers")
-    case "income"                => (List("Income"), "Income")
+    case "income"                => (List("Income"), "General")
     case category                => (List("Expenses"), titleCased(category))
 
 def titleCased(category: String): String =

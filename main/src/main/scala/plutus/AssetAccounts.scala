@@ -7,8 +7,9 @@ package plutus
 // backing accounts never appear in /accounts and so carry no type (they're
 // discovered from transaction metadata); each posts into a child of `pots`
 // named after its pot (names come from /pots, linked via State.potIds, and the
-// child is created on first sight), falling back to `pots` itself when no
-// recorded link names the backing account.
+// child is created on first sight). A backing account no recorded link names
+// fails the run rather than being mis-filed — mis-filings would be permanent,
+// because online_id dedup skips the rows on every re-run.
 final case class AssetAccounts(
     byAccountType: Map[String, List[String]],
     pots: List[String]
