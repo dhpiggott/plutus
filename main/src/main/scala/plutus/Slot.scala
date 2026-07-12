@@ -25,17 +25,6 @@ object Slot:
       int64Val = None
     )
 
-  // True if objGuid carries a slot with this name — how import remembers
-  // per-account facts, like a deleted pot's account having been archived once
-  // already.
-  def has(objGuid: String, name: String)(using db: Database[IO]): IO[Boolean] =
-    db.option(
-      query = sql"""
-        select 1 from slots where obj_guid = $text and name = $text
-      """.query(integer),
-      args = (objGuid, name)
-    ).map(_.isDefined)
-
   def deleteAll(objGuid: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""

@@ -417,25 +417,21 @@ def createOrRetrievePotChild(
         .insert
   yield child
 
-// Set when import archives a deleted pot's asset account, and checked so that
-// happens at most once: restoring the account afterwards (restore-account) is
-// a user decision import must not fight by re-archiving it on the next run.
-val potArchivedSlot: String = "monzo-pot-archived"
-
-// A deleted pot can never see new activity, so its asset account is swept
-// under Archive with the same mechanics as archive-accounts — once (see
-// potArchivedSlot). An account already sitting under Archive (archived by
-// hand, before tagging existed) is also left alone.
+// Monzo is authoritative about deletion: a deleted pot can never see new
+// activity, so its asset account is swept under Archive with the same
+// mechanics as archive-accounts — and an account restored while its pot stays
+// deleted is simply re-archived on the next run. An account already under
+// Archive is left where it is: re-archiving it would mirror Archive inside
+// itself.
 def archiveDeletedPotAccount(
     account: Account,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
-    archivedBefore <- Slot.has(account.guid, potArchivedSlot)
     maybeArchiveSubroot <- Account.retrieveArchiveSubroot
     underArchive <- maybeArchiveSubroot.fold(IO.pure(false)): archiveSubroot =>
       account.path.map(_.exists(_.guid == archiveSubroot.guid))
-    _ <- IO.unlessA(archivedBefore || underArchive):
+    _ <- IO.unlessA(underArchive):
       if dryRun then
         account.pathString.flatMap: path =>
           info(
@@ -448,13 +444,6 @@ def archiveDeletedPotAccount(
           root <- Account.root
           archiveSubroot <- Account.createOrRetrieveArchiveSubroot
           _ <- archiveAccount(account, root, archiveSubroot)
-          _ <- Slot
-            .stringSlot(
-              objGuid = account.guid,
-              name = potArchivedSlot,
-              value = "true"
-            )
-            .insert
         yield ()
   yield ()
 
