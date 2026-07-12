@@ -612,11 +612,17 @@ def exportTransactions(
     case _: FileAlreadyExistsException =>
       Error:
         s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
+  // Pot links are facts about Monzo's account topology, not export progress,
+  // so they're recorded even on a dry run; only the bookmarks respect
+  // --dry-run. See potLinks.
+  linkedState = state.copy(
+    potIds = state.potIds ++ potLinks(exportedAccountsAndTransactions)
+  )
   updatedState =
-    if dryRun then state
+    if dryRun then linkedState
     else
-      state.copy(
-        lastTransactions = state.lastTransactions ++
+      linkedState.copy(
+        lastTransactions = linkedState.lastTransactions ++
           exportedAccountsAndTransactions
             .map: (account, transactions) =>
               account.id -> transactions.lastOption
@@ -762,26 +768,25 @@ def fetchTransactionsByAccount(
         since,
         before = before.getOrElse(now)
       )
-      potNames <- potNamesByAccountId(monzoApi, byAccount)
+      // Merge before naming, so this run's own discoveries name this run's
+      // pots too.
+      potIds = state.potIds ++ potLinks(byAccount)
+      potNames <- potNamesByAccountId(monzoApi, byAccount, potIds)
     yield (
-      state = state,
+      state = state.copy(potIds = potIds),
       result = (now = now, byAccount = byAccount, potNames = potNames)
     )
 
-// Pot backing accounts carry no name of their own, but most can be named in
-// two hops: pot-transfer legs carry pot_id in their metadata (on the main
-// account's side alongside pot_account_id, and on the pot's own side, where
-// the account the leg was fetched from *is* the backing account), and /pots
-// lists every pot's name keyed by that ID. The lookup only sees pots owned by
-// the main accounts that had transactions in the window, and a backing account
-// whose window holds no transfer leg (say, only interest on a bookmark-synced
-// pot) links to no pot ID — either way the pot stays unnamed and import falls
-// back to the shared pots account.
-def potNamesByAccountId(
-    monzoApi: monzo.Api[IO],
+// Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
+// account's side carries pot_account_id alongside pot_id, and on the pot's own
+// side the account the leg was fetched from *is* the backing account. Both
+// export and import merge these into State.potIds whenever they fetch, so a
+// link seen once names the pot forever — even in a later window holding no
+// transfer for it (a dormant pot earning only interest).
+def potLinks(
     byAccount: List[(monzo.Account, List[monzo.Transaction])]
-)(using verbosity: Verbosity): IO[Map[monzo.AccountId, String]] =
-  val potIdsByAccountId = byAccount
+): Map[monzo.AccountId, monzo.PotId] =
+  byAccount
     .flatMap: (account, transactions) =>
       transactions.flatMap: transaction =>
         potId(transaction).flatMap: potId =>
@@ -789,26 +794,48 @@ def potNamesByAccountId(
             case None    => Some(account.id -> potId)
             case Some(_) => potAccountId(transaction).map(_ -> potId)
     .toMap
-  if potIdsByAccountId.isEmpty then IO.pure(Map.empty)
+
+// Pot backing accounts carry no name of their own, but /pots lists every
+// pot's name keyed by pot ID, and State.potIds links backing accounts to pot
+// IDs. A backing account with no recorded link (bookmarked before links were
+// recorded, and no transfer leg seen since) stays unnamed, and import falls
+// back to the shared pots account — one run whose window spans a transfer for
+// the pot heals it. Pots are listed per owning account, and the owner may have
+// had no transactions in the window, so accounts are listed afresh rather than
+// reusing byAccount's survivors.
+def potNamesByAccountId(
+    monzoApi: monzo.Api[IO],
+    byAccount: List[(monzo.Account, List[monzo.Transaction])],
+    potIds: Map[monzo.AccountId, monzo.PotId]
+)(using verbosity: Verbosity): IO[Map[monzo.AccountId, String]] =
+  val potAccountIds = byAccount
+    .collect:
+      case (account, _) if account.accountType.isEmpty => account.id
+  if potAccountIds.isEmpty then IO.pure(Map.empty)
   else
     for
       _ <- info:
         "Listing pots…"
-      pots <- byAccount
-        .collect:
-          case (account, _) if account.accountType.isDefined => account.id
+      accounts <- monzoApi
+        .listAccounts()
+        .map(_.accounts)
+      pots <- accounts
+        .map(_.id)
         .traverse: accountId =>
           monzoApi
             .listPots(accountId)
             .map(_.pots)
       namesByPotId = pots.flatten
         .map: pot =>
-          pot.id.value -> pot.name.value
+          pot.id -> pot.name.value
         .toMap
-    yield potIdsByAccountId.flatMap: (accountId, potId) =>
-      namesByPotId
-        .get(potId)
-        .map(accountId -> _)
+    yield potAccountIds
+      .flatMap: accountId =>
+        potIds
+          .get(accountId)
+          .flatMap(namesByPotId.get)
+          .map(accountId -> _)
+      .toMap
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
@@ -892,8 +919,9 @@ def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
   metadataString(transaction, "pot_account_id").map:
     monzo.AccountId(_)
 
-def potId(transaction: monzo.Transaction): Option[String] =
-  metadataString(transaction, "pot_id")
+def potId(transaction: monzo.Transaction): Option[monzo.PotId] =
+  metadataString(transaction, "pot_id").map:
+    monzo.PotId(_)
 
 def metadataString(
     transaction: monzo.Transaction,

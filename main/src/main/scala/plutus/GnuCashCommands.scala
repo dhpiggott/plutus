@@ -208,9 +208,8 @@ def importTransactions(
       val run = for
         currency <- Commodity.gbp
         // Resolve the fixed targets once, up front, so a missing account fails
-        // before anything is written. Only the leaves named by Monzo data —
-        // category accounts and pot accounts — are created on demand.
-        expenses <- existingAccountAt(expensesPath)
+        // before anything is written. Only the leaf accounts — category legs
+        // and pot accounts — are created on demand.
         typedAssets <- byAccount
           .flatMap: (account, _) =>
             account.accountType.flatMap: accountType =>
@@ -223,16 +222,18 @@ def importTransactions(
           if byAccount.exists((account, _) => account.accountType.isEmpty) then
             existingAccountAt(assetAccounts.pots).map(Some(_))
           else IO.pure(None)
-        // Monzo's categories are authoritative: each files into an Expenses
-        // child named after it, created on first sight — no mapping to
+        // Monzo's categories are authoritative: each files into the account
+        // categoryTarget names, created on first sight — no mapping to
         // maintain.
         categories <- byAccount
           .flatMap: (_, transactions) =>
             materialTransactions(transactions)
-          .map(categoryAccountName)
+          .map(categoryTarget)
           .distinct
-          .traverse: name =>
-            createOrRetrieveChild(expenses, name, dryRun).map(name -> _)
+          .traverse: (parentPath, name) =>
+            existingAccountAt(parentPath)
+              .flatMap(createOrRetrieveChild(_, name, dryRun))
+              .map((parentPath, name) -> _)
           .map(_.toMap)
         results <- byAccount.flatTraverse: (account, transactions) =>
           val material = materialTransactions(transactions)
@@ -256,7 +257,7 @@ def importTransactions(
 
                   case None =>
                     warn(
-                      s"Nothing in the window names the pot behind ${account.id.value}; posting to ${assetAccounts.pots.mkString(":")} itself."
+                      s"No recorded pot link names the pot behind ${account.id.value}; posting to ${assetAccounts.pots.mkString(":")} itself. A run whose window spans a transfer for the pot records the link."
                     ).as(potsParent)
           maybeAssetAccount.flatMap:
             case None               => IO.pure(List.empty[Imported])
@@ -271,7 +272,7 @@ def importTransactions(
                         .fromMonzo(
                           transaction,
                           assetAccount,
-                          categories(categoryAccountName(transaction)),
+                          categories(categoryTarget(transaction)),
                           currency,
                           now
                         )
@@ -290,16 +291,24 @@ yield ()
 enum Imported:
   case Filed, Skipped
 
-// The category accounts' parent. Must already exist; only its children are
-// created on demand.
-val expensesPath: List[String] = List("Expenses")
+// Where a transaction's category leg posts, as (existing parent, on-demand
+// child). Monzo's categories are authoritative, but not all of them are
+// spending: income is income, and the two transfer-ish categories share one
+// wash account under Assets — the two legs of a pot transfer cancel there,
+// and what remains is money moved to institutions the book imports nothing
+// from (still an asset, not an expense), awaiting manual re-filing.
+// Everything else is an expense, named by title-casing the category
+// (eating_out -> "Eating Out"; no category -> "General", Monzo's default). A
+// refund arrives sign-flipped in its spending category and negates the
+// expense, which is why the amount's sign plays no part here.
+def categoryTarget(transaction: monzo.Transaction): (List[String], String) =
+  transaction.category.fold("general")(_.value) match
+    case "transfers" | "savings" => (List("Assets"), "Transfers")
+    case "income"                => (List("Income"), "Income")
+    case category                => (List("Expenses"), titleCased(category))
 
-// The account a transaction files into derives straight from Monzo's own
-// category string — eating_out becomes "Eating Out". A transaction with no
-// category files under "General", Monzo's default category.
-def categoryAccountName(transaction: monzo.Transaction): String =
-  transaction.category
-    .fold("general")(_.value)
+def titleCased(category: String): String =
+  category
     .split('_')
     .filter(_.nonEmpty)
     .map(_.capitalize)

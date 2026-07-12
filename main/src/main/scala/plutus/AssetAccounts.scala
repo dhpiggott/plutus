@@ -6,9 +6,9 @@ package plutus
 // isn't in the map is skipped with a warning rather than guessed at. Pot
 // backing accounts never appear in /accounts and so carry no type (they're
 // discovered from transaction metadata); each posts into a child of `pots`
-// named after its pot (names come from /pots, and the child is created on
-// first sight), falling back to `pots` itself when nothing in the window links
-// the backing account to a pot ID.
+// named after its pot (names come from /pots, linked via State.potIds, and the
+// child is created on first sight), falling back to `pots` itself when no
+// recorded link names the backing account.
 final case class AssetAccounts(
     byAccountType: Map[String, List[String]],
     pots: List[String]
