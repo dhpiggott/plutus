@@ -119,14 +119,14 @@ def exportTransactions(
     ).map: updatedState =>
       (state = updatedState, result = ())
 
-// Shared Monzo session scaffolding for both export and import: load state,
-// decide whether Strong Customer Authentication is required for the window,
-// build the HTTP client (whose trace-level logger prints full request and
-// response headers and bodies — including the bearer token, hence trace only),
+// Shared Monzo session scaffolding for every command that talks to the API:
+// load state, decide whether Strong Customer Authentication is required for
+// the window, build the HTTP client (whose trace-level logger redacts the
+// Authorization header — http4s's default — but prints full bodies, and the
+// token-exchange response body carries the tokens, hence trace only),
 // rotate/obtain an access token, and run `use` against the authenticated API.
-// `use` returns the State to persist — export advances bookmarks, import leaves
-// it untouched — alongside its own result, and the rotated refresh token is
-// saved even if `use` fails, so it isn't lost.
+// `use` returns the State to persist alongside its own result, and the rotated
+// refresh token is saved even if `use` fails, so it isn't lost.
 def withMonzoApi[A](
     since: Option[Instant]
 )(
@@ -594,14 +594,12 @@ def exportTransactions(
     output: fs2.io.file.Path,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[State] = for
-  (accountsAndTransactions, potAccountsAndTransactions) <- listAllTransactions(
+  exportedAccountsAndTransactions <- listAllTransactions(
     monzoApi,
     state,
     since,
     before
   )
-  exportedAccountsAndTransactions = accountsAndTransactions ++
-    potAccountsAndTransactions
   materialAccountIdsAndTransactions = exportedAccountsAndTransactions.map:
     (account, transactions) => account.id -> materialTransactions(transactions)
   _ <- writeOfx(
@@ -631,20 +629,33 @@ def exportTransactions(
       )
 yield updatedState
 
-// Skip £0 active-card checks and declined authorisations: neither is real
-// spend, so export leaves them out of the OFX and import leaves them out of the
-// book. Shared so both paths filter identically.
+// Neither of these is real spend, so export leaves them out of the OFX and
+// import leaves them out of the book. Shared so both paths filter identically.
 def materialTransactions(
     transactions: List[monzo.Transaction]
 ): List[monzo.Transaction] =
   transactions.filterNot: transaction =>
-    transaction.amount.value == 0 || transaction.declineReason.isDefined
+    // Active card check.
+    transaction.amount.value == 0 ||
+      // What it says.
+      transaction.declineReason.isDefined
+
+// The human-readable payee, preferring the merchant (card spend), then the
+// counterparty (transfers), then Monzo's own description as a last resort.
+// Export uses it for the OFX NAME and import for the GnuCash transaction
+// description, so both outputs read identically.
+def payee(transaction: monzo.Transaction): String =
+  transaction.merchant
+    .map(_.name)
+    .orElse(transaction.counterparty.name)
+    .map(_.value)
+    .getOrElse(transaction.description.value)
 
 // List every main account's transactions, then the pot accounts discovered
-// from their metadata (plus any already bookmarked in state). Shared by export
-// and import; returns the main and pot results separately because pots are
-// discovered from the main accounts' metadata, so the two are produced in
-// distinct phases. The verbose entity dump lives here so both commands emit it.
+// from their metadata (plus any already bookmarked in state), combined into a
+// single by-account list — no caller consumes the two phases separately.
+// Shared by export and import; the verbose entity dump lives here so both
+// commands emit it.
 def listAllTransactions(
     monzoApi: monzo.Api[IO],
     state: State,
@@ -652,12 +663,7 @@ def listAllTransactions(
     before: Instant
 )(using
     verbosity: Verbosity
-): IO[
-  (
-      List[(monzo.Account, List[monzo.Transaction])],
-      List[(monzo.Account, List[monzo.Transaction])]
-  )
-] = for
+): IO[List[(monzo.Account, List[monzo.Transaction])]] = for
   _ <- info:
     "Listing accounts…"
   accounts <- monzoApi
@@ -727,11 +733,12 @@ def listAllTransactions(
                   transactions.map:
                     Document.encode(_)
               )
-yield (accountsAndTransactions, potAccountsAndTransactions)
+yield accountsAndTransactions ++ potAccountsAndTransactions
 
 // Fetch every transaction (main accounts and discovered pots) for the window,
 // grouped by account so import can post each account's transactions to the
-// asset account its type maps to (see AssetAccounts). Used by import, which
+// asset account its type maps to (see AssetAccounts), plus a name for each pot
+// backing account so pots get individual asset accounts. Used by import, which
 // dedups on the Monzo ID rather than bookmarks, so it leaves the persisted
 // state untouched. Returns `now` too, so import can stamp enter_date with the
 // session's single clock read rather than taking a second one.
@@ -741,17 +748,67 @@ def fetchTransactionsByAccount(
 )(using
     verbosity: Verbosity
 ): IO[
-  (now: Instant, byAccount: List[(monzo.Account, List[monzo.Transaction])])
+  (
+      now: Instant,
+      byAccount: List[(monzo.Account, List[monzo.Transaction])],
+      potNames: Map[monzo.AccountId, String]
+  )
 ] =
   withMonzoApi(since): (monzoApi, state, now) =>
-    listAllTransactions(
-      monzoApi,
-      state,
-      since,
-      before = before.getOrElse(now)
-    ).map: (accountsAndTransactions, potAccountsAndTransactions) =>
-      val byAccount = accountsAndTransactions ++ potAccountsAndTransactions
-      (state = state, result = (now = now, byAccount = byAccount))
+    for
+      byAccount <- listAllTransactions(
+        monzoApi,
+        state,
+        since,
+        before = before.getOrElse(now)
+      )
+      potNames <- potNamesByAccountId(monzoApi, byAccount)
+    yield (
+      state = state,
+      result = (now = now, byAccount = byAccount, potNames = potNames)
+    )
+
+// Pot backing accounts carry no name of their own, but most can be named in
+// two hops: pot-transfer legs carry pot_id in their metadata (on the main
+// account's side alongside pot_account_id, and on the pot's own side, where
+// the account the leg was fetched from *is* the backing account), and /pots
+// lists every pot's name keyed by that ID. The lookup only sees pots owned by
+// the main accounts that had transactions in the window, and a backing account
+// whose window holds no transfer leg (say, only interest on a bookmark-synced
+// pot) links to no pot ID — either way the pot stays unnamed and import falls
+// back to the shared pots account.
+def potNamesByAccountId(
+    monzoApi: monzo.Api[IO],
+    byAccount: List[(monzo.Account, List[monzo.Transaction])]
+)(using verbosity: Verbosity): IO[Map[monzo.AccountId, String]] =
+  val potIdsByAccountId = byAccount
+    .flatMap: (account, transactions) =>
+      transactions.flatMap: transaction =>
+        potId(transaction).flatMap: potId =>
+          account.accountType match
+            case None    => Some(account.id -> potId)
+            case Some(_) => potAccountId(transaction).map(_ -> potId)
+    .toMap
+  if potIdsByAccountId.isEmpty then IO.pure(Map.empty)
+  else
+    for
+      _ <- info:
+        "Listing pots…"
+      pots <- byAccount
+        .collect:
+          case (account, _) if account.accountType.isDefined => account.id
+        .traverse: accountId =>
+          monzoApi
+            .listPots(accountId)
+            .map(_.pots)
+      namesByPotId = pots.flatten
+        .map: pot =>
+          pot.id.value -> pot.name.value
+        .toMap
+    yield potIdsByAccountId.flatMap: (accountId, potId) =>
+      namesByPotId
+        .get(potId)
+        .map(accountId -> _)
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
@@ -774,11 +831,12 @@ def listTransactionsForAccounts(
 // Pots are backed by account objects that /accounts doesn't list. Their IDs
 // only surface as pot_account_id in the metadata of pot-transfer transactions,
 // but passing one to /transactions returns the pot's own statement — including
-// interest credits, which appear nowhere else. /pots is no alternative source:
-// its live responses carry many undocumented fields, but none reference the
-// pot's backing account — current_account_id is the owning account, and the
-// pot id shares only its creation-timestamp prefix with the backing-account
-// ID, so one can't be derived from the other. Once a pot has a bookmark in
+// interest credits, which appear nowhere else. /pots is no alternative source
+// for this discovery: nothing in its responses references the pot's backing
+// account — current_account_id is the owning account, and the pot id shares
+// only its creation-timestamp prefix with the backing-account ID, so one can't
+// be derived from the other. (Import does still use /pots, but only to *name*
+// pots discovered here — see potNamesByAccountId.) Once a pot has a bookmark in
 // the state store it's recognisable there as a key /accounts doesn't return,
 // so it keeps syncing even when no transfer falls in the export window. (That
 // inference assumes /accounts never stops listing a main account — it keeps
@@ -831,12 +889,22 @@ def discoveredPotAccountIds(
     .toSet
 
 def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
+  metadataString(transaction, "pot_account_id").map:
+    monzo.AccountId(_)
+
+def potId(transaction: monzo.Transaction): Option[String] =
+  metadataString(transaction, "pot_id")
+
+def metadataString(
+    transaction: monzo.Transaction,
+    key: String
+): Option[String] =
   transaction.metadata
     .flatMap:
-      _.get("pot_account_id")
+      _.get(key)
     .collect:
       case Document.DString(value) =>
-        monzo.AccountId(value)
+        value
 
 enum ListTransactionsSince:
   case Timestamp(instant: Instant)
@@ -947,15 +1015,7 @@ def toOfx(
                     transaction.id.value
                   ,
                   name = ofx.Name(
-                    transaction.merchant
-                      .map:
-                        _.name
-                      .orElse:
-                        transaction.counterparty.name
-                      .map:
-                        _.value
-                      .getOrElse:
-                        transaction.description.value
+                    payee(transaction)
                   ),
                   memo = Some:
                     ofx.Memo:

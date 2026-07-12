@@ -185,7 +185,7 @@ lazy val importDryRunOpts: Opts[Boolean] =
     .flag(
       "dry-run",
       help =
-        "Print the plan (filed / uncategorised / skipped) without writing to the book and without taking a backup."
+        "Print the plan (filed / already-present counts and the accounts that would be created) without writing to the book and without taking a backup."
     )
     .orFalse
 
@@ -195,7 +195,7 @@ def importTransactions(
     before: Option[Instant],
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
-  (now, byAccount) <- fetchTransactionsByAccount(since, before)
+  (now, byAccount, potNames) <- fetchTransactionsByAccount(since, before)
   // Snapshot first: a bad run becomes a restore, not a rebuild.
   _ <- IO.unlessA(dryRun):
     val backup = fs2.io.file.Path(s"$input.bak")
@@ -204,69 +204,145 @@ def importTransactions(
     .open[IO](input.toString)
     .use: db =>
       given Database[IO] = db
-      val rules = ImportRules.default
       val assetAccounts = AssetAccounts.default
-      val mapped = byAccount.map: (account, transactions) =>
-        (account, assetAccounts.pathFor(account), transactions)
       val run = for
         currency <- Commodity.gbp
-        // Resolve every account this run will write to once, up front, so a
-        // missing target (asset or category) fails before anything is written.
-        assets <- mapped
-          .flatMap: (_, path, _) =>
-            path
+        // Resolve the fixed targets once, up front, so a missing account fails
+        // before anything is written. Only the leaves named by Monzo data —
+        // category accounts and pot accounts — are created on demand.
+        expenses <- existingAccountAt(expensesPath)
+        typedAssets <- byAccount
+          .flatMap: (account, _) =>
+            account.accountType.flatMap: accountType =>
+              assetAccounts.byAccountType.get(accountType.value)
           .distinct
           .traverse: path =>
-            Account
-              .atPath(path)
-              .flatMap:
-                IO.fromOption(_):
-                  Error(s"No account at ${path.mkString(":")}")
-              .map(path -> _)
+            existingAccountAt(path).map(path -> _)
           .map(_.toMap)
-        targets <- rules.resolve
-        results <- mapped.flatTraverse: (account, maybePath, transactions) =>
+        potsParent <-
+          if byAccount.exists((account, _) => account.accountType.isEmpty) then
+            existingAccountAt(assetAccounts.pots).map(Some(_))
+          else IO.pure(None)
+        // Monzo's categories are authoritative: each files into an Expenses
+        // child named after it, created on first sight — no mapping to
+        // maintain.
+        categories <- byAccount
+          .flatMap: (_, transactions) =>
+            materialTransactions(transactions)
+          .map(categoryAccountName)
+          .distinct
+          .traverse: name =>
+            createOrRetrieveChild(expenses, name, dryRun).map(name -> _)
+          .map(_.toMap)
+        results <- byAccount.flatTraverse: (account, transactions) =>
           val material = materialTransactions(transactions)
-          maybePath match
-            case None =>
-              warn(
-                s"No asset account mapped for Monzo account type '${account.accountType
-                    .fold("<none>")(_.value)}' (${account.id.value}); skipping its ${material.size} transaction(s)."
-              ).as(List.empty[Imported])
+          val maybeAssetAccount: IO[Option[Account]] =
+            account.accountType match
+              case Some(accountType) =>
+                assetAccounts.byAccountType.get(accountType.value) match
+                  case Some(path) => IO.pure(Some(typedAssets(path)))
+                  case None       =>
+                    warn(
+                      s"No asset account mapped for Monzo account type '${accountType.value}' (${account.id.value}); skipping its ${material.size} transaction(s)."
+                    ).as(None)
 
-            case Some(assetPath) =>
-              val assetAccount = assets(assetPath)
+              case None =>
+                potNames.get(account.id) match
+                  case Some(potName) =>
+                    // potsParent is present by construction: a typeless
+                    // account is a pot, so the branch above resolved it.
+                    createOrRetrieveChild(potsParent.get, potName, dryRun)
+                      .map(Some(_))
+
+                  case None =>
+                    warn(
+                      s"Nothing in the window names the pot behind ${account.id.value}; posting to ${assetAccounts.pots.mkString(":")} itself."
+                    ).as(potsParent)
+          maybeAssetAccount.flatMap:
+            case None               => IO.pure(List.empty[Imported])
+            case Some(assetAccount) =>
               material.traverse: transaction =>
                 Slot
                   .hasOnlineId(transaction.id)
                   .flatMap:
                     case true  => Imported.Skipped.pure[IO]
                     case false =>
-                      val path = rules.accountPathFor(transaction)
-                      val categoryAccount = targets(path)
                       Posting
                         .fromMonzo(
                           transaction,
                           assetAccount,
-                          categoryAccount,
+                          categories(categoryAccountName(transaction)),
                           currency,
                           now
                         )
                         .flatMap: posting =>
                           IO.unlessA(dryRun)(posting.insert)
-                            .as:
-                              if path == rules.fallback then
-                                Imported.Uncategorised
-                              else Imported.Filed
+                            .as(Imported.Filed)
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
-          val uncategorised = results.count(_ == Imported.Uncategorised)
           val skipped = results.count(_ == Imported.Skipped)
-          s"$filed filed, $uncategorised to Uncategorised, $skipped already present."
+          s"$filed filed, $skipped already present."
       yield ()
       // Everything-or-nothing, unless we're only previewing.
       if dryRun then run else db.transact(run)
 yield ()
 
 enum Imported:
-  case Filed, Uncategorised, Skipped
+  case Filed, Skipped
+
+// The category accounts' parent. Must already exist; only its children are
+// created on demand.
+val expensesPath: List[String] = List("Expenses")
+
+// The account a transaction files into derives straight from Monzo's own
+// category string — eating_out becomes "Eating Out". A transaction with no
+// category files under "General", Monzo's default category.
+def categoryAccountName(transaction: monzo.Transaction): String =
+  transaction.category
+    .fold("general")(_.value)
+    .split('_')
+    .filter(_.nonEmpty)
+    .map(_.capitalize)
+    .mkString(" ")
+
+def existingAccountAt(
+    path: List[String]
+)(using db: Database[IO]): IO[Account] =
+  Account
+    .atPath(path)
+    .flatMap:
+      IO.fromOption(_):
+        Error(s"No account at ${path.mkString(":")}")
+
+// Get-or-create for the leaves Monzo data names: category accounts under
+// Expenses, pot accounts under the pots parent. A created child inherits the
+// parent's account type and commodity, so an Expenses child is an EXPENSE
+// account and a pot child matches its parent. A dry run inserts nothing but
+// still yields the would-be account, so the rest of the plan can proceed
+// against it.
+def createOrRetrieveChild(
+    parent: Account,
+    name: String,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  parent
+    .child(name)
+    .flatMap:
+      case Some(child) => IO.pure(child)
+      case None        =>
+        for
+          guid <- newGuid
+          parentPath <- parent.pathString
+          child = parent.copy(
+            guid = guid,
+            name = name,
+            parentGuid = Some(parent.guid),
+            code = None,
+            description = None,
+            hidden = false,
+            placeholder = false
+          )
+          _ <-
+            if dryRun then info(s"Would create account $parentPath/$name.")
+            else child.insert *> info(s"Created account $parentPath/$name.")
+        yield child

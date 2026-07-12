@@ -106,6 +106,7 @@ string AccessToken
 service Api {
     operations: [
         ListAccounts
+        ListPots
         ListTransactions
     ]
 }
@@ -117,6 +118,25 @@ operation ListAccounts {
     output := {
         @required
         accounts: Accounts
+
+        @jsonUnknown
+        unknown: UnknownProperties
+    }
+}
+
+@externalDocumentation(url: "https://docs.monzo.com/?shell#list-pots")
+@readonly
+@http(method: "GET", uri: "/pots")
+operation ListPots {
+    input := {
+        @required
+        @httpQuery("current_account_id")
+        currentAccountId: AccountId
+    }
+
+    output := {
+        @required
+        pots: Pots
 
         @jsonUnknown
         unknown: UnknownProperties
@@ -171,6 +191,26 @@ timestamp Before
 
 integer Limit
 
+list Pots {
+    member: Pot
+}
+
+string PotId
+
+/// Only the fields import needs to name a pot's asset account. Deleted pots are
+/// listed too (with their names intact), which is exactly right: their
+/// historical transactions may still fall in an import window.
+structure Pot {
+    @required
+    id: PotId
+
+    @required
+    name: Name
+
+    @jsonUnknown
+    unknown: UnknownProperties
+}
+
 list Transactions {
     member: Transaction
 }
@@ -199,6 +239,8 @@ structure Transaction {
     @jsonName("decline_reason")
     declineReason: DeclineReason
 
+    category: Category
+
     merchant: Merchant
 
     @required
@@ -209,8 +251,6 @@ structure Transaction {
 
     @required
     notes: Notes
-
-    category: Category
 
     metadata: Metadata
 
@@ -238,15 +278,15 @@ bigInteger Amount
 
 string DeclineReason
 
+// Monzo's own categorisation (general, eating_out, groceries, transport, …).
+// Modelled as an open string rather than an enum so a category Monzo adds later
+// can't fail the decode of a whole transaction page; import files by it,
+// creating the category's expense account on first sight.
+string Category
+
 string Description
 
 string Notes
-
-// Monzo's own categorisation (general, eating_out, groceries, transport, …).
-// Modelled as an open string rather than an enum so a category Monzo adds later
-// can't fail the decode of a whole transaction page; unmapped values fall back
-// to Uncategorised in ImportRules.
-string Category
 
 structure Counterparty {
     name: Name

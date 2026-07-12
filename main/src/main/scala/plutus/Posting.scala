@@ -24,11 +24,12 @@ final case class Posting(
       _ <- categorySplit.insert
       // Mirror export's OFX FITID convention (the Monzo ID) so re-runs are
       // idempotent and GnuCash's own importer treats these as already-seen.
-      // GnuCash's generic importer stores this dedup id as an online_id slot on
+      // GnuCash's generic importer stores this dedup ID as an online_id slot on
       // the split belonging to the imported account (gnc_import_set_split_online_id),
-      // so it hangs off the asset split. (Account-level online_id slots — the
-      // OFX account association — are a different thing whose obj_guid is an
-      // account guid, not a split's.)
+      // so it hangs off the asset split. (GnuCash also writes online_id slots
+      // whose obj_guid is an *account* — that's how its OFX importer remembers
+      // which GnuCash account a statement's bank account maps to — so not every
+      // online_id slot in a book marks an imported split.)
       _ <- Slot
         .stringSlot(
           objGuid = assetSplit.guid,
@@ -56,17 +57,13 @@ object Posting:
       // for a GBP account) — negative for money out — which is why export feeds
       // amount.value straight into OFX. We do the same: the asset leg moves by
       // the signed amount, the category leg by its negation, so the two sum to
-      // zero and the transaction balances.
+      // zero and the transaction balances. The chain: amount is `bigInteger` in
+      // the smithy IDL, so smithy4s models it as a newtype over scala.BigInt —
+      // .value unwraps the newtype, .bigInteger is the underlying
+      // java.math.BigInteger, and .longValueExact narrows to the Long the
+      // splits table stores, throwing rather than wrapping if it wouldn't fit
+      // (scala.BigInt has no exact narrowing of its own).
       val minorUnits = monzoTransaction.amount.value.bigInteger.longValueExact
-      // The human-readable payee for the GnuCash transaction description,
-      // preferring the merchant (card spend), then the counterparty (transfers),
-      // then Monzo's own description as a last resort — the same precedence
-      // export uses for the OFX NAME field, so both outputs read identically.
-      val description = monzoTransaction.merchant
-        .map(_.name)
-        .orElse(monzoTransaction.counterparty.name)
-        .map(_.value)
-        .getOrElse(monzoTransaction.description.value)
       val transaction = Transaction(
         guid = transactionGuid,
         currencyGuid = currency.guid,
@@ -75,28 +72,43 @@ object Posting:
         num = "",
         postDate = monzoTransaction.created.value.asInstant,
         enterDate = enterDate,
-        description = Some(description)
+        description = Some(payee(monzoTransaction))
       )
-      def split(guid: String, account: Account, value: Long) = Split(
-        guid = guid,
-        txGuid = transactionGuid,
-        accountGuid = account.guid,
-        // Monzo's free-text notes become the split memo — the per-split note
-        // GnuCash shows next to the line, distinct from the transaction-wide
-        // description above.
-        memo = monzoTransaction.notes.value,
-        valueNum = value,
-        valueDenom = currency.fraction,
-        // value is in the book's currency; quantity is in the account's own
-        // commodity. They're equal in a single-currency book, but the quantity
-        // denominator is sourced from the account (commodity_scu) rather than
-        // assumed, so a differently-scaled account still gets a valid split.
-        quantityNum = value,
-        quantityDenom = account.commodityScu
-      )
+      def split(guid: String, account: Account, value: Long, memo: String) =
+        Split(
+          guid = guid,
+          txGuid = transactionGuid,
+          accountGuid = account.guid,
+          memo = memo,
+          valueNum = value,
+          valueDenom = currency.fraction,
+          // value is in the book's currency; quantity is in the account's own
+          // commodity. They're equal in a single-currency book, but the
+          // quantity denominator is sourced from the account (commodity_scu,
+          // its Smallest Commodity Unit — the fraction the account is
+          // denominated in) rather than assumed, so a differently-scaled
+          // account still gets a valid split.
+          quantityNum = value,
+          quantityDenom = account.commodityScu
+        )
       Posting(
         transaction = transaction,
-        assetSplit = split(assetSplitGuid, assetAccount, minorUnits),
-        categorySplit = split(categorySplitGuid, categoryAccount, -minorUnits),
+        // Monzo's free-text notes become the asset split's memo — the
+        // per-split note GnuCash shows next to the line, distinct from the
+        // transaction-wide description above. Only the asset leg carries them:
+        // the note belongs to the money movement, not the category's
+        // balancing entry.
+        assetSplit = split(
+          assetSplitGuid,
+          assetAccount,
+          minorUnits,
+          memo = monzoTransaction.notes.value
+        ),
+        categorySplit = split(
+          categorySplitGuid,
+          categoryAccount,
+          -minorUnits,
+          memo = ""
+        ),
         onlineId = monzoTransaction.id.value
       )

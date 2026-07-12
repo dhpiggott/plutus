@@ -34,9 +34,9 @@ object Slot:
       args = objGuid
     )
 
-  // True if a transaction carrying this Monzo id as an online_id slot already
-  // exists — the idempotency check the importer runs before writing a Posting.
-  // Mirrors GnuCash's own OFX-import dedup, which recognises the same slot.
+  // True if some split already has an online_id slot carrying this Monzo ID —
+  // the idempotency check the importer runs before writing a Posting. Mirrors
+  // GnuCash's own OFX-import dedup, which recognises the same slot.
   def hasOnlineId(
       transactionId: monzo.TransactionId
   )(using db: Database[IO]): IO[Boolean] =
