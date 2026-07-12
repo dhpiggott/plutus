@@ -74,12 +74,19 @@ object Posting:
         enterDate = enterDate,
         description = Some(payee(monzoTransaction))
       )
-      def split(guid: String, account: Account, value: Long, memo: String) =
+      def split(
+          guid: String,
+          account: Account,
+          value: Long,
+          memo: Option[String]
+      ) =
         Split(
           guid = guid,
           txGuid = transactionGuid,
           accountGuid = account.guid,
-          memo = memo,
+          // splits.memo is NOT NULL — GnuCash writes a memo-less split as the
+          // empty string, never NULL.
+          memo = memo.getOrElse(""),
           valueNum = value,
           valueDenom = currency.fraction,
           // value is in the book's currency; quantity is in the account's own
@@ -102,13 +109,13 @@ object Posting:
           assetSplitGuid,
           assetAccount,
           minorUnits,
-          memo = monzoTransaction.notes.value
+          memo = Some(monzoTransaction.notes.value)
         ),
         categorySplit = split(
           categorySplitGuid,
           categoryAccount,
           -minorUnits,
-          memo = ""
+          memo = None
         ),
         onlineId = monzoTransaction.id.value
       )

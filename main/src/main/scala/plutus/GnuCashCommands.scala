@@ -214,18 +214,28 @@ def importTransactions(
         .filter: (_, transactions) =>
           transactions.nonEmpty
       val run = for
-        // A pot with no recorded link can't be filed into its own account, and
-        // a mis-filed row would be permanent — online_id dedup skips it on
-        // every later run — so refuse the whole run instead of guessing. One
-        // run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialByAccount.collect:
-          case (account, _)
-              if account.accountType.isEmpty &&
-                !potNames.contains(account.id) =>
-            account.id.value
+        // Fail fast, before anything is resolved or written: an account type
+        // missing from the map needs a byAccountType entry, not a guess.
+        unmappedTypes = materialByAccount
+          .flatMap: (account, _) =>
+            account.accountType.filterNot: accountType =>
+              assetAccounts.byAccountType.contains(accountType.value)
+          .map(_.value)
+          .distinct
+        _ <- IO.raiseUnless(unmappedTypes.isEmpty):
+          Error(
+            s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
+          )
+        // Likewise a pot with no recorded link: it can't be filed into its own
+        // account, and a mis-filed row would be permanent — online_id dedup
+        // skips it on every later run. One run whose window spans a transfer
+        // for the pot records the link.
+        potAccountIds = materialByAccount.collect:
+          case (account, _) if account.accountType.isEmpty => account.id
+        unnamedPots = potAccountIds.filterNot(potNames.contains)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
-            s"No recorded pot link names the pot(s) behind ${unnamedPots.mkString(", ")}; re-run with --since spanning a transfer for each to record the missing link(s)."
+            s"No recorded pot link names the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")}; re-run with --since spanning a transfer for each to record the missing link(s)."
           )
         currency <- Commodity.gbp
         // Resolve the fixed targets once, up front, so a missing account fails
@@ -239,11 +249,16 @@ def importTransactions(
           .traverse: path =>
             existingAccountAt(path).map(path -> _)
           .map(_.toMap)
-        potsParent <-
-          if materialByAccount.exists: (account, _) =>
-              account.accountType.isEmpty
-          then existingAccountAt(assetAccounts.pots).map(Some(_))
-          else IO.pure(None)
+        potAssets <-
+          if potAccountIds.isEmpty then
+            IO.pure(Map.empty[monzo.AccountId, Account])
+          else
+            existingAccountAt(assetAccounts.pots).flatMap: potsParent =>
+              potAccountIds
+                .traverse: accountId =>
+                  createOrRetrieveChild(potsParent, potNames(accountId), dryRun)
+                    .map(accountId -> _)
+                .map(_.toMap)
         // Monzo's categories are authoritative: each files into the account
         // categoryTarget names, created on first sight — no mapping to
         // maintain.
@@ -258,45 +273,30 @@ def importTransactions(
               .map((parentPath, name) -> _)
           .map(_.toMap)
         results <- materialByAccount.flatTraverse: (account, material) =>
-          val maybeAssetAccount: IO[Option[Account]] =
-            account.accountType match
-              case Some(accountType) =>
-                assetAccounts.byAccountType.get(accountType.value) match
-                  case Some(path) => IO.pure(Some(typedAssets(path)))
-                  case None       =>
-                    warn(
-                      s"No asset account mapped for Monzo account type '${accountType.value}' (${account.id.value}); skipping its ${material.size} transaction(s)."
-                    ).as(None)
-
-              case None =>
-                // Total: a pot with material transactions but no name failed
-                // the run up front, and potsParent is present because a
-                // typeless account is a pot.
-                createOrRetrieveChild(
-                  potsParent.get,
-                  potNames(account.id),
-                  dryRun
-                ).map(Some(_))
-          maybeAssetAccount.flatMap:
-            case None               => IO.pure(List.empty[Imported])
-            case Some(assetAccount) =>
-              material.traverse: transaction =>
-                Slot
-                  .hasOnlineId(transaction.id)
-                  .flatMap:
-                    case true  => Imported.Skipped.pure[IO]
-                    case false =>
-                      Posting
-                        .fromMonzo(
-                          transaction,
-                          assetAccount,
-                          categories(categoryTarget(transaction)),
-                          currency,
-                          now
-                        )
-                        .flatMap: posting =>
-                          IO.unlessA(dryRun)(posting.insert)
-                            .as(Imported.Filed)
+          // Both lookups are total: unmapped types and unnamed pots failed the
+          // run up front, and the maps were built from this same list.
+          val assetAccount = account.accountType match
+            case Some(accountType) =>
+              typedAssets(assetAccounts.byAccountType(accountType.value))
+            case None =>
+              potAssets(account.id)
+          material.traverse: transaction =>
+            Slot
+              .hasOnlineId(transaction.id)
+              .flatMap:
+                case true  => Imported.Skipped.pure[IO]
+                case false =>
+                  Posting
+                    .fromMonzo(
+                      transaction,
+                      assetAccount,
+                      categories(categoryTarget(transaction)),
+                      currency,
+                      now
+                    )
+                    .flatMap: posting =>
+                      IO.unlessA(dryRun)(posting.insert)
+                        .as(Imported.Filed)
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -323,8 +323,8 @@ enum Imported:
 // sign plays no part here.
 def categoryTarget(transaction: monzo.Transaction): (List[String], String) =
   transaction.category.fold("general")(_.value) match
-    case "transfers" | "savings" => (List("Assets"), "Transfers")
     case "income"                => (List("Income"), "General")
+    case "savings" | "transfers" => (List("Assets"), "Transfers")
     case category                => (List("Expenses"), titleCased(category))
 
 def titleCased(category: String): String =

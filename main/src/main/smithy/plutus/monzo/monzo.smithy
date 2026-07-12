@@ -175,7 +175,13 @@ list Accounts {
     member: Account
 }
 
+list Pots {
+    member: Pot
+}
+
 string AccountId
+
+string PotId
 
 /// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
 /// a type Monzo adds later can't fail a decode. Optional because pot backing
@@ -191,26 +197,6 @@ timestamp Before
 
 integer Limit
 
-list Pots {
-    member: Pot
-}
-
-string PotId
-
-/// Only the fields import needs to name a pot's asset account. Deleted pots are
-/// listed too (with their names intact), which is exactly right: their
-/// historical transactions may still fall in an import window.
-structure Pot {
-    @required
-    id: PotId
-
-    @required
-    name: Name
-
-    @jsonUnknown
-    unknown: UnknownProperties
-}
-
 list Transactions {
     member: Transaction
 }
@@ -221,6 +207,20 @@ structure Account {
 
     @jsonName("type")
     accountType: AccountType
+
+    @jsonUnknown
+    unknown: UnknownProperties
+}
+
+/// Only the fields import needs to name a pot's asset account. Deleted pots are
+/// listed too (with their names intact), which is exactly right: their
+/// historical transactions may still fall in an import window.
+structure Pot {
+    @required
+    id: PotId
+
+    @required
+    name: Name
 
     @jsonUnknown
     unknown: UnknownProperties
@@ -258,15 +258,23 @@ structure Transaction {
     unknown: UnknownProperties
 }
 
-/// Documented as string-to-string, but modelled with document values so an
-/// unexpected non-string value can't fail the decode of a whole transaction
-/// page. The key we care about is pot_account_id: pots are backed by real
-/// account objects whose transactions (interest, in particular) are only
-/// reachable by passing that ID to /transactions. See
-/// https://community.monzo.com/t/-/193089/11 — undocumented, may change.
-map Metadata {
-    key: String
-    value: Document
+/// The two keys Plutus consumes are modelled as members; every other key lands
+/// in unknown, with document values so an unexpected shape there can't fail the
+/// decode of a whole transaction page. Both members appear on pot-transfer
+/// legs: pot_account_id (main-account side) is the pot's backing account —
+/// a real account object whose transactions (interest, in particular) are only
+/// reachable by passing that ID to /transactions — and pot_id names which pot,
+/// linking the two. See https://community.monzo.com/t/-/193089/11 —
+/// undocumented, may change.
+structure Metadata {
+    @jsonName("pot_account_id")
+    potAccountId: AccountId
+
+    @jsonName("pot_id")
+    potId: PotId
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 string TransactionId

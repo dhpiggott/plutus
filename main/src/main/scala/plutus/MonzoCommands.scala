@@ -594,7 +594,7 @@ def exportTransactions(
     output: fs2.io.file.Path,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[State] = for
-  exportedAccountsAndTransactions <- listAllTransactions(
+  accountsAndTransactions <- listAllTransactions(
     monzoApi,
     state,
     since,
@@ -602,7 +602,7 @@ def exportTransactions(
   )
   // An account with nothing material would render as an empty OFX statement
   // block, so drop it.
-  materialAccountIdsAndTransactions = exportedAccountsAndTransactions
+  materialAccountIdsAndTransactions = accountsAndTransactions
     .map: (account, transactions) =>
       account.id -> materialTransactions(transactions)
     .filter: (_, transactions) =>
@@ -621,14 +621,14 @@ def exportTransactions(
   // so they're recorded even on a dry run; only the bookmarks respect
   // --dry-run. See potLinks.
   linkedState = state.copy(
-    potIds = state.potIds ++ potLinks(exportedAccountsAndTransactions)
+    potIds = state.potIds ++ potLinks(accountsAndTransactions)
   )
   updatedState =
     if dryRun then linkedState
     else
       linkedState.copy(
         lastTransactions = linkedState.lastTransactions ++
-          exportedAccountsAndTransactions
+          accountsAndTransactions
             .map: (account, transactions) =>
               account.id -> transactions.lastOption
             .collect:
@@ -640,8 +640,9 @@ def exportTransactions(
       )
 yield updatedState
 
-// Neither of these is real spend, so export leaves them out of the OFX and
-// import leaves them out of the book. Shared so both paths filter identically.
+// Skip £0 active-card checks and declined authorisations: neither is real
+// spend, so export leaves them out of the OFX and import leaves them out of
+// the book. Shared so both paths filter identically.
 def materialTransactions(
     transactions: List[monzo.Transaction]
 ): List[monzo.Transaction] =
@@ -871,7 +872,7 @@ def listTransactionsForAccounts(
 // but passing one to /transactions returns the pot's own statement — including
 // interest credits, which appear nowhere else. /pots is no alternative source
 // for this discovery: nothing in its responses references the pot's backing
-// account — current_account_id is the owning account, and the pot id shares
+// account — current_account_id is the owning account, and the pot ID shares
 // only its creation-timestamp prefix with the backing-account ID, so one can't
 // be derived from the other. (Import does still use /pots, but only to *name*
 // pots discovered here — see potNamesByAccountId.) Once a pot has a bookmark in
@@ -927,23 +928,10 @@ def discoveredPotAccountIds(
     .toSet
 
 def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
-  metadataString(transaction, "pot_account_id").map:
-    monzo.AccountId(_)
+  transaction.metadata.flatMap(_.potAccountId)
 
 def potId(transaction: monzo.Transaction): Option[monzo.PotId] =
-  metadataString(transaction, "pot_id").map:
-    monzo.PotId(_)
-
-def metadataString(
-    transaction: monzo.Transaction,
-    key: String
-): Option[String] =
-  transaction.metadata
-    .flatMap:
-      _.get(key)
-    .collect:
-      case Document.DString(value) =>
-        value
+  transaction.metadata.flatMap(_.potId)
 
 enum ListTransactionsSince:
   case Timestamp(instant: Instant)

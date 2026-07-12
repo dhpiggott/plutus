@@ -31,21 +31,16 @@ structure State {
     @jsonName("refresh_token_expires_at")
     refreshTokenExpiresAt: RefreshTokenExpiresAt
 
-    @required
-    @jsonName("last_transactions")
-    lastTransactions: LastTransactions
-
     /// Backing-account ID -> pot ID, recorded whenever pot-transfer metadata
     /// links the two, so import can name a pot's asset account even in a window
     /// holding no transfer for it (a dormant pot earning only interest).
     /// Defaulted so state saved before this field existed still decodes.
     @jsonName("pot_ids")
     potIds: PotIds = {}
-}
 
-map PotIds {
-    key: AccountId
-    value: PotId
+    @required
+    @jsonName("last_transactions")
+    lastTransactions: LastTransactions
 }
 
 @timestampFormat("epoch-seconds")
@@ -53,6 +48,11 @@ timestamp AuthorizedAt
 
 @timestampFormat("epoch-seconds")
 timestamp RefreshTokenExpiresAt
+
+map PotIds {
+    key: AccountId
+    value: PotId
+}
 
 map LastTransactions {
     key: AccountId
