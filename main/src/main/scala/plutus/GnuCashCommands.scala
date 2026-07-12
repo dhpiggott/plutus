@@ -64,7 +64,7 @@ def archiveAccount(
       original = account,
       originalPath = accountPath,
       mirrorParent = archiveParent,
-      mirrorKind = "Archive"
+      mirrorKind = MirrorKind.Archive
     )
     archivedAccount <- account.update(
       parent = archiveParent
@@ -73,6 +73,16 @@ def archiveAccount(
     _ <- info:
       s"Archived $accountPath to $archivedPath."
   yield ()
+
+// Which side of the archive boundary a mirror sits on. Only ever rendered
+// into cleanUpRedundantMirror's warnings — behaviour never branches on it —
+// but an enum keeps the two valid values from being spelled ad hoc.
+enum MirrorKind:
+  case Archive, NonArchive
+
+  def label: String = this match
+    case Archive    => "Archive"
+    case NonArchive => "Non-archive"
 
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
@@ -120,7 +130,7 @@ def restoreAccount(
           original = archivedAccount,
           originalPath = archivedAccountPath,
           mirrorParent = nonArchiveParent,
-          mirrorKind = "Non-archive"
+          mirrorKind = MirrorKind.NonArchive
         )
         restoredAccount <- archivedAccount.update(
           parent = nonArchiveParent
@@ -143,7 +153,7 @@ def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
     mirrorParent: Account,
-    mirrorKind: String
+    mirrorKind: MirrorKind
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
     maybeExistingMirror <- mirrorParent.child(original.name)
@@ -152,7 +162,7 @@ def cleanUpRedundantMirror(
     ): existingMirror =>
       for
         _ <- warn:
-          s"$mirrorKind mirror for $originalPath already exists."
+          s"${mirrorKind.label} mirror for $originalPath already exists."
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren
@@ -168,7 +178,7 @@ def cleanUpRedundantMirror(
         existingMirrorPath <- existingMirror.pathString
         _ <- existingMirror.delete
         _ <- warn:
-          s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
+          s"Deleted existing ${mirrorKind.label.toLowerCase} mirror $existingMirrorPath."
       yield ()
   yield ()
 
@@ -347,12 +357,15 @@ def importTransactions(
           .collect:
             case (accountId, pot) if pot.deleted.value => accountId
           .traverse: accountId =>
-            potAssets
-              .get(accountId)
-              .fold(Account.bySlot(onlineIdSlot, accountId.value)): account =>
-                IO.pure(Some(account))
-              .flatMap:
-                _.fold(IO.unit)(archiveDeletedPotAccount(_, dryRun))
+            // The account to archive was resolved this run if the pot had
+            // material transactions; otherwise look it up by tag. A pot never
+            // imported has no account, so there's nothing to archive.
+            val maybeAccount = potAssets.get(accountId) match
+              case Some(account) => IO.pure(Some(account))
+              case None => Account.bySlot(onlineIdSlot, accountId.value)
+            maybeAccount.flatMap:
+              case Some(account) => archiveDeletedPotAccount(account, dryRun)
+              case None          => IO.unit
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
