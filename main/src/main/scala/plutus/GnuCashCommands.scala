@@ -42,28 +42,37 @@ def archiveAccounts(
         _ <- (IO.traverse:
           hiddenAccounts
         ): hiddenAccount =>
-          for
-            hiddenAccountPath <- hiddenAccount.pathString
-            archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
-              from = root,
-              to = archiveSubroot
-            )
-            _ <- cleanUpRedundantMirror(
-              original = hiddenAccount,
-              originalPath = hiddenAccountPath,
-              mirrorParent = archiveParent,
-              mirrorKind = "Archive"
-            )
-            archivedAccount <- hiddenAccount.update(
-              parent = archiveParent
-            )
-            archivedPath <- archivedAccount.pathString
-            _ <- info:
-              s"Archived $hiddenAccountPath to $archivedPath."
-          yield ()
+          archiveAccount(hiddenAccount, root, archiveSubroot)
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
+
+// Move an account under the Archive subroot, mirroring its parent chain —
+// shared by archive-accounts (hidden accounts) and import (deleted pots).
+def archiveAccount(
+    account: Account,
+    root: Account,
+    archiveSubroot: Account
+)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
+  for
+    accountPath <- account.pathString
+    archiveParent <- account.createOrRetrieveMirrorParent(
+      from = root,
+      to = archiveSubroot
+    )
+    _ <- cleanUpRedundantMirror(
+      original = account,
+      originalPath = accountPath,
+      mirrorParent = archiveParent,
+      mirrorKind = "Archive"
+    )
+    archivedAccount <- account.update(
+      parent = archiveParent
+    )
+    archivedPath <- archivedAccount.pathString
+    _ <- info:
+      s"Archived $accountPath to $archivedPath."
+  yield ()
 
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
@@ -195,7 +204,7 @@ def importTransactions(
     before: Option[Instant],
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
-  (now, byAccount, potNames) <- fetchTransactionsByAccount(since, before)
+  (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
   // Snapshot first: a bad run becomes a restore, not a rebuild.
   _ <- IO.unlessA(dryRun):
     val backup = fs2.io.file.Path(s"$input.bak")
@@ -248,12 +257,24 @@ def importTransactions(
         // run. One run whose window spans a transfer for the pot records the
         // link.
         unnamedPots = potAccountIds.filterNot: accountId =>
-          taggedPotAssets.contains(accountId) || potNames.contains(accountId)
+          taggedPotAssets.contains(accountId) || pots.contains(accountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
             s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
           )
         currency <- Commodity.gbp
+        // Fail fast on a pot denominated in anything but the book's currency:
+        // its minor units would otherwise be posted as if they were pence.
+        foreignPots = potAccountIds.flatMap: accountId =>
+          pots
+            .get(accountId)
+            .filterNot(_.currency.value == currency.mnemonic)
+            .map: pot =>
+              s"${pot.name.value} (${pot.currency.value})"
+        _ <- IO.raiseUnless(foreignPots.isEmpty):
+          Error(
+            s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
+          )
         // Resolve the fixed targets once, up front, so a missing account fails
         // before anything is written. Only the leaf accounts — category legs
         // and pot accounts — are created on demand.
@@ -276,7 +297,7 @@ def importTransactions(
                 .traverse: accountId =>
                   createOrRetrievePotChild(
                     potsParent,
-                    potNames(accountId),
+                    pots(accountId).name.value,
                     accountId,
                     dryRun
                   ).map(accountId -> _)
@@ -319,6 +340,18 @@ def importTransactions(
                     .flatMap: posting =>
                       IO.unlessA(dryRun)(posting.insert)
                         .as(Imported.Filed)
+        // After posting, so a pot deleted mid-window still receives its final
+        // transactions before its account is archived.
+        _ <- pots.toList
+          .collect:
+            case (accountId, pot) if pot.deleted.value => accountId
+          .traverse: accountId =>
+            potAssets
+              .get(accountId)
+              .fold(Account.bySlot(monzoAccountIdSlot, accountId.value)):
+                account => IO.pure(Some(account))
+              .flatMap:
+                _.fold(IO.unit)(archiveDeletedPotAccount(_, dryRun))
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -383,6 +416,47 @@ def createOrRetrievePotChild(
         )
         .insert
   yield child
+
+// Set when import archives a deleted pot's asset account, and checked so that
+// happens at most once: restoring the account afterwards (restore-account) is
+// a user decision import must not fight by re-archiving it on the next run.
+val potArchivedSlot: String = "monzo-pot-archived"
+
+// A deleted pot can never see new activity, so its asset account is swept
+// under Archive with the same mechanics as archive-accounts — once (see
+// potArchivedSlot). An account already sitting under Archive (archived by
+// hand, before tagging existed) is also left alone.
+def archiveDeletedPotAccount(
+    account: Account,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
+  for
+    archivedBefore <- Slot.has(account.guid, potArchivedSlot)
+    maybeArchiveSubroot <- Account.retrieveArchiveSubroot
+    underArchive <- maybeArchiveSubroot.fold(IO.pure(false)): archiveSubroot =>
+      account.path.map(_.exists(_.guid == archiveSubroot.guid))
+    _ <- IO.unlessA(archivedBefore || underArchive):
+      if dryRun then
+        account.pathString.flatMap: path =>
+          info(
+            s"Would archive ${
+                if path.isEmpty then account.name else path
+              }: its pot is deleted."
+          )
+      else
+        for
+          root <- Account.root
+          archiveSubroot <- Account.createOrRetrieveArchiveSubroot
+          _ <- archiveAccount(account, root, archiveSubroot)
+          _ <- Slot
+            .stringSlot(
+              objGuid = account.guid,
+              name = potArchivedSlot,
+              value = "true"
+            )
+            .insert
+        yield ()
+  yield ()
 
 def existingAccountAt(
     path: List[String]

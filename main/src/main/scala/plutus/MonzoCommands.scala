@@ -760,11 +760,12 @@ yield accountsAndTransactions ++ unfetchedMain ++ potAccountsAndTransactions
 
 // Fetch every transaction (main accounts and discovered pots) for the window,
 // grouped by account so import can post each account's transactions to the
-// asset account its type maps to (see AssetAccounts), plus a name for each pot
-// backing account so pots get individual asset accounts. Used by import, which
-// dedups on the Monzo ID rather than bookmarks, so it leaves the persisted
-// state untouched. Returns `now` too, so import can stamp enter_date with the
-// session's single clock read rather than taking a second one.
+// asset account its type maps to (see AssetAccounts), plus each pot backing
+// account's pot — name, currency, deleted — so pots get individual asset
+// accounts, currency-checked and archived when their pot goes. Used by import,
+// which dedups on the Monzo ID rather than bookmarks, so it leaves the
+// persisted state untouched. Returns `now` too, so import can stamp enter_date
+// with the session's single clock read rather than taking a second one.
 def fetchTransactionsByAccount(
     since: Option[Instant],
     before: Option[Instant]
@@ -774,7 +775,7 @@ def fetchTransactionsByAccount(
   (
       now: Instant,
       byAccount: List[(monzo.Account, List[monzo.Transaction])],
-      potNames: Map[monzo.AccountId, String]
+      pots: Map[monzo.AccountId, monzo.Pot]
   )
 ] =
   withMonzoApi(since): (monzoApi, state, now) =>
@@ -785,13 +786,13 @@ def fetchTransactionsByAccount(
         since,
         before = before.getOrElse(now)
       )
-      // Merge before naming, so this run's own discoveries name this run's
-      // pots too.
+      // Merge before resolving, so this run's own discoveries serve this
+      // run's pots too.
       potIds = state.potIds ++ potLinks(byAccount)
-      potNames <- potNamesByAccountId(monzoApi, byAccount, potIds)
+      pots <- potsByAccountId(monzoApi, byAccount, potIds)
     yield (
       state = state.copy(potIds = potIds),
-      result = (now = now, byAccount = byAccount, potNames = potNames)
+      result = (now = now, byAccount = byAccount, pots = pots)
     )
 
 // Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
@@ -812,20 +813,20 @@ def potLinks(
             case Some(_) => potAccountId(transaction).map(_ -> potId)
     .toMap
 
-// Pot backing accounts carry no name of their own, but /pots lists every
-// pot's name keyed by pot ID, and State.potIds links backing accounts to pot
+// Pot backing accounts carry no pot details of their own, but /pots lists
+// every pot keyed by pot ID, and State.potIds links backing accounts to pot
 // IDs. A backing account with no recorded link (bookmarked before links were
-// recorded, and no transfer leg seen since) stays unnamed; unless the book
+// recorded, and no transfer leg seen since) stays unresolved; unless the book
 // already carries a tagged account for it, import refuses to run rather than
 // mis-file — one run whose window spans a transfer for the pot records the
 // link. Pots are listed per owning account; byAccount carries every main
 // account, even those with no transactions in the window, so the owners are
 // complete.
-def potNamesByAccountId(
+def potsByAccountId(
     monzoApi: monzo.Api[IO],
     byAccount: List[(monzo.Account, List[monzo.Transaction])],
     potIds: Map[monzo.AccountId, monzo.PotId]
-)(using verbosity: Verbosity): IO[Map[monzo.AccountId, String]] =
+)(using verbosity: Verbosity): IO[Map[monzo.AccountId, monzo.Pot]] =
   val potAccountIds = byAccount
     .collect:
       case (account, _) if account.accountType.isEmpty => account.id
@@ -841,15 +842,15 @@ def potNamesByAccountId(
           monzoApi
             .listPots(accountId)
             .map(_.pots)
-      namesByPotId = pots.flatten
+      potsById = pots.flatten
         .map: pot =>
-          pot.id -> pot.name.value
+          pot.id -> pot
         .toMap
     yield potAccountIds
       .flatMap: accountId =>
         potIds
           .get(accountId)
-          .flatMap(namesByPotId.get)
+          .flatMap(potsById.get)
           .map(accountId -> _)
       .toMap
 

@@ -183,6 +183,10 @@ string AccountId
 
 string PotId
 
+string Currency
+
+boolean Deleted
+
 /// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
 /// a type Monzo adds later can't fail a decode. Optional because pot backing
 /// accounts are discovered from transaction metadata rather than /accounts, so
@@ -212,15 +216,23 @@ structure Account {
     unknown: UnknownProperties
 }
 
-/// Only the fields import needs to name a pot's asset account. Deleted pots are
-/// listed too (with their names intact), which is exactly right: their
-/// historical transactions may still fall in an import window.
+/// The fields import consumes: name names the pot's asset account, currency
+/// backs the fail-fast check that a pot is denominated in the book's currency,
+/// and deleted triggers automatic archiving of the pot's asset account.
+/// Deleted pots are listed too (with their names intact), which is exactly
+/// right: their historical transactions may still fall in an import window.
 structure Pot {
     @required
     id: PotId
 
     @required
     name: Name
+
+    @required
+    currency: Currency
+
+    @required
+    deleted: Deleted
 
     @jsonUnknown
     unknown: UnknownProperties

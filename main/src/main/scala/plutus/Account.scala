@@ -23,15 +23,23 @@ object Account:
         case (Some(parent), segment) => parent.child(segment)
         case (None, _)               => IO.pure(None)
 
+  private val ArchiveName = "Archive"
+
   def createOrRetrieveArchiveSubroot(using db: Database[IO]): IO[Account] =
     for
       root <- Account.root
       archiveSubroot <- root.createOrRetrieveMirror(
         parent = root,
-        name = "Archive",
+        name = ArchiveName,
         hidden = true
       )
     yield archiveSubroot
+
+  // The read-only sibling of createOrRetrieveArchiveSubroot, for callers that
+  // only ask "is this account already archived?" and must not create the
+  // subroot as a side effect (a dry-run import, for one).
+  def retrieveArchiveSubroot(using db: Database[IO]): IO[Option[Account]] =
+    root.flatMap(_.child(ArchiveName))
 
   // The account carrying a slot with this exact name and value — how the
   // importer finds a pot's asset account by the backing-account ID it was
