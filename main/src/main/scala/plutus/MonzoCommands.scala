@@ -647,10 +647,7 @@ def materialTransactions(
     transactions: List[monzo.Transaction]
 ): List[monzo.Transaction] =
   transactions.filterNot: transaction =>
-    // Active card check.
-    transaction.amount.value == 0 ||
-      // What it says.
-      transaction.declineReason.isDefined
+    transaction.amount.value == 0 || transaction.declineReason.isDefined
 
 // The human-readable payee, preferring the merchant (card spend), then the
 // counterparty (transfers), then Monzo's own description as a last resort.

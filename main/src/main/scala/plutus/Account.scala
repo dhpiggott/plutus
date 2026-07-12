@@ -41,10 +41,13 @@ object Account:
   def retrieveArchiveSubroot(using db: Database[IO]): IO[Option[Account]] =
     root.flatMap(_.child(ArchiveName))
 
-  // The account carrying a slot with this exact name and value — how the
-  // importer finds a pot's asset account by the backing-account ID it was
-  // tagged with at creation, wherever (and whatever) that account has since
-  // been moved or renamed to. See GnuCashCommands.monzoAccountIdSlot.
+  // The account carrying a slot with this name and value — how the importer
+  // finds a pot's asset account by the backing-account ID it was tagged with,
+  // wherever (and whatever) that account has since been moved or renamed to.
+  // Values compare with surrounding whitespace trimmed: GnuCash's OFX importer
+  // stores online_id values in libofx's shape, which prefixes the (empty)
+  // BANKID/BRANCHID with unconditional space separators ("  acc_…"), while
+  // Plutus tags with the bare ID. See GnuCashCommands.onlineIdSlot.
   def bySlot(
       name: String,
       value: String
@@ -55,7 +58,7 @@ object Account:
         join slots tag
           on tag.obj_guid = accounts.guid
           and tag.name = $text
-          and tag.string_val = $text
+          and trim(tag.string_val) = $text
       """.query:
         decoder
       ,

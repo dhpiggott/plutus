@@ -239,13 +239,14 @@ def importTransactions(
           case (account, _) if account.accountType.isEmpty => account.id
         // The book is the durable home of the pot association: each pot child
         // is tagged at creation with its backing-account ID in a
-        // monzo-account-id slot, so a book that outlives the state store (say,
+        // account-level online_id slot, so a book that outlives the state
+        // store (say,
         // moved to a new machine) — or a pot child since renamed or moved in
         // GnuCash — still resolves by tag.
         taggedPotAssets <- potAccountIds
           .traverse: accountId =>
             Account
-              .bySlot(monzoAccountIdSlot, accountId.value)
+              .bySlot(onlineIdSlot, accountId.value)
               .map(accountId -> _)
           .map:
             _.collect:
@@ -348,8 +349,8 @@ def importTransactions(
           .traverse: accountId =>
             potAssets
               .get(accountId)
-              .fold(Account.bySlot(monzoAccountIdSlot, accountId.value)):
-                account => IO.pure(Some(account))
+              .fold(Account.bySlot(onlineIdSlot, accountId.value)): account =>
+                IO.pure(Some(account))
               .flatMap:
                 _.fold(IO.unit)(archiveDeletedPotAccount(_, dryRun))
         _ <- info:
@@ -389,11 +390,15 @@ def titleCased(category: String): String =
     .map(_.capitalize)
     .mkString(" ")
 
-// The slot a pot child is tagged with at creation, holding its Monzo
-// backing-account ID. A Plutus-specific name: GnuCash's own account-level
-// online_id slots belong to its importers' account-matching, and squatting
-// that name could confuse them.
-val monzoAccountIdSlot: String = "monzo-account-id"
+// The slot a pot child is tagged with, holding its Monzo backing-account ID —
+// the same account-level online_id association GnuCash's OFX importer stores,
+// with the same ACCTID our OFX export emits for the pot. So an account
+// associated by a past GUI import of export-transactions' OFX is found without
+// re-tagging. One wrinkle: libofx builds the stored value as
+// "BANKID BRANCHID ACCTID" with unconditional space separators, so
+// GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
+// Account.bySlot compares trimmed, honouring both shapes.
+val onlineIdSlot: String = "online_id"
 
 // Get-or-create a pot's asset account under the pots parent, tagging it with
 // the backing-account ID so future runs (and future homes of the book) resolve
@@ -411,7 +416,7 @@ def createOrRetrievePotChild(
       Slot
         .stringSlot(
           objGuid = child.guid,
-          name = monzoAccountIdSlot,
+          name = onlineIdSlot,
           value = accountId.value
         )
         .insert

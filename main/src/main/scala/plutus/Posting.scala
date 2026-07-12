@@ -26,10 +26,11 @@ final case class Posting(
       // idempotent and GnuCash's own importer treats these as already-seen.
       // GnuCash's generic importer stores this dedup ID as an online_id slot on
       // the split belonging to the imported account (gnc_import_set_split_online_id),
-      // so it hangs off the asset split. (GnuCash also writes online_id slots
-      // whose obj_guid is an *account* — that's how its OFX importer remembers
-      // which GnuCash account a statement's bank account maps to — so not every
-      // online_id slot in a book marks an imported split.)
+      // so it hangs off the asset split. (Account-level online_id slots are a
+      // different association — GnuCash's OFX importer remembers which account
+      // a statement's bank account maps to, and Plutus tags pot accounts the
+      // same way (GnuCashCommands.onlineIdSlot) — so not every online_id slot
+      // in a book marks an imported split.)
       _ <- Slot
         .stringSlot(
           objGuid = assetSplit.guid,
