@@ -205,16 +205,23 @@ def importTransactions(
     .use: db =>
       given Database[IO] = db
       val assetAccounts = AssetAccounts.default
+      // Only material transactions get posted; an account with none needs no
+      // asset account (byAccount lists every account, active or not) and would
+      // only add noise below, so drop it here.
+      val materialByAccount = byAccount
+        .map: (account, transactions) =>
+          (account, materialTransactions(transactions))
+        .filter: (_, transactions) =>
+          transactions.nonEmpty
       val run = for
         // A pot with no recorded link can't be filed into its own account, and
         // a mis-filed row would be permanent — online_id dedup skips it on
         // every later run — so refuse the whole run instead of guessing. One
         // run whose window spans a transfer for the pot records the link.
-        unnamedPots = byAccount.collect:
-          case (account, transactions)
+        unnamedPots = materialByAccount.collect:
+          case (account, _)
               if account.accountType.isEmpty &&
-                !potNames.contains(account.id) &&
-                materialTransactions(transactions).nonEmpty =>
+                !potNames.contains(account.id) =>
             account.id.value
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
@@ -224,7 +231,7 @@ def importTransactions(
         // Resolve the fixed targets once, up front, so a missing account fails
         // before anything is written. Only the leaf accounts — category legs
         // and pot accounts — are created on demand.
-        typedAssets <- byAccount
+        typedAssets <- materialByAccount
           .flatMap: (account, _) =>
             account.accountType.flatMap: accountType =>
               assetAccounts.byAccountType.get(accountType.value)
@@ -233,15 +240,16 @@ def importTransactions(
             existingAccountAt(path).map(path -> _)
           .map(_.toMap)
         potsParent <-
-          if byAccount.exists((account, _) => account.accountType.isEmpty) then
-            existingAccountAt(assetAccounts.pots).map(Some(_))
+          if materialByAccount.exists: (account, _) =>
+              account.accountType.isEmpty
+          then existingAccountAt(assetAccounts.pots).map(Some(_))
           else IO.pure(None)
         // Monzo's categories are authoritative: each files into the account
         // categoryTarget names, created on first sight — no mapping to
         // maintain.
-        categories <- byAccount
+        categories <- materialByAccount
           .flatMap: (_, transactions) =>
-            materialTransactions(transactions)
+            transactions
           .map(categoryTarget)
           .distinct
           .traverse: (parentPath, name) =>
@@ -249,8 +257,7 @@ def importTransactions(
               .flatMap(createOrRetrieveChild(_, name, dryRun))
               .map((parentPath, name) -> _)
           .map(_.toMap)
-        results <- byAccount.flatTraverse: (account, transactions) =>
-          val material = materialTransactions(transactions)
+        results <- materialByAccount.flatTraverse: (account, material) =>
           val maybeAssetAccount: IO[Option[Account]] =
             account.accountType match
               case Some(accountType) =>
@@ -262,17 +269,14 @@ def importTransactions(
                     ).as(None)
 
               case None =>
-                potNames.get(account.id) match
-                  case Some(potName) =>
-                    // potsParent is present by construction: a typeless
-                    // account is a pot, so the branch above resolved it.
-                    createOrRetrieveChild(potsParent.get, potName, dryRun)
-                      .map(Some(_))
-
-                  case None =>
-                    // Unnamed pots with material transactions already failed
-                    // the run up front; this one has nothing to post.
-                    IO.pure(None)
+                // Total: a pot with material transactions but no name failed
+                // the run up front, and potsParent is present because a
+                // typeless account is a pot.
+                createOrRetrieveChild(
+                  potsParent.get,
+                  potNames(account.id),
+                  dryRun
+                ).map(Some(_))
           maybeAssetAccount.flatMap:
             case None               => IO.pure(List.empty[Imported])
             case Some(assetAccount) =>

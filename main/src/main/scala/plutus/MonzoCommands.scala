@@ -594,14 +594,19 @@ def exportTransactions(
     output: fs2.io.file.Path,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[State] = for
-  (_, exportedAccountsAndTransactions) <- listAllTransactions(
+  exportedAccountsAndTransactions <- listAllTransactions(
     monzoApi,
     state,
     since,
     before
   )
-  materialAccountIdsAndTransactions = exportedAccountsAndTransactions.map:
-    (account, transactions) => account.id -> materialTransactions(transactions)
+  // An account with nothing material would render as an empty OFX statement
+  // block, so drop it.
+  materialAccountIdsAndTransactions = exportedAccountsAndTransactions
+    .map: (account, transactions) =>
+      account.id -> materialTransactions(transactions)
+    .filter: (_, transactions) =>
+      transactions.nonEmpty
   _ <- writeOfx(
     toOfx:
       materialAccountIdsAndTransactions
@@ -659,11 +664,12 @@ def payee(transaction: monzo.Transaction): String =
 
 // List every main account's transactions, then the pot accounts discovered
 // from their metadata (plus any already bookmarked in state), combined into a
-// single by-account list — no caller consumes the two phases separately. The
-// raw /accounts listing rides along too: pot naming lists /pots per owning
-// account, and an owner with no transactions in the window wouldn't appear in
-// byAccount. Shared by export and import; the verbose entity dump lives here
-// so both commands emit it.
+// single by-account list — no caller consumes the two phases separately. Every
+// /accounts account appears as a key, keeping an empty transaction list when
+// nothing was fetched for it (no bookmark in bookmark mode, or no activity):
+// pot naming needs every owner present, and consumers treat an empty value as
+// nothing to do. Shared by export and import; the verbose entity dump lives
+// here so both commands emit it.
 def listAllTransactions(
     monzoApi: monzo.Api[IO],
     state: State,
@@ -671,12 +677,7 @@ def listAllTransactions(
     before: Instant
 )(using
     verbosity: Verbosity
-): IO[
-  (
-      accounts: List[monzo.Account],
-      byAccount: List[(monzo.Account, List[monzo.Transaction])]
-  )
-] = for
+): IO[List[(monzo.Account, List[monzo.Transaction])]] = for
   _ <- info:
     "Listing accounts…"
   accounts <- monzoApi
@@ -746,10 +747,15 @@ def listAllTransactions(
                   transactions.map:
                     Document.encode(_)
               )
-yield (
-  accounts = accounts,
-  byAccount = accountsAndTransactions ++ potAccountsAndTransactions
-)
+  fetchedMainIds = accountsAndTransactions
+    .map: (account, _) =>
+      account.id
+    .toSet
+  unfetchedMain = accounts
+    .filterNot: account =>
+      fetchedMainIds(account.id)
+    .map(_ -> List.empty[monzo.Transaction])
+yield accountsAndTransactions ++ unfetchedMain ++ potAccountsAndTransactions
 
 // Fetch every transaction (main accounts and discovered pots) for the window,
 // grouped by account so import can post each account's transactions to the
@@ -772,7 +778,7 @@ def fetchTransactionsByAccount(
 ] =
   withMonzoApi(since): (monzoApi, state, now) =>
     for
-      (accounts, byAccount) <- listAllTransactions(
+      byAccount <- listAllTransactions(
         monzoApi,
         state,
         since,
@@ -781,7 +787,7 @@ def fetchTransactionsByAccount(
       // Merge before naming, so this run's own discoveries name this run's
       // pots too.
       potIds = state.potIds ++ potLinks(byAccount)
-      potNames <- potNamesByAccountId(monzoApi, accounts, byAccount, potIds)
+      potNames <- potNamesByAccountId(monzoApi, byAccount, potIds)
     yield (
       state = state.copy(potIds = potIds),
       result = (now = now, byAccount = byAccount, potNames = potNames)
@@ -810,12 +816,11 @@ def potLinks(
 // IDs. A backing account with no recorded link (bookmarked before links were
 // recorded, and no transfer leg seen since) stays unnamed, and import refuses
 // to run rather than mis-file — one run whose window spans a transfer for the
-// pot records the link. Pots are listed per owning account, and the owner may
-// have had no transactions in the window, so `accounts` is the full /accounts
-// listing rather than byAccount's survivors.
+// pot records the link. Pots are listed per owning account; byAccount carries
+// every main account, even those with no transactions in the window, so the
+// owners are complete.
 def potNamesByAccountId(
     monzoApi: monzo.Api[IO],
-    accounts: List[monzo.Account],
     byAccount: List[(monzo.Account, List[monzo.Transaction])],
     potIds: Map[monzo.AccountId, monzo.PotId]
 )(using verbosity: Verbosity): IO[Map[monzo.AccountId, String]] =
@@ -827,8 +832,9 @@ def potNamesByAccountId(
     for
       _ <- info:
         "Listing pots…"
-      pots <- accounts
-        .map(_.id)
+      pots <- byAccount
+        .collect:
+          case (account, _) if account.accountType.isDefined => account.id
         .traverse: accountId =>
           monzoApi
             .listPots(accountId)
@@ -859,9 +865,6 @@ def listTransactionsForAccounts(
         before
       ).map: transactions =>
         account -> transactions
-    .map:
-      _.filter: (_, transactions) =>
-        transactions.nonEmpty
 
 // Pots are backed by account objects that /accounts doesn't list. Their IDs
 // only surface as pot_account_id in the metadata of pot-transfer transactions,
