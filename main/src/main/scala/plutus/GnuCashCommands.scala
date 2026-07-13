@@ -366,21 +366,24 @@ def importTransactions(
               case None => IO.unit
         // Closed main accounts get the same treatment — /accounts keeps
         // listing them (closed: true), so the trigger persists across runs.
-        // Because the mapping is type-keyed, an asset account is archived
-        // only once every Monzo account of its type is closed: a closed
-        // account replaced by an open one of the same type shares its asset
-        // account, which must stay live.
-        closedAssetPaths = byAccount
+        // Because the mapping is type-keyed, several Monzo accounts can share
+        // one asset account, so group the accounts by the asset path their
+        // type maps to…
+        typedAccountsByAssetPath = byAccount
           .flatMap: (account, _) =>
             account.accountType
               .flatMap: accountType =>
                 assetAccounts.byAccountType.get(accountType.value)
-              .map(_ -> account)
-          .groupMap(_._1)(_._2)
-          .collect:
-            case (path, accounts)
-                if accounts.forall(_.closed.exists(_.value)) =>
-              path
+              .map: assetPath =>
+                (assetPath, account)
+          .groupMap((assetPath, _) => assetPath)((_, account) => account)
+        // …and archive a path only when every account posting to it is
+        // closed: a closed account replaced by an open one of the same type
+        // must keep their shared asset account live.
+        closedAssetPaths = typedAccountsByAssetPath.collect:
+          case (assetPath, accounts)
+              if accounts.forall(_.closed.exists(_.value)) =>
+            assetPath
         _ <- closedAssetPaths.toList.traverse: path =>
           Account
             .atPath(path)
