@@ -214,10 +214,10 @@ structure Account {
     @required
     id: AccountId
 
-    closed: Closed
-
     @jsonName("type")
     accountType: AccountType
+
+    closed: Closed
 
     @jsonUnknown
     unknown: UnknownProperties
