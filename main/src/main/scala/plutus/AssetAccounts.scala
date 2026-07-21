@@ -2,7 +2,9 @@ package plutus
 
 // Where Monzo money lands in GnuCash. Main accounts map deterministically by
 // their type (uk_retail, uk_retail_joint, …) via byAccountType — no per-account
-// CLI wiring — and those accounts must already exist; an account whose type
+// CLI wiring — and are found by their online_id tags (or, untagged, at their
+// canonical paths), created on demand, and kept at their code-defined
+// placement (see GnuCashCommands.enforcePlacement); an account whose type
 // isn't in the map fails the run rather than being guessed at. Pot
 // backing accounts never appear in /accounts and so carry no type (they're
 // discovered from transaction metadata); each posts into a child of `pots`
@@ -19,14 +21,16 @@ final case class AssetAccounts(
 
 object AssetAccounts:
 
-  // A starting point — edit freely. The mapped accounts (and `pots`) must
-  // already exist; the importer resolves the paths it's about to use before
-  // anything is written.
+  // A starting point — edit freely. Only each path's top-level account must
+  // already exist (GnuCash creates Assets, Liabilities, Income and Expenses
+  // in every new book); everything deeper is created on demand.
   val default: AssetAccounts =
     AssetAccounts(
       byAccountType = Map(
         "uk_retail" -> List("Assets", "Current Assets", "Monzo", "Current"),
-        "uk_retail_joint" -> List("Assets", "Current Assets", "Monzo", "Joint")
+        "uk_retail_joint" -> List("Assets", "Current Assets", "Monzo", "Joint"),
+        // Flex is borrowing, so its account belongs under Liabilities.
+        "uk_monzo_flex" -> List("Liabilities", "Monzo Flex")
       ),
       pots = List("Assets", "Current Assets", "Monzo", "Pots")
     )
