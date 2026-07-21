@@ -23,7 +23,7 @@ object Account:
         case (Some(parent), segment) => parent.child(segment)
         case (None, _)               => IO.pure(None)
 
-  private val ArchiveName = "Archive"
+  val ArchiveName = "Archive"
 
   def createOrRetrieveArchiveSubroot(using db: Database[IO]): IO[Account] =
     for
@@ -270,22 +270,43 @@ final case class Account(
           )
         yield mirrorParent
 
-  // Only parent_guid changes here; hidden/placeholder (both column and slot)
-  // are set once at insert time and Plutus never toggles them on an existing
-  // account, so there is no slot to keep in sync.
-  def update(parent: Account)(using db: Database[IO]): IO[Account] =
+  // Moves and renames share one updater. hidden has its own (updateHidden)
+  // because it also owns a KVP slot; placeholder is still set only at insert
+  // time and never toggled.
+  def update(parent: Account, name: String = this.name)(using
+      db: Database[IO]
+  ): IO[Account] =
     db.execute(
       query = sql"""
         update accounts
-        set parent_guid = $text
+        set parent_guid = $text, name = $text
         where guid = $text
       """.command,
-      args = (parent.guid, guid)
+      args = (parent.guid, name, guid)
     ).as(
       copy(
-        parentGuid = Some(parent.guid)
+        parentGuid = Some(parent.guid),
+        name = name
       )
     )
+
+  // GnuCash reads hidden from the KVP slot and treats the column as a cache
+  // (see selectAccountsWithFlags), and a false flag is the slot's absence —
+  // so clearing deletes the slot rather than writing "false".
+  def updateHidden(hidden: Boolean)(using db: Database[IO]): IO[Account] =
+    for
+      _ <- db.execute(
+        query = sql"""
+          update accounts
+          set hidden = $boolean
+          where guid = $text
+        """.command,
+        args = (hidden, guid)
+      )
+      _ <- Slot.delete(objGuid = guid, name = "hidden")
+      _ <- IO.whenA(hidden):
+        Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
+    yield copy(hidden = hidden)
 
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(

@@ -242,15 +242,31 @@ def importTransactions(
           Error(
             s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
           )
-        potAccountIds = materialByAccount.collect:
+        // Group every typed account by the asset path its type maps to (the
+        // mapping is type-keyed, so several Monzo accounts can share one
+        // asset account), marking the path retired only once every account
+        // posting to it is closed — a closed account replaced by an open one
+        // of the same type must keep their shared asset account live.
+        typedPathsRetired = byAccount
+          .flatMap: (account, _) =>
+            account.accountType
+              .flatMap: accountType =>
+                assetAccounts.byAccountType.get(accountType.value)
+              .map: assetPath =>
+                (assetPath, account)
+          .groupMap((assetPath, _) => assetPath)((_, account) => account)
+          .view
+          .mapValues(_.forall(_.closed.exists(_.value)))
+          .toMap
+        allPotAccountIds = byAccount.collect:
+          case (account, _) if account.accountType.isEmpty => account.id
+        materialPotAccountIds = materialByAccount.collect:
           case (account, _) if account.accountType.isEmpty => account.id
         // The book is the durable home of the pot association: each pot child
-        // is tagged at creation with its backing-account ID in a
+        // is tagged at creation with its backing-account ID in an
         // account-level online_id slot, so a book that outlives the state
-        // store (say,
-        // moved to a new machine) — or a pot child since renamed or moved in
-        // GnuCash — still resolves by tag.
-        taggedPotAssets <- potAccountIds
+        // store (say, moved to a new machine) still resolves by tag.
+        taggedPots <- allPotAccountIds
           .traverse: accountId =>
             Account
               .bySlot(onlineIdSlot, accountId.value)
@@ -259,13 +275,12 @@ def importTransactions(
             _.collect:
               case (accountId, Some(account)) => accountId -> account
             .toMap
-        // Likewise fail fast on a pot the book doesn't know and no recorded
-        // link names: it can't be filed into its own account, and a mis-filed
-        // row would be permanent — online_id dedup skips it on every later
-        // run. One run whose window spans a transfer for the pot records the
-        // link.
-        unnamedPots = potAccountIds.filterNot: accountId =>
-          taggedPotAssets.contains(accountId) || pots.contains(accountId)
+        // Fail fast on a pot the book doesn't know and no recorded link
+        // names: it can't be filed into its own account, and a mis-filed row
+        // would be permanent — online_id dedup skips it on every later run.
+        // One run whose window spans a transfer for the pot records the link.
+        unnamedPots = materialPotAccountIds.filterNot: accountId =>
+          taggedPots.contains(accountId) || pots.contains(accountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
             s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
@@ -273,7 +288,7 @@ def importTransactions(
         currency <- Commodity.gbp
         // Fail fast on a pot denominated in anything but the book's currency:
         // its minor units would otherwise be posted as if they were pence.
-        foreignPots = potAccountIds.flatMap: accountId =>
+        foreignPots = materialPotAccountIds.flatMap: accountId =>
           pots
             .get(accountId)
             .filterNot(_.currency.value == currency.mnemonic)
@@ -283,33 +298,75 @@ def importTransactions(
           Error(
             s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
           )
-        // Resolve the fixed targets once, up front, so a missing account fails
-        // before anything is written. Only the leaf accounts — category legs
-        // and pot accounts — are created on demand.
-        typedAssets <- materialByAccount
+        // Monzo is authoritative for placement: every located asset account is
+        // enforced into its canonical spot (see enforcePlacement) before
+        // anything posts. A typed path's account may currently sit at the
+        // live path or its archived twin; only paths that will be posted to
+        // must exist at all.
+        typedAssets <- typedPathsRetired.toList
+          .traverse: (path, retired) =>
+            Account
+              .atPath(path)
+              .flatMap:
+                case Some(account) => IO.pure(Some(account))
+                case None => Account.atPath(Account.ArchiveName :: path)
+              .flatMap:
+                case Some(account) =>
+                  enforcePlacement(account, path, retired, dryRun)
+                    .map: enforced =>
+                      Some(path -> enforced)
+                case None => IO.pure(None)
+          .map(_.flatten.toMap)
+        materialTypedPaths = materialByAccount
           .flatMap: (account, _) =>
             account.accountType.flatMap: accountType =>
               assetAccounts.byAccountType.get(accountType.value)
           .distinct
-          .traverse: path =>
-            existingAccountAt(path).map(path -> _)
+        missingTypedPaths = materialTypedPaths.filterNot(typedAssets.contains)
+        _ <- IO.raiseUnless(missingTypedPaths.isEmpty):
+          Error(
+            s"No account at ${missingTypedPaths
+                .map(_.mkString(":"))
+                .mkString("; ")} (nor under ${Account.ArchiveName})."
+          )
+        // Tagged pots with a pot record enforce the same way; the canonical
+        // leaf name is the pot's current Monzo name, so renames propagate.
+        // (A tagged account with no record — say, a fresh state store — is
+        // still posted to as-is; the next linking run enforces it.)
+        enforcedPots <- pots.toList
+          .flatMap: (accountId, pot) =>
+            taggedPots.get(accountId).map(account => (accountId, pot, account))
+          .traverse: (accountId, pot, account) =>
+            enforcePlacement(
+              account,
+              assetAccounts.pots :+ pot.name.value,
+              retired = pot.deleted.value,
+              dryRun
+            ).map(accountId -> _)
           .map(_.toMap)
-        untaggedPotAccountIds = potAccountIds.filterNot(
-          taggedPotAssets.contains
-        )
-        potAssets <-
-          if untaggedPotAccountIds.isEmpty then IO.pure(taggedPotAssets)
-          else
-            existingAccountAt(assetAccounts.pots).flatMap: potsParent =>
-              untaggedPotAccountIds
-                .traverse: accountId =>
-                  createOrRetrievePotChild(
-                    potsParent,
-                    pots(accountId).name.value,
-                    accountId,
-                    dryRun
-                  ).map(accountId -> _)
-                .map(taggedPotAssets ++ _.toMap)
+        // Pots the book doesn't know yet are created at their canonical spot
+        // — for an already-deleted pot that's under Archive, hidden.
+        newPotAssets <- materialPotAccountIds
+          .filterNot(taggedPots.contains)
+          .traverse: accountId =>
+            val pot = pots(accountId)
+            val retired = pot.deleted.value
+            for
+              parent <-
+                if retired then archiveParentFor(assetAccounts.pots, dryRun)
+                else existingAccountAt(assetAccounts.pots)
+              child <- createOrRetrievePotChild(
+                parent,
+                pot.name.value,
+                accountId,
+                dryRun
+              )
+              placed <-
+                if !retired || child.hidden || dryRun then IO.pure(child)
+                else child.updateHidden(true)
+            yield accountId -> placed
+          .map(_.toMap)
+        potAssets = taggedPots ++ enforcedPots ++ newPotAssets
         // Monzo's categories are authoritative: each files into the account
         // categoryTarget names, created on first sight — no mapping to
         // maintain.
@@ -348,53 +405,6 @@ def importTransactions(
                     .flatMap: posting =>
                       IO.unlessA(dryRun)(posting.insert)
                         .as(Imported.Filed)
-        // Archiving runs after posting, so an account retired mid-window
-        // still receives its final transactions.
-        _ <- pots.toList
-          .collect:
-            case (accountId, pot) if pot.deleted.value => accountId
-          .traverse: accountId =>
-            // The account to archive was resolved this run if the pot had
-            // material transactions; otherwise look it up by tag. A pot never
-            // imported has no account, so there's nothing to archive.
-            val maybeAccount = potAssets.get(accountId) match
-              case Some(account) => IO.pure(Some(account))
-              case None => Account.bySlot(onlineIdSlot, accountId.value)
-            maybeAccount.flatMap:
-              case Some(account) =>
-                archiveRetiredAccount(account, "its pot is deleted", dryRun)
-              case None => IO.unit
-        // Closed main accounts get the same treatment — /accounts keeps
-        // listing them (closed: true), so the trigger persists across runs.
-        // Because the mapping is type-keyed, several Monzo accounts can share
-        // one asset account, so group the accounts by the asset path their
-        // type maps to…
-        typedAccountsByAssetPath = byAccount
-          .flatMap: (account, _) =>
-            account.accountType
-              .flatMap: accountType =>
-                assetAccounts.byAccountType.get(accountType.value)
-              .map: assetPath =>
-                (assetPath, account)
-          .groupMap((assetPath, _) => assetPath)((_, account) => account)
-        // …and archive a path only when every account posting to it is
-        // closed: a closed account replaced by an open one of the same type
-        // must keep their shared asset account live.
-        closedAssetPaths = typedAccountsByAssetPath.collect:
-          case (assetPath, accounts)
-              if accounts.forall(_.closed.exists(_.value)) =>
-            assetPath
-        _ <- closedAssetPaths.toList.traverse: path =>
-          Account
-            .atPath(path)
-            .flatMap:
-              case Some(account) =>
-                archiveRetiredAccount(
-                  account,
-                  "its Monzo account is closed",
-                  dryRun
-                )
-              case None => IO.unit
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -464,36 +474,123 @@ def createOrRetrievePotChild(
         .insert
   yield child
 
-// Monzo is authoritative about retirement — a deleted pot or a closed account
-// can never see new activity — so the asset account is swept under Archive
-// with the same mechanics as archive-accounts, and an account restored while
-// its Monzo side stays retired is simply re-archived on the next run. An
-// account already under Archive is left where it is: re-archiving it would
-// mirror Archive inside itself.
-def archiveRetiredAccount(
+// Monzo is authoritative for a Monzo-backed asset account's whole placement.
+// Its canonical parent is the code-defined live path while the Monzo side is
+// live, and the same path nested under the Archive subroot once retired (a
+// closed account, a deleted pot); its name is the path's leaf — for pots, the
+// pot's current Monzo name; and hidden tracks retirement. All of it is
+// enforced in both directions on every run — un-archiving, un-hiding and
+// renaming included — so a hand-move lasts only until the next import. A
+// *different* account already occupying the canonical spot fails the run:
+// merging or deleting it could orphan its transactions, so the user resolves
+// that collision by hand.
+def enforcePlacement(
     account: Account,
-    reason: String,
+    livePath: List[String],
+    retired: Boolean,
     dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val name = livePath.last
+  val canonicalParentPath =
+    if retired then Account.ArchiveName :: livePath.init else livePath.init
+  // Textual, so a dry run can name targets whose parents don't exist yet.
+  val targetPath = ("Root Account" :: canonicalParentPath).mkString("/") +
+    s"/$name"
   for
-    maybeArchiveSubroot <- Account.retrieveArchiveSubroot
-    underArchive <- maybeArchiveSubroot.fold(IO.pure(false)): archiveSubroot =>
-      account.path.map(_.exists(_.guid == archiveSubroot.guid))
-    _ <- IO.unlessA(underArchive):
-      if dryRun then
-        account.pathString.flatMap: path =>
-          info(
-            s"Would archive ${
-                if path.isEmpty then account.name else path
-              }: $reason."
-          )
+    parent <-
+      if retired then archiveParentFor(livePath.init, dryRun)
+      else existingAccountAt(livePath.init)
+    inPlace = account.parentGuid.contains(parent.guid) && account.name == name
+    placed <-
+      if inPlace then IO.pure(account)
       else
         for
-          root <- Account.root
-          archiveSubroot <- Account.createOrRetrieveArchiveSubroot
-          _ <- archiveAccount(account, root, archiveSubroot)
-        yield ()
-  yield ()
+          collision <- parent.child(name)
+          _ <- IO.raiseWhen(collision.exists(_.guid != account.guid)):
+            Error(
+              s"A different account already sits at $targetPath; resolve it by hand — merging or deleting it automatically could orphan its transactions."
+            )
+          accountPath <- account.pathString
+          moved <-
+            if dryRun then
+              info(s"Would move $accountPath to $targetPath.").as(account)
+            else
+              account
+                .update(parent = parent, name = name)
+                .flatTap: _ =>
+                  info(s"Moved $accountPath to $targetPath.")
+        yield moved
+    aligned <-
+      if placed.hidden == retired then IO.pure(placed)
+      else if dryRun then
+        info(s"Would ${if retired then "hide" else "unhide"} $targetPath.")
+          .as(placed)
+      else
+        placed
+          .updateHidden(retired)
+          .flatTap: _ =>
+            info(s"${if retired then "Hid" else "Unhid"} $targetPath.")
+  yield aligned
+
+// The canonical parent for a retired account: the live parent chain nested
+// under the Archive subroot, created on demand — each missing segment as a
+// placeholder copy of its live counterpart (or of the archive-side parent,
+// when the live segment no longer exists). In a dry run nothing is written;
+// missing segments are fabricated so the rest of the plan can proceed.
+def archiveParentFor(
+    livePathInit: List[String],
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  for
+    root <- Account.root
+    archiveSubroot <- Account.retrieveArchiveSubroot.flatMap:
+      case Some(archiveSubroot) => IO.pure(archiveSubroot)
+      case None if dryRun       =>
+        newGuid
+          .map: guid =>
+            root.copy(
+              guid = guid,
+              name = Account.ArchiveName,
+              parentGuid = Some(root.guid),
+              hidden = true,
+              placeholder = true
+            )
+          .flatTap: _ =>
+            info(s"Would create account Root Account/${Account.ArchiveName}.")
+      case None => Account.createOrRetrieveArchiveSubroot
+    cursors <- livePathInit.foldLeftM((archiveSubroot, Option(root))):
+      case ((archiveCursor, liveCursor), segment) =>
+        for
+          nextLive <- liveCursor match
+            case Some(live) => live.child(segment)
+            case None       => IO.pure(None)
+          nextArchive <- archiveCursor
+            .child(segment)
+            .flatMap:
+              case Some(existing) => IO.pure(existing)
+              case None           =>
+                val template = nextLive.getOrElse(archiveCursor)
+                for
+                  guid <- newGuid
+                  archivePath <- archiveCursor.pathString
+                  created = template.copy(
+                    guid = guid,
+                    name = segment,
+                    parentGuid = Some(archiveCursor.guid),
+                    hidden = false,
+                    placeholder = true,
+                    code = None,
+                    description = None
+                  )
+                  _ <-
+                    if dryRun then
+                      info(s"Would create account $archivePath/$segment.")
+                    else
+                      created.insert *>
+                        info(s"Created account $archivePath/$segment.")
+                yield created
+        yield (nextArchive, nextLive)
+  yield cursors._1
 
 def existingAccountAt(
     path: List[String]
