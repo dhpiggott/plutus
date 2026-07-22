@@ -47,8 +47,10 @@ def archiveAccounts(
           "Finished archiving hidden accounts."
       yield ()
 
-// Move an account under the Archive subroot, mirroring its parent chain —
-// shared by archive-accounts (hidden accounts) and import (deleted pots).
+// Move an account under the Archive subroot, mirroring its parent chain.
+// Only archive-accounts uses this; import places retired accounts through
+// enforcePlacement instead, which fails on collisions rather than merging
+// mirrors.
 def archiveAccount(
     account: Account,
     root: Account,
@@ -256,9 +258,11 @@ def importTransactions(
                 (assetPath, account)
           .groupMap((assetPath, _) => assetPath)((_, account) => account)
         allPotAccountIds = byAccount.collect:
-          case (account, _) if account.accountType.isEmpty => account.id
-        materialPotAccountIds = materialByAccount.collect:
-          case (account, _) if account.accountType.isEmpty => account.id
+          case (account, _) if isPotBacking(account) => account.id
+        materialPotAccountIds = materialByAccount
+          .collect:
+            case (account, _) if isPotBacking(account) => account.id
+          .toSet
         // The book is the durable home of the pot association: each pot child
         // is tagged at creation with its backing-account ID in an
         // account-level online_id slot, so a book that outlives the state
@@ -266,7 +270,7 @@ def importTransactions(
         taggedPots <- allPotAccountIds
           .traverse: accountId =>
             Account
-              .bySlot(onlineIdSlot, accountId.value)
+              .bySlot(Slot.OnlineId, accountId.value)
               .map(accountId -> _)
           .map:
             _.collect:
@@ -276,7 +280,7 @@ def importTransactions(
         // names: it can't be filed into its own account, and a mis-filed row
         // would be permanent — online_id dedup skips it on every later run.
         // One run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialPotAccountIds.filterNot: accountId =>
+        unnamedPots = materialPotAccountIds.toList.filterNot: accountId =>
           taggedPots.contains(accountId) || pots.contains(accountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
@@ -285,7 +289,7 @@ def importTransactions(
         currency <- Commodity.gbp
         // Fail fast on a pot denominated in anything but the book's currency:
         // its minor units would otherwise be posted as if they were pence.
-        foreignPots = materialPotAccountIds.flatMap: accountId =>
+        foreignPots = materialPotAccountIds.toList.flatMap: accountId =>
           pots
             .get(accountId)
             .filterNot(_.currency.value == currency.mnemonic)
@@ -295,119 +299,63 @@ def importTransactions(
           Error(
             s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
           )
-        // Typed asset accounts are found like pots: by online_id tag first
-        // (identity survives moves and renames), then at their canonical
-        // location — live path or its archived twin — and created at it
-        // otherwise. Every Monzo account of the type tags the asset account,
-        // so distinct tag hits contradict the shared mapping and fail the
-        // run. Placement is then enforced before anything posts (see
-        // enforcePlacement).
+        // Typed asset accounts and pot accounts resolve through the same
+        // path: resolveAssetAccount finds by online_id tag, then by canonical
+        // location, creates otherwise, enforces placement, and adopts
+        // untagged IDs.
         typedAssets <- typedAccountsByAssetPath.toList
           .traverse: (path, accounts) =>
-            val retired = accounts.forall(_.closed.exists(_.value))
-            for
-              taggedById <- accounts.traverse: monzoAccount =>
-                Account
-                  .bySlot(onlineIdSlot, monzoAccount.id.value)
-                  .map(monzoAccount.id -> _)
-              tagged = taggedById
-                .flatMap((_, account) => account)
-                .distinctBy(_.guid)
-              _ <- IO.raiseWhen(tagged.sizeIs > 1):
-                Error(
-                  s"The Monzo accounts mapping to ${path.mkString(":")} are tagged onto ${tagged.size} different book accounts; resolve by hand — merging them automatically could orphan transactions."
-                )
-              located <- tagged.headOption match
-                case Some(account) => IO.pure(Some(account))
-                case None          =>
-                  Account
-                    .atPath(path)
-                    .flatMap:
-                      case Some(account) => IO.pure(Some(account))
-                      case None => Account.atPath(Account.ArchiveName :: path)
-              account <- located match
-                case Some(account) =>
-                  enforcePlacement(account, path, retired, dryRun)
-                case None =>
-                  for
-                    parent <-
-                      if retired then archiveParentFor(path.init, dryRun)
-                      else liveParentFor(path.init, dryRun)
-                    child <- createOrRetrieveChild(parent, path.last, dryRun)
-                    placed <-
-                      if retired && !child.hidden && !dryRun then
-                        child.updateHidden(true)
-                      else IO.pure(child)
-                  yield placed
-              // Adopt: any of the type's account IDs not yet tagging the
-              // asset account is tagged now, so the next run finds it by
-              // identity rather than location.
-              _ <- IO.unlessA(dryRun):
-                taggedById
-                  .collect:
-                    case (accountId, None) => accountId
-                  .traverse: accountId =>
-                    Slot
-                      .stringSlot(
-                        objGuid = account.guid,
-                        name = onlineIdSlot,
-                        value = accountId.value
-                      )
-                      .insert
-                  .void
-            yield path -> account
+            resolveAssetAccount(
+              livePath = path,
+              retired = accounts.forall(_.closed.exists(_.value)),
+              tagIds = accounts.map(_.id),
+              dryRun = dryRun
+            ).map(path -> _)
           .map(_.toMap)
-        // Tagged pots with a pot record enforce the same way; the canonical
-        // leaf name is the pot's current Monzo name, so renames propagate.
-        // (A tagged account with no record — say, a fresh state store — is
-        // still posted to as-is; the next linking run enforces it.)
-        enforcedPots <- pots.toList
-          .flatMap: (accountId, pot) =>
-            taggedPots.get(accountId).map(account => (accountId, pot, account))
-          .traverse: (accountId, pot, account) =>
-            enforcePlacement(
-              account,
-              assetAccounts.pots :+ pot.name.value,
-              retired = pot.deleted.value,
-              dryRun
-            ).map(accountId -> _)
-          .map(_.toMap)
-        // Pots the book doesn't know yet are created at their canonical spot
-        // — for an already-deleted pot that's under Archive, hidden.
-        newPotAssets <- materialPotAccountIds
-          .filterNot(taggedPots.contains)
+        // A pot's canonical leaf name is its current Monzo name, so renames
+        // propagate. Only pots that are material this run or already known to
+        // the book get resolved; a tagged account with no pot record (say, a
+        // fresh state store) is posted to as-is — the next linking run
+        // enforces it.
+        potAssets <- allPotAccountIds
           .traverse: accountId =>
-            val pot = pots(accountId)
-            val retired = pot.deleted.value
-            for
-              parent <-
-                if retired then archiveParentFor(assetAccounts.pots, dryRun)
-                else liveParentFor(assetAccounts.pots, dryRun)
-              child <- createOrRetrievePotChild(
-                parent,
-                pot.name.value,
-                accountId,
-                dryRun
-              )
-              placed <-
-                if !retired || child.hidden || dryRun then IO.pure(child)
-                else child.updateHidden(true)
-            yield accountId -> placed
-          .map(_.toMap)
-        potAssets = taggedPots ++ enforcedPots ++ newPotAssets
+            pots.get(accountId) match
+              case Some(pot)
+                  if materialPotAccountIds(accountId) ||
+                    taggedPots.contains(accountId) =>
+                resolveAssetAccount(
+                  livePath = assetAccounts.pots :+ pot.name.value,
+                  retired = pot.deleted.value,
+                  tagIds = List(accountId),
+                  dryRun = dryRun
+                ).map(account => accountId -> Some(account))
+              case _ =>
+                IO.pure(accountId -> taggedPots.get(accountId))
+          .map:
+            _.collect:
+              case (accountId, Some(account)) => accountId -> account
+            .toMap
         // Monzo's categories are authoritative: each files into the account
         // categoryTarget names, created on first sight — no mapping to
-        // maintain.
+        // maintain. Grouped by parent so each distinct parent chain is
+        // resolved once, not once per category.
         categories <- materialByAccount
           .flatMap: (_, transactions) =>
             transactions
           .map(categoryTarget)
           .distinct
-          .traverse: (parentPath, name) =>
-            liveParentFor(parentPath, dryRun)
-              .flatMap(createOrRetrieveChild(_, name, dryRun))
-              .map((parentPath, name) -> _)
+          .groupBy(_.init)
+          .toList
+          .flatTraverse: (parentPath, paths) =>
+            liveParentFor(parentPath, dryRun).flatMap: parent =>
+              paths.traverse: path =>
+                createOrRetrieveChild(parent, path.last, dryRun)
+                  .map(path -> _)
           .map(_.toMap)
+        // One upfront read of every online_id in the book; the whole run sits
+        // in a single SQLite transaction and fetched transaction IDs are
+        // unique, so the set can't go stale mid-run. See Slot.onlineIdValues.
+        importedIds <- Slot.onlineIdValues
         results <- materialByAccount.flatTraverse: (account, material) =>
           // Both lookups are total: unmapped types and unnamed pots failed the
           // run up front, and the maps were built from this same list.
@@ -417,22 +365,20 @@ def importTransactions(
             case None =>
               potAssets(account.id)
           material.traverse: transaction =>
-            Slot
-              .hasOnlineId(transaction.id)
-              .flatMap:
-                case true  => Imported.Skipped.pure[IO]
-                case false =>
-                  Posting
-                    .fromMonzo(
-                      transaction,
-                      assetAccount,
-                      categories(categoryTarget(transaction)),
-                      currency,
-                      now
-                    )
-                    .flatMap: posting =>
-                      IO.unlessA(dryRun)(posting.insert)
-                        .as(Imported.Filed)
+            if importedIds.contains(transaction.id.value) then
+              Imported.Skipped.pure[IO]
+            else
+              Posting
+                .fromMonzo(
+                  transaction,
+                  assetAccount,
+                  categories(categoryTarget(transaction)),
+                  currency,
+                  now
+                )
+                .flatMap: posting =>
+                  IO.unlessA(dryRun)(posting.insert)
+                    .as(Imported.Filed)
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -445,23 +391,23 @@ yield ()
 enum Imported:
   case Filed, Skipped
 
-// Where a transaction's category leg posts, as (existing parent, on-demand
-// child). Monzo's categories are authoritative, but not all of them are
-// spending: income files under Income — as "General", mirroring the expense
-// side's catch-all, since title-casing the category itself would produce
-// Income:Income — and the two transfer-ish categories share one wash account
-// under Assets: the two legs of a pot transfer cancel there, and what remains
-// is money moved to institutions the book imports nothing from (still an
-// asset, not an expense), awaiting manual re-filing. Everything else is an
-// expense, named by title-casing the category (eating_out -> "Eating Out"; no
-// category -> "General", Monzo's default). A refund arrives sign-flipped in
-// its spending category and negates the expense, which is why the amount's
-// sign plays no part here.
-def categoryTarget(transaction: monzo.Transaction): (List[String], String) =
+// The account path a transaction's category leg posts to. Monzo's categories
+// are authoritative, but not all of them are spending: income files under
+// Income — as "General", mirroring the expense side's catch-all, since
+// title-casing the category itself would produce Income:Income — and the two
+// transfer-ish categories share one wash account under Assets: the two legs
+// of a pot transfer cancel there, and what remains is money moved to
+// institutions the book imports nothing from (still an asset, not an
+// expense), awaiting manual re-filing. Everything else is an expense, named
+// by title-casing the category (eating_out -> "Eating Out"; no category ->
+// "General", Monzo's default). A refund arrives sign-flipped in its spending
+// category and negates the expense, which is why the amount's sign plays no
+// part here.
+def categoryTarget(transaction: monzo.Transaction): List[String] =
   transaction.category.fold("general")(_.value) match
-    case "income"                => (List("Income"), "General")
-    case "savings" | "transfers" => (List("Assets"), "Transfers")
-    case category                => (List("Expenses"), titleCased(category))
+    case "income"                => List("Income", "General")
+    case "savings" | "transfers" => List("Assets", "Transfers")
+    case category                => List("Expenses", titleCased(category))
 
 def titleCased(category: String): String =
   category
@@ -470,37 +416,102 @@ def titleCased(category: String): String =
     .map(_.capitalize)
     .mkString(" ")
 
-// The slot a pot child is tagged with, holding its Monzo backing-account ID —
-// the same account-level online_id association GnuCash's OFX importer stores,
-// with the same ACCTID our OFX export emits for the pot. So an account
-// associated by a past GUI import of export-transactions' OFX is found without
-// re-tagging. One wrinkle: libofx builds the stored value as
-// "BANKID BRANCHID ACCTID" with unconditional space separators, so
-// GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
-// Account.bySlot compares trimmed, honouring both shapes.
-val onlineIdSlot: String = "online_id"
-
-// Get-or-create a pot's asset account under the pots parent, tagging it with
-// the backing-account ID so future runs (and future homes of the book) resolve
-// it by tag rather than name. Retrieval tags too: a same-named child that
-// predates tagging, or was created by hand, gets adopted.
-def createOrRetrievePotChild(
-    potsParent: Account,
-    name: String,
-    accountId: monzo.AccountId,
+// One resolver for every Monzo-backed asset account. Finds the account by
+// its online_id tag first (identity survives moves and renames; distinct
+// hits across the given IDs contradict a shared mapping and fail the run),
+// then at its canonical location — live path or its archived twin — and
+// creates it at the canonical spot otherwise. Placement is then enforced
+// (for a fresh child only the hidden flag can be out of line), and every
+// untagged ID is adopted, so the next run finds the account by identity.
+// Tagging on retrieval also adopts accounts that predate tagging, were
+// created by hand, or were associated by a past GUI import of
+// export-transactions' OFX (which stores the same slot — see Slot.OnlineId).
+def resolveAssetAccount(
+    livePath: List[String],
+    retired: Boolean,
+    tagIds: List[monzo.AccountId],
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
-    child <- createOrRetrieveChild(potsParent, name, dryRun)
+    taggedById <- tagIds.traverse: accountId =>
+      Account
+        .bySlot(Slot.OnlineId, accountId.value)
+        .map(accountId -> _)
+    tagged = taggedById
+      .flatMap((_, account) => account)
+      .distinctBy(_.guid)
+    _ <- IO.raiseWhen(tagged.sizeIs > 1):
+      Error(
+        s"The Monzo accounts mapping to ${livePath.mkString(":")} are tagged onto ${tagged.size} different book accounts; resolve by hand — merging them automatically could orphan transactions."
+      )
+    located <- tagged.headOption match
+      case Some(account) => IO.pure(Some(account))
+      case None          =>
+        Account
+          .atPath(livePath)
+          .flatMap:
+            case Some(account) => IO.pure(Some(account))
+            case None => Account.atPath(Account.ArchiveName :: livePath)
+    account <- located match
+      case Some(account) =>
+        enforcePlacement(account, livePath, retired, dryRun)
+      case None =>
+        for
+          parent <- parentFor(livePath.init, retired, dryRun)
+          child <- createOrRetrieveChild(parent, livePath.last, dryRun)
+          placed <- alignHidden(child, retired, livePath, dryRun)
+        yield placed
     _ <- IO.unlessA(dryRun):
-      Slot
-        .stringSlot(
-          objGuid = child.guid,
-          name = onlineIdSlot,
-          value = accountId.value
-        )
-        .insert
-  yield child
+      taggedById
+        .collect:
+          case (accountId, None) => accountId
+        .traverse(tagOnlineId(account.guid, _))
+        .void
+  yield account
+
+def tagOnlineId(guid: String, accountId: monzo.AccountId)(using
+    db: Database[IO]
+): IO[Unit] =
+  Slot
+    .stringSlot(
+      objGuid = guid,
+      name = Slot.OnlineId,
+      value = accountId.value
+    )
+    .insert
+
+// A canonical path's parent chain: the live one while the Monzo side is
+// live, its Archive-nested twin once retired.
+def parentFor(
+    pathInit: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  if retired then archiveParentFor(pathInit, dryRun)
+  else liveParentFor(pathInit, dryRun)
+
+// Hidden tracks retirement, aligned in both directions.
+def alignHidden(
+    account: Account,
+    hidden: Boolean,
+    livePath: List[String],
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired = hidden)
+  if account.hidden == hidden then IO.pure(account)
+  else if dryRun then
+    info(s"Would ${if hidden then "hide" else "unhide"} $label.").as(account)
+  else
+    account
+      .updateHidden(hidden)
+      .flatTap: _ =>
+        info(s"${if hidden then "Hid" else "Unhid"} $label.")
+
+// Textual, so a dry run can name targets whose parents don't exist yet.
+def canonicalPathString(livePath: List[String], retired: Boolean): String =
+  val canonical =
+    if retired then Account.ArchiveName :: livePath else livePath
+  ("Root Account" :: canonical).mkString("/")
 
 // Monzo is authoritative for a Monzo-backed asset account's whole placement.
 // Its canonical parent is the code-defined live path while the Monzo side is
@@ -519,15 +530,9 @@ def enforcePlacement(
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val name = livePath.last
-  val canonicalParentPath =
-    if retired then Account.ArchiveName :: livePath.init else livePath.init
-  // Textual, so a dry run can name targets whose parents don't exist yet.
-  val targetPath = ("Root Account" :: canonicalParentPath).mkString("/") +
-    s"/$name"
+  val targetPath = canonicalPathString(livePath, retired)
   for
-    parent <-
-      if retired then archiveParentFor(livePath.init, dryRun)
-      else liveParentFor(livePath.init, dryRun)
+    parent <- parentFor(livePath.init, retired, dryRun)
     inPlace = account.parentGuid.contains(parent.guid) && account.name == name
     placed <-
       if inPlace then IO.pure(account)
@@ -548,16 +553,7 @@ def enforcePlacement(
                 .flatTap: _ =>
                   info(s"Moved $accountPath to $targetPath.")
         yield moved
-    aligned <-
-      if placed.hidden == retired then IO.pure(placed)
-      else if dryRun then
-        info(s"Would ${if retired then "hide" else "unhide"} $targetPath.")
-          .as(placed)
-      else
-        placed
-          .updateHidden(retired)
-          .flatTap: _ =>
-            info(s"${if retired then "Hid" else "Unhid"} $targetPath.")
+    aligned <- alignHidden(placed, retired, livePath, dryRun)
   yield aligned
 
 // The canonical parent for a retired account: the live parent chain nested
@@ -592,31 +588,13 @@ def archiveParentFor(
           nextLive <- liveCursor match
             case Some(live) => live.child(segment)
             case None       => IO.pure(None)
-          nextArchive <- archiveCursor
-            .child(segment)
-            .flatMap:
-              case Some(existing) => IO.pure(existing)
-              case None           =>
-                val template = nextLive.getOrElse(archiveCursor)
-                for
-                  guid <- newGuid
-                  archivePath <- archiveCursor.pathString
-                  created = template.copy(
-                    guid = guid,
-                    name = segment,
-                    parentGuid = Some(archiveCursor.guid),
-                    hidden = false,
-                    placeholder = true,
-                    code = None,
-                    description = None
-                  )
-                  _ <-
-                    if dryRun then
-                      info(s"Would create account $archivePath/$segment.")
-                    else
-                      created.insert *>
-                        info(s"Created account $archivePath/$segment.")
-                yield created
+          nextArchive <- createOrRetrieveChild(
+            archiveCursor,
+            segment,
+            dryRun,
+            placeholder = true,
+            template = nextLive
+          )
         yield (nextArchive, nextLive)
   yield cursors._1
 
@@ -643,17 +621,19 @@ def existingAccountAt(
       IO.fromOption(_):
         Error(s"No account at ${path.mkString(":")}")
 
-// Get-or-create one child. A created child inherits the parent's account
-// type and commodity, so an Expenses child is an EXPENSE account and a
-// Liabilities child a liability; structural path segments are created as
-// placeholders, leaves that take postings are not. A dry run inserts nothing
-// but still yields the would-be account, so the rest of the plan can proceed
-// against it.
+// Get-or-create one child. A created child inherits its account type and
+// commodity from `template` — by default the parent, so an Expenses child is
+// an EXPENSE account and a Liabilities child a liability; archiveParentFor
+// passes the live twin so archived mirrors match what they mirror.
+// Structural path segments are created as placeholders, leaves that take
+// postings are not. A dry run inserts nothing but still yields the would-be
+// account, so the rest of the plan can proceed against it.
 def createOrRetrieveChild(
     parent: Account,
     name: String,
     dryRun: Boolean,
-    placeholder: Boolean = false
+    placeholder: Boolean = false,
+    template: Option[Account] = None
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   parent
     .child(name)
@@ -663,15 +643,17 @@ def createOrRetrieveChild(
         for
           guid <- newGuid
           parentPath <- parent.pathString
-          child = parent.copy(
-            guid = guid,
-            name = name,
-            parentGuid = Some(parent.guid),
-            code = None,
-            description = None,
-            hidden = false,
-            placeholder = placeholder
-          )
+          child = template
+            .getOrElse(parent)
+            .copy(
+              guid = guid,
+              name = name,
+              parentGuid = Some(parent.guid),
+              code = None,
+              description = None,
+              hidden = false,
+              placeholder = placeholder
+            )
           _ <-
             if dryRun then info(s"Would create account $parentPath/$name.")
             else child.insert *> info(s"Created account $parentPath/$name.")

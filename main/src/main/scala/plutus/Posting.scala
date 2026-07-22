@@ -29,12 +29,12 @@ final case class Posting(
       // so it hangs off the asset split. (Account-level online_id slots are a
       // different association — GnuCash's OFX importer remembers which account
       // a statement's bank account maps to, and Plutus tags pot accounts the
-      // same way (GnuCashCommands.onlineIdSlot) — so not every online_id slot
+      // same way (Slot.OnlineId) — so not every online_id slot
       // in a book marks an imported split.)
       _ <- Slot
         .stringSlot(
           objGuid = assetSplit.guid,
-          name = "online_id",
+          name = Slot.OnlineId,
           value = onlineId
         )
         .insert

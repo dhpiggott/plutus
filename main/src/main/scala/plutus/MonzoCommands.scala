@@ -792,6 +792,12 @@ def fetchTransactionsByAccount(
       result = (now = now, byAccount = byAccount, pots = pots)
     )
 
+// A pot backing account is constructed from transfer metadata rather than
+// decoded from /accounts, so it never carries a type — this absence *is* the
+// definition of "pot backing account" (see AccountType in the smithy spec).
+def isPotBacking(account: monzo.Account): Boolean =
+  account.accountType.isEmpty
+
 // Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
 // account's side carries pot_account_id alongside pot_id, and on the pot's own
 // side the account the leg was fetched from *is* the backing account. Both
@@ -826,7 +832,7 @@ def potsByAccountId(
 )(using verbosity: Verbosity): IO[Map[monzo.AccountId, monzo.Pot]] =
   val potAccountIds = byAccount
     .collect:
-      case (account, _) if account.accountType.isEmpty => account.id
+      case (account, _) if isPotBacking(account) => account.id
   if potAccountIds.isEmpty then IO.pure(Map.empty)
   else
     for
@@ -834,8 +840,8 @@ def potsByAccountId(
         "Listing pots…"
       pots <- byAccount
         .collect:
-          case (account, _) if account.accountType.isDefined => account.id
-        .traverse: accountId =>
+          case (account, _) if !isPotBacking(account) => account.id
+        .parTraverse: accountId =>
           monzoApi
             .listPots(accountId)
             .map(_.pots)

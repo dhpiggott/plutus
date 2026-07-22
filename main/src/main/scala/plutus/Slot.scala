@@ -6,6 +6,16 @@ import porcupine.Codec.*
 
 object Slot:
 
+  // The slot name behind both halves of the online-identity scheme: split
+  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
+  // OFX FITID convention) and account slots carrying a Monzo account ID (the
+  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
+  // export emits). One wrinkle: libofx builds the stored account value as
+  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
+  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
+  // lookups compare trimmed, honouring both shapes.
+  val OnlineId: String = "online_id"
+
   // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
   // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
   // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
@@ -44,18 +54,19 @@ object Slot:
       args = objGuid
     )
 
-  // True if some split already has an online_id slot carrying this Monzo ID —
-  // the idempotency check the importer runs before writing a Posting. Mirrors
-  // GnuCash's own OFX-import dedup, which recognises the same slot.
-  def hasOnlineId(
-      transactionId: monzo.TransactionId
-  )(using db: Database[IO]): IO[Boolean] =
-    db.option(
+  // Every online_id value in the book, trimmed, in one query — the importer's
+  // idempotency check is then an in-memory membership test per transaction.
+  // slots has no index on (name, string_val), so per-transaction queries
+  // would each scan the whole table. Mirrors GnuCash's own OFX-import dedup,
+  // which recognises the same slots.
+  def onlineIdValues(using db: Database[IO]): IO[Set[String]] =
+    db.execute(
       query = sql"""
-        select 1 from slots where name = 'online_id' and string_val = $text
-      """.query(integer),
-      args = transactionId.value
-    ).map(_.isDefined)
+        select trim(string_val) from slots
+        where name = $text and string_val is not null
+      """.query(text),
+      args = OnlineId
+    ).map(_.toSet)
 
 /** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
   * AUTOINCREMENT NOT NULL, obj_guid text(32) NOT NULL, name text(4096) NOT

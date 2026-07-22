@@ -47,7 +47,7 @@ object Account:
   // Values compare with surrounding whitespace trimmed: GnuCash's OFX importer
   // stores online_id values in libofx's shape, which prefixes the (empty)
   // BANKID/BRANCHID with unconditional space separators ("  acc_…"), while
-  // Plutus tags with the bare ID. See GnuCashCommands.onlineIdSlot.
+  // Plutus tags with the bare ID. See Slot.OnlineId.
   def bySlot(
       name: String,
       value: String
