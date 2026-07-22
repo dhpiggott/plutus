@@ -42,39 +42,28 @@ def archiveAccounts(
         _ <- (IO.traverse:
           hiddenAccounts
         ): hiddenAccount =>
-          archiveAccount(hiddenAccount, root, archiveSubroot)
+          for
+            hiddenAccountPath <- hiddenAccount.pathString
+            archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
+              from = root,
+              to = archiveSubroot
+            )
+            _ <- cleanUpRedundantMirror(
+              original = hiddenAccount,
+              originalPath = hiddenAccountPath,
+              mirrorParent = archiveParent,
+              mirrorKind = MirrorKind.Archive
+            )
+            archivedAccount <- hiddenAccount.update(
+              parent = archiveParent
+            )
+            archivedPath <- archivedAccount.pathString
+            _ <- info:
+              s"Archived $hiddenAccountPath to $archivedPath."
+          yield ()
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
-
-// Move an account under the Archive subroot, mirroring its parent chain.
-// Only archive-accounts uses this; import places retired accounts through
-// enforcePlacement instead, which fails on collisions rather than merging
-// mirrors.
-def archiveAccount(
-    account: Account,
-    root: Account,
-    archiveSubroot: Account
-)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
-  for
-    accountPath <- account.pathString
-    archiveParent <- account.createOrRetrieveMirrorParent(
-      from = root,
-      to = archiveSubroot
-    )
-    _ <- cleanUpRedundantMirror(
-      original = account,
-      originalPath = accountPath,
-      mirrorParent = archiveParent,
-      mirrorKind = MirrorKind.Archive
-    )
-    archivedAccount <- account.update(
-      parent = archiveParent
-    )
-    archivedPath <- archivedAccount.pathString
-    _ <- info:
-      s"Archived $accountPath to $archivedPath."
-  yield ()
 
 // Which side of the archive boundary a mirror sits on. Only ever rendered
 // into cleanUpRedundantMirror's warnings — behaviour never branches on it —
@@ -263,19 +252,23 @@ def importTransactions(
           .collect:
             case (account, _) if isPotBacking(account) => account.id
           .toSet
-        // The book is the durable home of the pot association: each pot child
-        // is tagged at creation with its backing-account ID in an
-        // account-level online_id slot, so a book that outlives the state
-        // store (say, moved to a new machine) still resolves by tag.
-        taggedPots <- allPotAccountIds
+        // The book is the durable home of the account associations: each
+        // asset account is tagged with its Monzo account ID(s) in
+        // account-level online_id slots, so a book that outlives the state
+        // store (say, moved to a new machine) still resolves by tag. Looked
+        // up once per ID here — bySlot scans the whole slots table, so the
+        // fail-fasts and the resolver share this one prefetch.
+        taggedByAccountId <- (typedAccountsByAssetPath.values.toList.flatten
+          .map(_.id) ++ allPotAccountIds)
           .traverse: accountId =>
             Account
               .bySlot(Slot.OnlineId, accountId.value)
               .map(accountId -> _)
-          .map:
-            _.collect:
-              case (accountId, Some(account)) => accountId -> account
-            .toMap
+          .map(_.toMap)
+        taggedPots = allPotAccountIds
+          .flatMap: accountId =>
+            taggedByAccountId(accountId).map(accountId -> _)
+          .toMap
         // Fail fast on a pot the book doesn't know and no recorded link
         // names: it can't be filed into its own account, and a mis-filed row
         // would be permanent — online_id dedup skips it on every later run.
@@ -308,7 +301,8 @@ def importTransactions(
             resolveAssetAccount(
               livePath = path,
               retired = accounts.forall(_.closed.exists(_.value)),
-              tagIds = accounts.map(_.id),
+              taggedById = accounts.map: account =>
+                account.id -> taggedByAccountId(account.id),
               dryRun = dryRun
             ).map(path -> _)
           .map(_.toMap)
@@ -326,7 +320,7 @@ def importTransactions(
                 resolveAssetAccount(
                   livePath = assetAccounts.pots :+ pot.name.value,
                   retired = pot.deleted.value,
-                  tagIds = List(accountId),
+                  taggedById = List(accountId -> taggedByAccountId(accountId)),
                   dryRun = dryRun
                 ).map(account => accountId -> Some(account))
               case _ =>
@@ -426,20 +420,18 @@ def titleCased(category: String): String =
 // Tagging on retrieval also adopts accounts that predate tagging, were
 // created by hand, or were associated by a past GUI import of
 // export-transactions' OFX (which stores the same slot — see Slot.OnlineId).
+// taggedById is the caller's prefetched tag lookup (see taggedByAccountId in
+// importTransactions), keyed by every Monzo account ID that posts here.
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
-    tagIds: List[monzo.AccountId],
+    taggedById: List[(monzo.AccountId, Option[Account])],
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val tagged = taggedById
+    .flatMap((_, account) => account)
+    .distinctBy(_.guid)
   for
-    taggedById <- tagIds.traverse: accountId =>
-      Account
-        .bySlot(Slot.OnlineId, accountId.value)
-        .map(accountId -> _)
-    tagged = taggedById
-      .flatMap((_, account) => account)
-      .distinctBy(_.guid)
     _ <- IO.raiseWhen(tagged.sizeIs > 1):
       Error(
         s"The Monzo accounts mapping to ${livePath.mkString(":")} are tagged onto ${tagged.size} different book accounts; resolve by hand — merging them automatically could orphan transactions."
@@ -608,19 +600,14 @@ def liveParentFor(
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
-    top <- existingAccountAt(List(pathInit.head))
+    top <- Account
+      .atPath(List(pathInit.head))
+      .flatMap:
+        IO.fromOption(_):
+          Error(s"No account at ${pathInit.head}")
     parent <- pathInit.tail.foldLeftM(top): (parent, segment) =>
       createOrRetrieveChild(parent, segment, dryRun, placeholder = true)
   yield parent
-
-def existingAccountAt(
-    path: List[String]
-)(using db: Database[IO]): IO[Account] =
-  Account
-    .atPath(path)
-    .flatMap:
-      IO.fromOption(_):
-        Error(s"No account at ${path.mkString(":")}")
 
 // Get-or-create one child. A created child inherits its account type and
 // commodity from `template` — by default the parent, so an Expenses child is

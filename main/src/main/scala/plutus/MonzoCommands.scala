@@ -880,7 +880,7 @@ def listTransactionsForAccounts(
 // account — current_account_id is the owning account, and the pot ID shares
 // only its creation-timestamp prefix with the backing-account ID, so one can't
 // be derived from the other. (Import does still use /pots, but only to *name*
-// pots discovered here — see potNamesByAccountId.) Once a pot has a bookmark in
+// pots discovered here — see potsByAccountId.) Once a pot has a bookmark in
 // the state store it's recognisable there as a key /accounts doesn't return,
 // so it keeps syncing even when no transfer falls in the export window. (That
 // inference assumes /accounts never stops listing a main account — it keeps
