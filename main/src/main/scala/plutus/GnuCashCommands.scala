@@ -582,21 +582,22 @@ def archiveParentFor(
           .flatTap: _ =>
             info(s"Would create account Root Account/${Account.ArchiveName}.")
       case None => Account.createOrRetrieveArchiveSubroot
-    cursors <- livePathInit.foldLeftM((archiveSubroot, Option(root))):
-      case ((archiveCursor, liveCursor), segment) =>
-        for
-          nextLive <- liveCursor match
-            case Some(live) => live.child(segment)
-            case None       => IO.pure(None)
-          nextArchive <- createOrRetrieveChild(
-            archiveCursor,
-            segment,
-            dryRun,
-            placeholder = true,
-            template = nextLive
-          )
-        yield (nextArchive, nextLive)
-  yield cursors._1
+    cursors <- livePathInit
+      .foldLeftM((archive = archiveSubroot, live = Option(root))):
+        (cursors, segment) =>
+          for
+            nextLive <- cursors.live match
+              case Some(live) => live.child(segment)
+              case None       => IO.pure(None)
+            nextArchive <- createOrRetrieveChild(
+              cursors.archive,
+              segment,
+              dryRun,
+              placeholder = true,
+              template = nextLive
+            )
+          yield (archive = nextArchive, live = nextLive)
+  yield cursors.archive
 
 // The live parent chain for a code-defined path, created on demand below its
 // top-level account — which must already exist, and does in any freshly
@@ -623,8 +624,9 @@ def existingAccountAt(
 
 // Get-or-create one child. A created child inherits its account type and
 // commodity from `template` — by default the parent, so an Expenses child is
-// an EXPENSE account and a Liabilities child a liability; archiveParentFor
-// passes the live twin so archived mirrors match what they mirror.
+// an EXPENSE account and a Liabilities child a LIABILITY (the literal
+// accounts.account_type values); archiveParentFor passes the live twin so
+// archived mirrors match what they mirror.
 // Structural path segments are created as placeholders, leaves that take
 // postings are not. A dry run inserts nothing but still yields the would-be
 // account, so the rest of the plan can proceed against it.
