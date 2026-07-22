@@ -575,20 +575,21 @@ def archiveParentFor(
             info(s"Would create account Root Account/${Account.ArchiveName}.")
       case None => Account.createOrRetrieveArchiveSubroot
     cursors <- livePathInit
-      .foldLeftM((archive = archiveSubroot, live = Option(root))):
-        (cursors, segment) =>
-          for
-            nextLive <- cursors.live match
-              case Some(live) => live.child(segment)
-              case None       => IO.pure(None)
-            nextArchive <- createOrRetrieveChild(
-              cursors.archive,
-              segment,
-              dryRun,
-              placeholder = true,
-              template = nextLive
-            )
-          yield (archive = nextArchive, live = nextLive)
+      .foldLeftM(
+        (archive = archiveSubroot, live = Some(root): Option[Account])
+      ): (cursors, segment) =>
+        for
+          nextLive <- cursors.live match
+            case Some(live) => live.child(segment)
+            case None       => IO.pure(None)
+          nextArchive <- createOrRetrieveChild(
+            cursors.archive,
+            segment,
+            dryRun,
+            placeholder = true,
+            template = nextLive
+          )
+        yield (archive = nextArchive, live = nextLive)
   yield cursors.archive
 
 // The live parent chain for a code-defined path, created on demand below its
