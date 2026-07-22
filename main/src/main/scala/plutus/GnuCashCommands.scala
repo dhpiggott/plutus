@@ -52,7 +52,7 @@ def archiveAccounts(
               original = hiddenAccount,
               originalPath = hiddenAccountPath,
               mirrorParent = archiveParent,
-              mirrorKind = MirrorKind.Archive
+              mirrorKind = "Archive"
             )
             archivedAccount <- hiddenAccount.update(
               parent = archiveParent
@@ -64,13 +64,6 @@ def archiveAccounts(
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
-
-// Which side of the archive boundary a mirror sits on. Only ever rendered
-// into cleanUpRedundantMirror's warnings — behaviour never branches on it —
-// but an enum keeps the two valid values from being spelled ad hoc.
-enum MirrorKind(val label: String):
-  case Archive extends MirrorKind("Archive")
-  case NonArchive extends MirrorKind("Non-archive")
 
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
@@ -118,7 +111,7 @@ def restoreAccount(
           original = archivedAccount,
           originalPath = archivedAccountPath,
           mirrorParent = nonArchiveParent,
-          mirrorKind = MirrorKind.NonArchive
+          mirrorKind = "Non-archive"
         )
         restoredAccount <- archivedAccount.update(
           parent = nonArchiveParent
@@ -141,7 +134,7 @@ def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
     mirrorParent: Account,
-    mirrorKind: MirrorKind
+    mirrorKind: String
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
     maybeExistingMirror <- mirrorParent.child(original.name)
@@ -150,7 +143,7 @@ def cleanUpRedundantMirror(
     ): existingMirror =>
       for
         _ <- warn:
-          s"${mirrorKind.label} mirror for $originalPath already exists."
+          s"$mirrorKind mirror for $originalPath already exists."
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren
@@ -166,7 +159,7 @@ def cleanUpRedundantMirror(
         existingMirrorPath <- existingMirror.pathString
         _ <- existingMirror.delete
         _ <- warn:
-          s"Deleted existing ${mirrorKind.label.toLowerCase} mirror $existingMirrorPath."
+          s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
       yield ()
   yield ()
 
