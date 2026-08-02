@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macOS only, and not just for the native row: the JVM row's Keychain and
+    # sqlite3 bindings are generated against the macOS SDK too, so nothing in
+    # this build compiles on Linux.
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # sbt-dynver derives `version` from the tag history, and `version`
+          # ends up in BuildInfo. A shallow clone silently produces 0.0.0+….
+          fetch-depth: 0
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      - name: Check formatting and compile both platform rows
+        run: .github/scripts/verify.sh
+
+      # Linking is where the native row's link flags get exercised (s2n from
+      # Homebrew, the CoreFoundation and Security frameworks, vcpkg's
+      # libsqlite3.a), and none of that shows up at compile time. It is slow, so
+      # only on main rather than on every push to a PR.
+      - name: Link the native binary
+        if: github.event_name == 'push'
+        run: sbt --batch -no-colors "mainNative3/nativeLink"
