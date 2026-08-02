@@ -5,10 +5,15 @@
 
 set -euo pipefail
 
+# llvm@17 specifically, not llvm: the sn-bindgen binary the plugin downloads
+# has /opt/homebrew/opt/llvm@17/lib/libclang.dylib baked in as an absolute
+# install name, so any other LLVM leaves it aborting with SIGABRT (exit 134)
+# before it prints anything useful.
+#
 # s2n is pulled in by epollcat for TLS on the Scala Native row, and the build
 # links against /opt/homebrew/lib to find it. cmake, ninja and pkg-config are
 # what sbt-vcpkg-native shells out to when it builds sqlite3 from source.
-packages=(s2n cmake ninja pkg-config)
+packages=(llvm@17 s2n cmake ninja pkg-config)
 
 missing=()
 for package in "${packages[@]}"; do
