@@ -19,11 +19,19 @@ lazy val `keychain-jvm` = projectMatrix
     dependencyUpdatesFailBuild := true,
     // Emptied for Test, here and in the three other FFI modules: both
     // JextractPlugin and BindgenPlugin register their codegen under `Compile`
-    // *and* `Test`, each reading `<config> / *Bindings`, so the Test-scope task
-    // regenerates everything into src_managed/test — where sn-bindgen exits 10
-    // with no diagnostic. That fails any task touching the Test config, `sbt
-    // scalafixAll` being the one that bites. There are no test sources, so
-    // nothing needs the Test-scope copies.
+    // *and* `Test`, each reading `<config> / *Bindings`. Nothing consumes the
+    // Test-scope output — there are no test sources — so all it does is
+    // regenerate every binding a second time, concurrently with the Compile
+    // run and, for the two modules that generate their header below, writing
+    // that header while the other process is reading it.
+    //
+    // `sbt scalafixAll` (which touches both configs) has been seen to die that
+    // way: sn-bindgen exits 10, which is Scala Native's unhandled-exception
+    // code, having printed "Unrecoverable NullPointerException in user thread"
+    // rather than any diagnostic about the headers. It is intermittent — it
+    // reproduced on the first two runs and then stopped reproducing, including
+    // from a cleaned src_managed — so treat the race as the motivation for
+    // dropping duplicate work, not as a diagnosis anyone has confirmed.
     //
     // It has to be this explicit override rather than scoping the definition
     // below to `Compile`: Test extends Compile in sbt's configuration
