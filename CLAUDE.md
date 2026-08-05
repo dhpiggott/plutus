@@ -14,9 +14,11 @@ When a change touches code, build configuration, or smithy IDL that's reachable 
 sbt 'main3/compile' 'mainNative3/compile'
 ```
 
-There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, both of those compiles, and `scalafix --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
+There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, `scalafmtSbtCheck`, both of those compiles, and `scalafixAll --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
 
-Use `scalafix`, never `scalafixAll`. `scalafixAll` also runs the Test configuration, which re-triggers jextract and sn-bindgen codegen into `src_managed/test` for the four FFI modules; sn-bindgen exits 10 there with no diagnostic, so `scalafixAll` fails on a clean tree no matter what the code looks like. Since there are no test sources, `scalafix` (Compile only, 8 module-rows) covers everything.
+`scalafmtCheckAll` does not cover `build.sbt` or `project/` — those are what `scalafmtSbtCheck` is for, and `.scalafmt.conf` has an `sbt1` `fileOverride` for them.
+
+Anything that touches the Test configuration depends on the four `Test / *Bindings := Seq.empty` overrides in `build.sbt`. Don't remove them as dead weight: without them the FFI modules regenerate their bindings into `src_managed/test`, sn-bindgen exits 10 with no diagnostic, and `scalafixAll` fails on a clean tree no matter what the code looks like.
 
 ## Smithy codegen output
 

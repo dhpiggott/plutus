@@ -9,13 +9,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-# `scalafix`, not `scalafixAll`: the latter also runs the Test configuration,
-# which re-triggers jextract and sn-bindgen codegen into src_managed/test for
-# the four FFI modules. sn-bindgen exits 10 there with no diagnostic, so
-# `scalafixAll` fails on a clean tree regardless of the state of the code.
-# There are no test sources for it to check anyway.
+# scalafmtCheckAll skips build.sbt and project/, which .scalafmt.conf has a
+# dedicated sbt1 fileOverride for; scalafmtSbtCheck is what covers those.
 sbt --batch -no-colors \
   scalafmtCheckAll \
+  scalafmtSbtCheck \
   "main3/compile" \
   "mainNative3/compile" \
-  "scalafix --check"
+  "scalafixAll --check"

@@ -17,6 +17,19 @@ lazy val `keychain-jvm` = projectMatrix
   .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test, here and in the three other FFI modules: both
+    // JextractPlugin and BindgenPlugin register their codegen under `Compile`
+    // *and* `Test`, each reading `<config> / *Bindings`, so the Test-scope task
+    // regenerates everything into src_managed/test — where sn-bindgen exits 10
+    // with no diagnostic. That fails any task touching the Test config, `sbt
+    // scalafixAll` being the one that bites. There are no test sources, so
+    // nothing needs the Test-scope copies.
+    //
+    // It has to be this explicit override rather than scoping the definition
+    // below to `Compile`: Test extends Compile in sbt's configuration
+    // hierarchy, so `Test / *Bindings` delegates to the Compile value and a
+    // Compile-scoped definition is still visible to Test.
+    Test / jextractBindings := Seq.empty,
     jextractBindings += {
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val managed = (Compile / sourceManaged).value
@@ -66,6 +79,8 @@ lazy val `keychain-native` = projectMatrix
   .enablePlugins(BindgenPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / bindgenBindings := Seq.empty,
     bindgenBindings += {
       // sn-bindgen filters out declarations from headers that clang tags as
       // system headers. Includes via the angle-bracket form (e.g.
@@ -111,6 +126,8 @@ lazy val `porcupine-jvm` = projectMatrix
   .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / jextractBindings := Seq.empty,
     jextractBindings += {
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val header = (Compile / sourceManaged).value / "libsqlite.h"
@@ -135,6 +152,8 @@ lazy val `porcupine-native` = projectMatrix
   .settings(
     dependencyUpdatesFailBuild := true,
     vcpkgDependencies := VcpkgDependencies("sqlite3"),
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / bindgenBindings := Seq.empty,
     bindgenBindings += {
       // Package `libsqlite` (not `sqlite3`) avoids colliding with the
       // `sqlite3` struct that lives inside it.

@@ -94,21 +94,21 @@ sbt will print the path to the linked binary at the end of the run.
 ### Formatting and linting
 
 ```
-sbt scalafmtCheckAll       # check
-sbt scalafmtAll            # apply
-sbt scalafix                # OrganizeImports (add --check to verify instead of rewrite)
+sbt scalafmtCheckAll        # check sources
+sbt scalafmtAll             # apply to sources
+sbt scalafmtSbtCheck        # check build.sbt and project/
+sbt scalafmtSbt             # apply to build.sbt and project/
+sbt scalafixAll             # OrganizeImports (add --check to verify instead of rewrite)
 sbt dependencyUpdates       # fails (rather than just reporting) if any dep is stale
 ```
 
 ### Continuous integration
 
 ```
-.github/scripts/verify.sh   # scalafmtCheckAll + both platform rows compiled + scalafix --check
+.github/scripts/verify.sh   # the four checks above, minus dependencyUpdates, plus both rows compiled
 ```
 
-That is what CI runs, and — there being no tests — it is the whole check.
-
-Note that `scalafixAll` (as opposed to `scalafix`) does not work here: it also runs the Test configuration, which re-triggers jextract and sn-bindgen codegen into `src_managed/test` for the four FFI modules, and sn-bindgen exits 10 there. There are no test sources, so `scalafix` on its own covers everything. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
+That is what CI runs, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
 
 GitHub Actions runs three workflows: `ci.yml` on pushes to `main` and on pull requests, plus the two [Claude Code](https://github.com/anthropics/claude-code-action) workflows (`@claude` mentions, and automatic review of each PR). The build ones run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`.
 
