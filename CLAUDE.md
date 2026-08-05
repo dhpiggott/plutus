@@ -18,7 +18,7 @@ There are no tests in the repo — `sbt test` is a no-op, and there is no `src/t
 
 `scalafmtCheckAll` does not cover `build.sbt` or `project/` — those are what `scalafmtSbtCheck` is for, and `.scalafmt.conf` has an `sbt1` `fileOverride` for them.
 
-Anything that touches the Test configuration depends on the four `Test / *Bindings := Seq.empty` overrides in `build.sbt`. Don't remove them as dead weight: without them the FFI modules regenerate their bindings into `src_managed/test`, sn-bindgen exits 10 with no diagnostic, and `scalafixAll` fails on a clean tree no matter what the code looks like.
+The four `Test / *Bindings := Seq.empty` overrides in `build.sbt` are load-bearing for anything that touches the Test configuration. Without them every FFI module regenerates its bindings a second time into `src_managed/test`, which nothing consumes, concurrently with the Compile run — and `scalafixAll` has been seen to die there, sn-bindgen exiting 10 (Scala Native's unhandled-exception code) after an `Unrecoverable NullPointerException`. That crash is intermittent and stopped reproducing, so the overrides are justified by the duplicated work rather than by a confirmed diagnosis; if you remove them and `scalafixAll` looks fine, that is not evidence they were unnecessary.
 
 ## Smithy codegen output
 
