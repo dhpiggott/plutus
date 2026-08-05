@@ -14,7 +14,9 @@ When a change touches code, build configuration, or smithy IDL that's reachable 
 sbt 'main3/compile' 'mainNative3/compile'
 ```
 
-There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll` plus both of those compiles. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
+There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, both of those compiles, and `scalafix --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
+
+Use `scalafix`, never `scalafixAll`. `scalafixAll` also runs the Test configuration, which re-triggers jextract and sn-bindgen codegen into `src_managed/test` for the four FFI modules; sn-bindgen exits 10 there with no diagnostic, so `scalafixAll` fails on a clean tree no matter what the code looks like. Since there are no test sources, `scalafix` (Compile only, 8 module-rows) covers everything.
 
 ## Smithy codegen output
 

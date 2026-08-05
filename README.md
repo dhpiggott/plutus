@@ -96,17 +96,19 @@ sbt will print the path to the linked binary at the end of the run.
 ```
 sbt scalafmtCheckAll       # check
 sbt scalafmtAll            # apply
-sbt scalafixAll             # OrganizeImports
+sbt scalafix                # OrganizeImports (add --check to verify instead of rewrite)
 sbt dependencyUpdates       # fails (rather than just reporting) if any dep is stale
 ```
 
 ### Continuous integration
 
 ```
-.github/scripts/verify.sh   # scalafmtCheckAll + both platform rows compiled
+.github/scripts/verify.sh   # scalafmtCheckAll + both platform rows compiled + scalafix --check
 ```
 
-That is what CI runs, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
+That is what CI runs, and — there being no tests — it is the whole check.
+
+Note that `scalafixAll` (as opposed to `scalafix`) does not work here: it also runs the Test configuration, which re-triggers jextract and sn-bindgen codegen into `src_managed/test` for the four FFI modules, and sn-bindgen exits 10 there. There are no test sources, so `scalafix` on its own covers everything. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
 
 GitHub Actions runs three workflows: `ci.yml` on pushes to `main` and on pull requests, plus the two [Claude Code](https://github.com/anthropics/claude-code-action) workflows (`@claude` mentions, and automatic review of each PR). The build ones run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`.
 
