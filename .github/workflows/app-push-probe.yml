@@ -1,0 +1,63 @@
+name: App Push Probe
+
+# Temporary, and deliberately not on main. Proves whether the Claude GitHub App
+# can push a branch when the job grants contents: write, without waiting for
+# claude.yml to reach main: `push` events run the workflow file from the pushed
+# branch, whereas the issue_comment events claude.yml uses always load it from
+# the default branch.
+#
+# Also exercises use_commit_signing (see #11), so one run answers both open
+# questions: can it push, and does the resulting commit verify.
+#
+# Delete this branch once the answers are recorded.
+
+on:
+  push:
+    branches: [app-push-probe]
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Ask Claude to push a branch
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_commit_signing: true
+          prompt: |
+            Create a file named PROBE.md whose only content is the line:
+            app push probe
+
+            Commit it and push it to a new branch named claude/app-push-probe.
+            Do not touch any other file, and do not open a pull request.
+            Report whether the push succeeded and the resulting commit SHA.
+          claude_args: |
+            --max-turns 10
+            --allowedTools "Bash(git:*)"
+
+      - name: Report what actually landed
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "=== does the branch exist? ==="
+          if gh api "repos/$GITHUB_REPOSITORY/branches/claude/app-push-probe" \
+               --jq '"branch head=\(.commit.sha)"'; then
+            SHA=$(gh api "repos/$GITHUB_REPOSITORY/branches/claude/app-push-probe" --jq '.commit.sha')
+            echo "=== signature verification on that commit ==="
+            gh api "repos/$GITHUB_REPOSITORY/commits/$SHA" \
+              --jq '{verified: .commit.verification.verified, reason: .commit.verification.reason, author: .commit.author.email, committer: .commit.committer.email}'
+          else
+            echo "PROBE RESULT: no branch was created — the app could not push"
+          fi
