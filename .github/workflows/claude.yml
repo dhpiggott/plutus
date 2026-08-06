@@ -26,17 +26,6 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 60
     permissions:
-      # Write, not the read the stock template ships with. That template assumes
-      # every write goes through the Claude GitHub App's token, but
-      # actions/checkout persists the workflow's GITHUB_TOKEN in the local git
-      # config, so that is the identity `git push` actually uses — and with
-      # `contents: read` it 403s ("Permission to dhpiggott/plutus.git denied to
-      # github-actions[bot]") only after Claude has done the work. See #6.
-      #
-      # Note this is necessary but not sufficient for Claude to land changes on
-      # a PR: pushes authenticated with GITHUB_TOKEN deliberately do not trigger
-      # further workflow runs, so `build` and `claude-review` will not re-run on
-      # the commits it pushes, and main's ruleset requires both.
       contents: write
       pull-requests: write
       issues: write
