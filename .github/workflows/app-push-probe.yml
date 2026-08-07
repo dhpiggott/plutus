@@ -11,9 +11,12 @@ name: App Push Probe
 #
 # Delete this branch once the answers are recorded.
 
+# `pull_request`, not `push`: the action rejects push events outright
+# ("Unsupported event type: push"), and pull_request events also run the
+# workflow from the PR branch rather than the default branch.
 on:
-  push:
-    branches: [app-push-probe]
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
   probe:
