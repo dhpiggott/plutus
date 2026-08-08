@@ -65,10 +65,3 @@ jobs:
           claude_args: |
             --max-turns 30
             --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*)"
-
-          # Without this the run log holds setup, env and cleanup but not one of
-          # Claude's turns or tool results, which left us unable to say why the
-          # run on #6 stopped after 84s with the merge made and the push not
-          # attempted. Turn it off again once that is understood: it puts the
-          # whole transcript in a public repo's logs.
-          show_full_output: true
