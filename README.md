@@ -100,6 +100,7 @@ sbt 'mainNative3/run monzo export-transactions --output monzo.ofx'
 Prerequisites:
 
 - The macOS SDK (`xcrun --show-sdk-path` must succeed) — the build generates Keychain bindings against it via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).
+- Homebrew package `llvm@17` — the sn-bindgen binary has `/opt/homebrew/opt/llvm@17/lib/libclang.dylib` baked in as an absolute install name, so a different LLVM version won't do. Without it, codegen aborts (exit 134) before printing a diagnostic.
 - Homebrew package `s2n` (pulled in via epollcat for TLS); the build links against `/opt/homebrew/lib`.
 - Homebrew packages `cmake`, `ninja`, and `pkg-config` — needed by [sbt-vcpkg-native](https://github.com/indoorvivants/sbt-vcpkg) to build sqlite3 from source on first run. The static lib is cached under `~/Library/Caches/sbt-vcpkg`.
 
@@ -114,11 +115,23 @@ sbt will print the path to the linked binary at the end of the run.
 ### Formatting and linting
 
 ```
-sbt scalafmtCheckAll       # check
-sbt scalafmtAll            # apply
-sbt scalafixAll             # OrganizeImports
-sbt dependencyUpdates       # also fails the regular build if any dep is stale
+sbt scalafmtCheckAll        # check sources
+sbt scalafmtAll             # apply to sources
+sbt scalafmtSbtCheck        # check build.sbt and project/
+sbt scalafmtSbt             # apply to build.sbt and project/
+sbt scalafixAll             # OrganizeImports (add --check to verify instead of rewrite)
+sbt dependencyUpdates       # fails (rather than just reporting) if any dep is stale
 ```
+
+### Continuous integration
+
+```
+.github/scripts/verify.sh   # the four checks above, minus dependencyUpdates, plus both rows compiled
+```
+
+That is what CI runs, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
+
+GitHub Actions runs three workflows: `ci.yml` on pushes to `main` and on pull requests, plus the two [Claude Code](https://github.com/anthropics/claude-code-action) workflows (`@claude` mentions, and automatic review of each PR). The build ones run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`.
 
 ## Project layout
 

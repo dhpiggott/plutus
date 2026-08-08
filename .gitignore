@@ -1,6 +1,7 @@
 .bloop/
 .bsp/
-.claude/
+.claude/*
+!.claude/settings.json
 .metals/
 .sbt/
 .smithy.lsp.log

@@ -17,6 +17,27 @@ lazy val `keychain-jvm` = projectMatrix
   .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test, here and in the three other FFI modules: both
+    // JextractPlugin and BindgenPlugin register their codegen under `Compile`
+    // *and* `Test`, each reading `<config> / *Bindings`. Nothing consumes the
+    // Test-scope output — there are no test sources — so all it does is
+    // regenerate every binding a second time, concurrently with the Compile
+    // run and, for the two modules that generate their header below, writing
+    // that header while the other process is reading it.
+    //
+    // `sbt scalafixAll` (which touches both configs) has been seen to die that
+    // way: sn-bindgen exits 10, which is Scala Native's unhandled-exception
+    // code, having printed "Unrecoverable NullPointerException in user thread"
+    // rather than any diagnostic about the headers. It is intermittent — it
+    // reproduced on the first two runs and then stopped reproducing, including
+    // from a cleaned src_managed — so treat the race as the motivation for
+    // dropping duplicate work, not as a diagnosis anyone has confirmed.
+    //
+    // It has to be this explicit override rather than scoping the definition
+    // below to `Compile`: Test extends Compile in sbt's configuration
+    // hierarchy, so `Test / *Bindings` delegates to the Compile value and a
+    // Compile-scoped definition is still visible to Test.
+    Test / jextractBindings := Seq.empty,
     jextractBindings += {
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val managed = (Compile / sourceManaged).value
@@ -66,6 +87,8 @@ lazy val `keychain-native` = projectMatrix
   .enablePlugins(BindgenPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / bindgenBindings := Seq.empty,
     bindgenBindings += {
       // sn-bindgen filters out declarations from headers that clang tags as
       // system headers. Includes via the angle-bracket form (e.g.
@@ -111,6 +134,8 @@ lazy val `porcupine-jvm` = projectMatrix
   .enablePlugins(JextractPlugin)
   .settings(
     dependencyUpdatesFailBuild := true,
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / jextractBindings := Seq.empty,
     jextractBindings += {
       val sdkPath = sys.process.Process("xcrun --show-sdk-path").!!.trim
       val header = (Compile / sourceManaged).value / "libsqlite.h"
@@ -135,6 +160,8 @@ lazy val `porcupine-native` = projectMatrix
   .settings(
     dependencyUpdatesFailBuild := true,
     vcpkgDependencies := VcpkgDependencies("sqlite3"),
+    // Emptied for Test for the reason given in `keychain-jvm`.
+    Test / bindgenBindings := Seq.empty,
     bindgenBindings += {
       // Package `libsqlite` (not `sqlite3`) avoids colliding with the
       // `sqlite3` struct that lives inside it.
