@@ -52,12 +52,10 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # 209825114 is claude[bot]; the action's default is 41898282, which is
-          # github-actions[bot] despite the input being documented as "Claude's
-          # bot ID". GitHub resolves a commit to an account by the numeric ID in
-          # its noreply address, so on the default every commit Claude pushes is
-          # attributed to GitHub Actions — the push itself already authenticates
-          # as the Claude app, so the attribution was simply wrong.
+          use_commit_signing: true
+
+          # claude[bot]; the action defaults to github-actions[bot]'s ID —
+          # anthropics/claude-code-action#759
           bot_id: "209825114"
           bot_name: "claude[bot]"
 
