@@ -54,6 +54,11 @@ jobs:
 
           use_commit_signing: true
 
+          # claude[bot]; the action defaults to github-actions[bot]'s ID —
+          # anthropics/claude-code-action#759
+          bot_id: "209825114"
+          bot_name: "claude[bot]"
+
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
