@@ -39,28 +39,32 @@ def archiveAccounts(
           "Finding hidden accounts…"
         hiddenAccounts <- root.hiddenChildren:
           archiveSubroot
-        _ <- (IO.traverse:
-          hiddenAccounts
-        ): hiddenAccount =>
-          for
-            hiddenAccountPath <- hiddenAccount.pathString
-            archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
-              from = root,
-              to = archiveSubroot
-            )
-            _ <- cleanUpRedundantMirror(
-              original = hiddenAccount,
-              originalPath = hiddenAccountPath,
-              mirrorParent = archiveParent,
-              mirrorKind = "Archive"
-            )
-            archivedAccount <- hiddenAccount.update(
-              parent = archiveParent
-            )
-            archivedPath <- archivedAccount.pathString
-            _ <- info:
-              s"Archived $hiddenAccountPath to $archivedPath."
-          yield ()
+        // Whole loop in one transaction: a failure partway through rolls
+        // every account archived so far in this run back to where it started,
+        // rather than leaving some archived and others not.
+        _ <- db.transact:
+          (IO.traverse:
+            hiddenAccounts
+          ): hiddenAccount =>
+            for
+              hiddenAccountPath <- hiddenAccount.pathString
+              archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
+                from = root,
+                to = archiveSubroot
+              )
+              _ <- cleanUpRedundantMirror(
+                original = hiddenAccount,
+                originalPath = hiddenAccountPath,
+                mirrorParent = archiveParent,
+                mirrorKind = "Archive"
+              )
+              archivedAccount <- hiddenAccount.update(
+                parent = archiveParent
+              )
+              archivedPath <- archivedAccount.pathString
+              _ <- info:
+                s"Archived $hiddenAccountPath to $archivedPath."
+            yield ()
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
@@ -103,22 +107,29 @@ def restoreAccount(
               archivedAccountsByPath.keys.toList
             ).getOrRaise
         archivedAccount = archivedAccountsByPath(archivedAccountPath)
-        nonArchiveParent <- archivedAccount.createOrRetrieveMirrorParent(
-          from = archiveSubroot,
-          to = root
-        )
-        _ <- cleanUpRedundantMirror(
-          original = archivedAccount,
-          originalPath = archivedAccountPath,
-          mirrorParent = nonArchiveParent,
-          mirrorKind = "Non-archive"
-        )
-        restoredAccount <- archivedAccount.update(
-          parent = nonArchiveParent
-        )
-        restoredPath <- restoredAccount.pathString
-        _ <- info:
-          s"Restored $archivedAccountPath to $restoredPath."
+        // Only the writes are transacted, not the prompt above: begin
+        // immediate takes SQLite's write lock immediately, and holding that
+        // open while waiting on stdin would block any other writer for as
+        // long as the prompt sits unanswered.
+        _ <- db.transact:
+          for
+            nonArchiveParent <- archivedAccount.createOrRetrieveMirrorParent(
+              from = archiveSubroot,
+              to = root
+            )
+            _ <- cleanUpRedundantMirror(
+              original = archivedAccount,
+              originalPath = archivedAccountPath,
+              mirrorParent = nonArchiveParent,
+              mirrorKind = "Non-archive"
+            )
+            restoredAccount <- archivedAccount.update(
+              parent = nonArchiveParent
+            )
+            restoredPath <- restoredAccount.pathString
+            _ <- info:
+              s"Restored $archivedAccountPath to $restoredPath."
+          yield ()
       yield ()
 
 // Handles the case where a mirror already exists at `mirrorParent` with the
