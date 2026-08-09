@@ -52,18 +52,9 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # `main` requires signed commits, so anything Claude commits to a PR
-          # branch has to be verifiable or the PR cannot be merged. The default
-          # (`false`) makes plain git CLI commits, which are unsigned; this
-          # routes them through the GitHub API instead.
-          #
-          # Unproven: the action posts to /git/commits without a signature
-          # field, and that endpoint returns an unsigned commit for a user
-          # token. Whether GitHub signs it for a GitHub App installation token
-          # has not been established. If `@claude`'s commits still come back
-          # unverified, the options are an `ssh_signing_key` secret with
-          # `bot_id`/`bot_name` set to an identity whose key is registered, or
-          # dropping the required_signatures rule from the ruleset.
+          # Commits go through the GitHub API, which signs them; `main` requires
+          # signed commits. Rules out merges and rebases — the API builds
+          # single-parent commits.
           use_commit_signing: true
 
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
