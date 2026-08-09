@@ -52,9 +52,6 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # Commits go through the GitHub API, which signs them; `main` requires
-          # signed commits. Rules out merges and rebases — the API builds
-          # single-parent commits.
           use_commit_signing: true
 
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
