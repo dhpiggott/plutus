@@ -46,6 +46,12 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The action refuses to run for a non-User actor, so Claude's own
+          # pushes to a PR branch fail this workflow — and it is a required
+          # check, so the PR then cannot merge until a human pushes. Safe to
+          # allow here because reviewing never pushes, so it cannot cycle;
+          # don't copy this to claude.yml, where Claude does push.
+          allowed_bots: "claude"
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
