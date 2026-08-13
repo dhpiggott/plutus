@@ -4,19 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
-  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR builds, but never a build of main: those are the runs
+  # that populate the caches every other run restores from, and the only ones
+  # that link the native binary.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
+    name: Build
     # macOS only, and not just for the native row: the JVM row's Keychain and
     # sqlite3 bindings are generated against the macOS SDK too, so nothing in
     # this build compiles on Linux.
     runs-on: macos-latest
-    timeout-minutes: 45
+    # Warm runs take about three minutes and the slowest cold one seen took
+    # six, so this is roughly 2.5x the worst case: a genuine cache miss still
+    # finishes, and a hung job is caught in a quarter of an hour rather than
+    # burning most of an hour of macOS runner time.
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
