@@ -53,6 +53,11 @@ jobs:
           # allow here because reviewing never pushes, so it cannot cycle;
           # don't copy this to claude.yml, where Claude does push.
           allowed_bots: "claude"
+          # Supplying a prompt puts the action in automation mode, where
+          # findings go to the run log and never reach the PR — so every review
+          # so far has been written somewhere nobody reads. This forces tag
+          # mode, which posts a tracking comment instead.
+          track_progress: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
