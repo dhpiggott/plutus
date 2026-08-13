@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   build:
+    name: Build and verify (macOS)
     # macOS only, and not just for the native row: the JVM row's Keychain and
     # sqlite3 bindings are generated against the macOS SDK too, so nothing in
     # this build compiles on Linux.
