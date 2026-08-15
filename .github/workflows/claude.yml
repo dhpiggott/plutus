@@ -63,6 +63,10 @@ jobs:
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
+          # Without --model the run takes the account-type default, which for
+          # this seat is Sonnet; local work on this repo is on Opus, and the
+          # asymmetry is invisible from either side.
+          #
           # The action grants no Bash access by default, so without an allowlist
           # Claude cannot run sbt and can only guess whether its changes
           # compile. Everything else it needs (reading, editing, committing) is
@@ -71,5 +75,6 @@ jobs:
           # Compiling both rows is slow even with the caches warm, hence the
           # generous turn budget; timeout-minutes above is the real backstop.
           claude_args: |
+            --model opus
             --max-turns 30
             --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*)"
