@@ -2,7 +2,12 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # No `synchronize`: that fires on every push, so a PR was re-reviewed from
+    # scratch each time it was touched — #6 was reviewed four times. One review
+    # per pull request instead. The cost is that a PR rewritten after its review
+    # keeps a green check describing the old diff; re-request by reopening, or
+    # push a review request by hand, when that matters.
+    types: [opened, ready_for_review, reopened]
 
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
