@@ -3,12 +3,6 @@ name: Claude Code Review
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
 
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
@@ -17,12 +11,6 @@ concurrency:
 jobs:
   claude-review:
     name: Claude review
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     # Linux on purpose: reviewing is read-only, so it needs neither the macOS
     # SDK nor Homebrew nor a JDK, and staying off macOS keeps reviews quick.
     # Whether the PR compiles is the CI workflow's job. Swap in macos-latest
@@ -43,7 +31,6 @@ jobs:
           fetch-depth: 0
 
       - name: Run Claude Code Review
-        id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -61,28 +48,19 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
           additional_permissions: |
             actions: read
 
-          # --max-turns defaults to 10, and the code-review skill fans out into
-          # several agents, so a large diff exhausts the budget mid-review: the
-          # tracking comment freezes with its checklist unticked and the check
-          # still reports success. Seen on #6 (15 files, +1539/-171), while a
-          # one-file PR finished in 34 seconds.
-          #
-          # show_full_output is temporary, to confirm that turns really are what
-          # ends the session — without it the log holds no turns or tool results
-          # at all. Revert it once the answer is in: it writes whole transcripts
-          # into a public repository's logs.
           # `Skill` is not in the action's default tool set, so the one thing
           # this workflow exists to do — invoke code-review:code-review — was
-          # denied on every run since it was written. Claude fell back to
-          # reviewing unaided, which worked on small diffs and died retrying on
-          # large ones. The skill grants its own tools through frontmatter once
-          # it can start, so this should be the only entry needed.
+          # denied on every run from the day it was written until #32. Claude
+          # fell back to reviewing unaided, which read as working on small diffs
+          # and died retrying on large ones. The skill grants its own tools
+          # through frontmatter once it can start.
+          #
+          # 30 turns because the skill fans out into eight parallel finders and
+          # then verifies each against the source; the default 10 is not enough
+          # for that, though it was not what stalled the earlier runs.
           claude_args: |
             --max-turns 30
             --allowedTools "Skill"
-          show_full_output: true
