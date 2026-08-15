@@ -66,6 +66,12 @@ jobs:
           additional_permissions: |
             actions: read
 
+          # The plugin's command already pins Opus for the two bug-hunting
+          # agents and their validators, so --model is about the session that
+          # dispatches them: it decides what survives step 6's filter and
+          # writes the comment. Without it that session is whatever the account
+          # default is, which is Sonnet.
+          #
           # --max-turns defaults to 10, and the code-review skill fans out into
           # several agents, so a large diff exhausts the budget mid-review: the
           # tracking comment freezes with its checklist unticked and the check
@@ -77,5 +83,6 @@ jobs:
           # at all. Revert it once the answer is in: it writes whole transcripts
           # into a public repository's logs.
           claude_args: |
+            --model opus
             --max-turns 30
           show_full_output: true
