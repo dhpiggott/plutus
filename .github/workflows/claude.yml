@@ -10,8 +10,16 @@ on:
   pull_request_review:
     types: [submitted]
 
+# Every mention is a prompt that has to be answered exactly once, so neither
+# end of the queue may be dropped. cancel-in-progress: false protects the
+# running session, which by then has usually pushed commits and posted
+# comments. queue: max protects the waiting one: the default, queue: single,
+# holds at most one pending run and cancels it when a newer one arrives, so
+# mentioning @claude twice while a session is busy loses the first prompt with
+# nothing to show that it was ever asked.
 concurrency:
   group: claude-${{ github.event.issue.number || github.event.pull_request.number || github.ref }}
+  queue: max
   cancel-in-progress: false
 
 jobs:
