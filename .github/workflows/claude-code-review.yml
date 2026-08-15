@@ -76,6 +76,13 @@ jobs:
           # ends the session — without it the log holds no turns or tool results
           # at all. Revert it once the answer is in: it writes whole transcripts
           # into a public repository's logs.
+          # `Skill` is not in the action's default tool set, so the one thing
+          # this workflow exists to do — invoke code-review:code-review — was
+          # denied on every run since it was written. Claude fell back to
+          # reviewing unaided, which worked on small diffs and died retrying on
+          # large ones. The skill grants its own tools through frontmatter once
+          # it can start, so this should be the only entry needed.
           claude_args: |
             --max-turns 30
+            --allowedTools "Skill"
           show_full_output: true
