@@ -56,5 +56,12 @@ jobs:
           # denied on every run from the day it was written until #32. Claude
           # fell back to reviewing unaided, which read as working on small diffs
           # and died retrying on large ones.
+          #
+          # The gh/git reads are what the review kept being denied once Skill
+          # was granted — it wanted the PR body and its diff, and worked around
+          # the refusals rather than failing, so the findings were produced the
+          # hard way. The inline-comment tool is what puts a finding on the line
+          # it is about instead of in one long comment; upstream's
+          # examples/pr-review-comprehensive.yml grants the same set.
           claude_args: |
-            --allowedTools "Skill"
+            --allowedTools "Skill,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git diff:*),Bash(git fetch:*)"
