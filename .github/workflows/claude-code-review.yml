@@ -55,8 +55,7 @@ jobs:
           # this workflow exists to do — invoke code-review:code-review — was
           # denied on every run from the day it was written until #32. Claude
           # fell back to reviewing unaided, which read as working on small diffs
-          # and died retrying on large ones. The skill grants its own tools
-          # through frontmatter once it can start.
+          # and died retrying on large ones.
           #
           # 30 turns because the skill fans out into eight parallel finders and
           # then verifies each against the source; the default 10 is not enough

@@ -14,7 +14,7 @@ When a change touches code, build configuration, or smithy IDL that's reachable 
 sbt 'main3/compile' 'mainNative3/compile'
 ```
 
-There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, `scalafmtSbtCheck`, both of those compiles, and `scalafixAll --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
+There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, `scalafmtSbtCheck`, a bare `compile` (the root project aggregates every row, so this covers both platforms and survives a new module), and `scalafixAll --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
 
 `scalafmtCheckAll` does not cover `build.sbt` or `project/` — those are what `scalafmtSbtCheck` is for, and `.scalafmt.conf` has an `sbt1` `fileOverride` for them.
 
