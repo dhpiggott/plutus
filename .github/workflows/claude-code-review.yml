@@ -16,6 +16,12 @@ concurrency:
 jobs:
   claude-review:
     name: Claude review
+    # A draft opened for review gets one at ready_for_review; reviewing it twice
+    # spends the quota twice. This has to be a job-level `if`, not a narrower
+    # `types:` list — a job skipped by a condition still reports its check,
+    # where a workflow filtered out by its triggers reports nothing at all, and
+    # `Claude review` is a required check.
+    if: '!github.event.pull_request.draft'
     # Linux on purpose: reviewing is read-only, so it needs neither the macOS
     # SDK nor Homebrew nor a JDK, and staying off macOS keeps reviews quick.
     # Whether the PR compiles is the CI workflow's job. Swap in macos-latest
