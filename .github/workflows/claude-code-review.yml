@@ -65,3 +65,17 @@ jobs:
           # or https://code.claude.com/docs/en/cli-reference for available options
           additional_permissions: |
             actions: read
+
+          # --max-turns defaults to 10, and the code-review skill fans out into
+          # several agents, so a large diff exhausts the budget mid-review: the
+          # tracking comment freezes with its checklist unticked and the check
+          # still reports success. Seen on #6 (15 files, +1539/-171), while a
+          # one-file PR finished in 34 seconds.
+          #
+          # show_full_output is temporary, to confirm that turns really are what
+          # ends the session — without it the log holds no turns or tool results
+          # at all. Revert it once the answer is in: it writes whole transcripts
+          # into a public repository's logs.
+          claude_args: |
+            --max-turns 30
+          show_full_output: true
