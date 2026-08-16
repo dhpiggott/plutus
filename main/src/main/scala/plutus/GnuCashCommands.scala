@@ -237,11 +237,12 @@ def importTransactions(
           Error(
             s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
           )
-        // Group every typed account by the asset path its type maps to (the
-        // mapping is type-keyed, so several Monzo accounts can share one
-        // asset account), marking the path retired only once every account
-        // posting to it is closed — a closed account replaced by an open one
-        // of the same type must keep their shared asset account live.
+        // Group every typed account by the asset path its type maps to. The
+        // mapping is type-keyed, so a Monzo account and the account that
+        // replaced it (same type, the old one closed) share one asset
+        // account — which is the point: they are one account in the book's
+        // terms, and splitting them would break a continuous history in two
+        // for a reason that only exists on Monzo's side.
         typedAccountsByAssetPath = byAccount
           .flatMap: (account, _) =>
             account.accountType
@@ -252,10 +253,8 @@ def importTransactions(
           .groupMap((assetPath, _) => assetPath)((_, account) => account)
         allPotAccountIds = byAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
-        materialPotAccountIds = materialByAccount
-          .collect:
-            case (account, _) if isPotBacking(account) => account.id
-          .toSet
+        materialPotAccountIds = materialByAccount.collect:
+          case (account, _) if isPotBacking(account) => account.id
         // The book is the durable home of the account associations: each
         // asset account is tagged with its Monzo account ID(s) in
         // account-level online_id slots, so a book that outlives the state
@@ -277,7 +276,7 @@ def importTransactions(
         // names: it can't be filed into its own account, and a mis-filed row
         // would be permanent — online_id dedup skips it on every later run.
         // One run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialPotAccountIds.toList.filterNot: accountId =>
+        unnamedPots = materialPotAccountIds.filterNot: accountId =>
           taggedPots.contains(accountId) || pots.contains(accountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
@@ -286,7 +285,7 @@ def importTransactions(
         currency <- Commodity.gbp
         // Fail fast on a pot denominated in anything but the book's currency:
         // its minor units would otherwise be posted as if they were pence.
-        foreignPots = materialPotAccountIds.toList.flatMap: accountId =>
+        foreignPots = materialPotAccountIds.flatMap: accountId =>
           pots
             .get(accountId)
             .filterNot(_.currency.value == currency.mnemonic)
@@ -304,6 +303,10 @@ def importTransactions(
           .traverse: (path, accounts) =>
             resolveAssetAccount(
               livePath = path,
+              // Retired only once every account posting here is closed, so a
+              // mix of closed and open is live: while a replacement of the
+              // same type is open, their shared asset account is still in
+              // use and archiving it would hide an account being posted to.
               retired = accounts.forall(_.closed.exists(_.value)),
               taggedById = accounts.map: account =>
                 account.id -> taggedByAccountId(account.id),
@@ -312,14 +315,17 @@ def importTransactions(
           .map(_.toMap)
         // A pot's canonical leaf name is its current Monzo name, so renames
         // propagate. Only pots that are material this run or already known to
-        // the book get resolved; a tagged account with no pot record (say, a
-        // fresh state store) is posted to as-is — the next linking run
-        // enforces it.
+        // the book get resolved; the rest are posted to as-is. `pots` only
+        // holds a backing account whose pot some transfer has named (see
+        // State.potIds), and a tagged account can outlive the state store
+        // that named it — so until a window spanning one of its transfers is
+        // fetched there is no name and no deleted flag to enforce against.
+        // The run that does fetch one records the link and enforces then.
         potAssets <- allPotAccountIds
           .traverse: accountId =>
             pots.get(accountId) match
               case Some(pot)
-                  if materialPotAccountIds(accountId) ||
+                  if materialPotAccountIds.contains(accountId) ||
                     taggedPots.contains(accountId) =>
                 resolveAssetAccount(
                   livePath = assetAccounts.pots :+ pot.name.value,
@@ -419,11 +425,14 @@ def titleCased(category: String): String =
 // hits across the given IDs contradict a shared mapping and fail the run),
 // then at its canonical location — live path or its archived twin — and
 // creates it at the canonical spot otherwise. Placement is then enforced
-// (for a fresh child only the hidden flag can be out of line), and every
-// untagged ID is adopted, so the next run finds the account by identity.
-// Tagging on retrieval also adopts accounts that predate tagging, were
-// created by hand, or were associated by a past GUI import of
-// export-transactions' OFX (which stores the same slot — see Slot.OnlineId).
+// (for a fresh child only the hidden flag can be out of line), and finally
+// every ID not already tagging the account is tagged. That last step is what
+// puts tags in the book at all — an account this run creates carries none —
+// and it is also what gives an identity to one found by location: made by
+// hand, or predating tagging, or tagged by only some of a shared type's IDs.
+// An account a past GUI import of export-transactions' OFX associated
+// already carries this slot (see Slot.OnlineId), so it is found by tag
+// without needing any of it.
 // taggedById is the caller's prefetched tag lookup (see taggedByAccountId in
 // importTransactions), keyed by every Monzo account ID that posts here.
 def resolveAssetAccount(
