@@ -28,12 +28,21 @@ jobs:
     # plus the ./.github/actions/setup-build step to let the reviewer build.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # This block scopes `${{ github.token }}`, and only `actions/checkout` uses
+    # that token — so the two load-bearing lines are `contents: read` and
+    # `id-token: write`, the latter being what lets the job mint the OIDC token
+    # the action trades for an app token. Claude reaches GitHub through that app
+    # token, whose permissions the action hardcodes as contents/pull_requests/
+    # issues write regardless of what is written here. So `pull-requests: read`
+    # does not stop the review posting inline comments — it did, on the #40
+    # probe — and raising it to write would grant nothing. Read-only is the
+    # point: a step that goes wrong cannot write with this token.
     permissions:
       contents: read
       pull-requests: read
       issues: read
       id-token: write
-      actions: read # Lets the review read this PR's CI results
+      actions: read
 
     steps:
       - name: Checkout repository
@@ -58,7 +67,16 @@ jobs:
           track_progress: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # `--comment` is the skill's own instruction to post findings as
+          # inline comments, and is what the install-github-app template ships.
+          # Without it the reviewer still commented (verified on the #40 probe,
+          # because the tool below is allowlisted) but only because it elected
+          # to; this asks for it outright.
+          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # This, not the `actions: read` in `permissions:` above, is what lets
+          # the review read this PR's CI results: the action parses this string
+          # and asks the token exchange for it, on top of the write permissions
+          # it always requests.
           additional_permissions: |
             actions: read
 
