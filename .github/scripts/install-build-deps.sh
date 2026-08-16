@@ -15,18 +15,8 @@ set -euo pipefail
 # what sbt-vcpkg-native shells out to when it builds sqlite3 from source.
 packages=(llvm@17 s2n cmake ninja pkg-config)
 
-missing=()
-for package in "${packages[@]}"; do
-  brew list --versions "$package" >/dev/null 2>&1 || missing+=("$package")
-done
-
-if [ ${#missing[@]} -gt 0 ]; then
-  echo "Installing: ${missing[*]}"
-  HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
-    brew install "${missing[@]}"
-else
-  echo "All Homebrew build dependencies already installed: ${packages[*]}"
-fi
+HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+  brew install "${packages[@]}"
 
 # Both FFI toolchains generate their headers against the SDK path this prints,
 # so a runner without the command line tools has to fail here rather than

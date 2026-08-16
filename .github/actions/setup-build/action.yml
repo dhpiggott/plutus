@@ -1,7 +1,7 @@
 name: Set up the Plutus build
 description: >-
   Installs the JDK, sbt and Homebrew packages the build needs on a macOS runner,
-  and restores the caches that keep a cold build from taking twenty minutes.
+  and restores the caches a cold build would otherwise rebuild from scratch.
 
 runs:
   using: composite
@@ -46,9 +46,13 @@ runs:
 
     # sbt-jextract downloads a ~150MB jextract distribution from
     # download.java.net into the build's stream cache. The version is pinned by
-    # the plugin, so plugins.sbt is the right thing to key on.
+    # the plugin, so plugins.sbt is the right thing to key on — but any of the
+    # dozen plugins pinned there changes the hash, so restore-keys keeps an
+    # unrelated bump from forcing the download again.
     - name: Cache the jextract distribution
       uses: actions/cache@v6
       with:
         path: target/streams/_build/_global/jextractBinary
         key: jextract-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('project/plugins.sbt') }}
+        restore-keys: |
+          jextract-${{ runner.os }}-${{ runner.arch }}-
