@@ -2,7 +2,12 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
+    # No `synchronize`: that fires on every push, so a PR was re-reviewed from
+    # scratch each time it was touched — #6 was reviewed four times. One review
+    # per pull request instead. The cost is that a PR rewritten after its review
+    # keeps a green check describing the old diff; re-request by reopening, or
+    # push a review request by hand, when that matters.
+    types: [opened, ready_for_review, reopened]
 
 concurrency:
   group: claude-review-${{ github.event.pull_request.number }}
@@ -11,6 +16,12 @@ concurrency:
 jobs:
   claude-review:
     name: Claude review
+    # A draft opened for review gets one at ready_for_review; reviewing it twice
+    # spends the quota twice. This has to be a job-level `if`, not a narrower
+    # `types:` list — a job skipped by a condition still reports its check,
+    # where a workflow filtered out by its triggers reports nothing at all, and
+    # `Claude review` is a required check.
+    if: '!github.event.pull_request.draft'
     # Linux on purpose: reviewing is read-only, so it needs neither the macOS
     # SDK nor Homebrew nor a JDK, and staying off macOS keeps reviews quick.
     # Whether the PR compiles is the CI workflow's job. Swap in macos-latest
@@ -57,4 +68,4 @@ jobs:
           # fell back to reviewing unaided, which read as working on small diffs
           # and died retrying on large ones.
           claude_args: |
-            --allowedTools "Skill"
+            --allowedTools "Skill,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*)"
