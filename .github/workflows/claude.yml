@@ -34,12 +34,26 @@ jobs:
     # its FFI bindings against the macOS SDK, so nothing here compiles on Linux.
     runs-on: macos-latest
     timeout-minutes: 60
+    # These scope `${{ github.token }}`, and Claude does not work through it:
+    # the action puts the app token from the OIDC exchange into both
+    # GITHUB_TOKEN and GH_TOKEN in Claude's environment, and hardcodes that
+    # token's permissions as contents/pull_requests/issues write whatever is
+    # written here. Editing files goes through `mcp__github_file_ops__commit_files`,
+    # which is Octokit against that same token — which is also how
+    # `use_commit_signing` below gets GitHub to sign what Claude pushes.
+    #
+    # `contents: read` is the deliberate one. `actions/checkout` persists this
+    # token into `.git/config`, so it is what a raw `git push` from the
+    # allowlisted `Bash(git:*)` would authenticate with. That path is not
+    # wanted — it bypasses the signing above, and the ruleset on `main` rejects
+    # unsigned commits — so read makes it fail loudly rather than quietly
+    # produce commits that cannot merge.
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
+      contents: read
+      pull-requests: read
+      issues: read
       id-token: write
-      actions: read # Required for Claude to read CI results on PRs
+      actions: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -56,6 +70,10 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
+          # This, not the `actions: read` in `permissions:` above, is what lets
+          # Claude read CI results on PRs: the action parses this string and
+          # asks the token exchange for it, on top of the write permissions it
+          # always requests.
           additional_permissions: |
             actions: read
 
