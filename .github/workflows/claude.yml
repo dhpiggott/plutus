@@ -78,13 +78,16 @@ jobs:
           # compile. Everything else it needs (reading, editing, committing) is
           # on by default.
           #
-          # 30 turns was not generous. A session on #33 spent them actioning
-          # review comments, opening two issues and editing the PR body, then
-          # hit the cap while verify.sh was still running — so it died before
-          # committing and every code change it had made was thrown away. Turns
-          # are a poor budget when one of them can be a four-minute build, and
-          # timeout-minutes above bounds the real cost either way.
+          # No --max-turns, deliberately: the flag has no default, so omitting
+          # it leaves turns unbounded. 30 was not generous — a session on #33
+          # spent them actioning review comments, opening two issues and
+          # editing the PR body, then hit the cap while verify.sh was still
+          # running, so it died before committing and every code change it had
+          # made was thrown away. #37 raised it to 200, but a bigger number only
+          # moves that cliff; the failure mode is the same and it always bites
+          # late, because committing is the last thing to happen. Turns are a
+          # poor budget when one of them can be a four-minute build, and
+          # timeout-minutes above bounds the real cost.
           claude_args: |
             --model opus
-            --max-turns 200
             --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*)"
