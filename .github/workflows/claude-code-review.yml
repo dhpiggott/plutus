@@ -56,21 +56,5 @@ jobs:
           # denied on every run from the day it was written until #32. Claude
           # fell back to reviewing unaided, which read as working on small diffs
           # and died retrying on large ones.
-          #
-          # No --max-turns, deliberately. The flag has no default anywhere in
-          # the chain — the action leaves it undefined, the SDK forwards it only
-          # when set, and the CLI's loop only checks a limit that exists — so
-          # omitting it leaves turns unbounded. #27 added 30 believing the
-          # default was 10 and that the default had truncated the review on #6,
-          # but this workflow had no claude_args at all until #27, so that run
-          # was already unbounded and the denial above is what stopped it.
-          #
-          # Any number here is a cliff rather than a budget. The review of #6
-          # that succeeded once Skill was allowed took 22 turns (run
-          # 31893928695, 16 minutes) against the 30, so a diff half again as
-          # large would have failed the required check for reasons unrelated to
-          # the code — loudly, since hitting the cap ends the run as
-          # error_max_turns, which the action reports as a failure.
-          # timeout-minutes above is the bound that actually matters.
           claude_args: |
             --allowedTools "Skill"
