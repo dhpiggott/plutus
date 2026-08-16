@@ -66,16 +66,24 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # --max-turns defaults to 10, and the code-review skill fans out into
-          # several agents, so a large diff exhausts the budget mid-review: the
-          # tracking comment freezes with its checklist unticked and the check
-          # still reports success. Seen on #6 (15 files, +1539/-171), while a
-          # one-file PR finished in 34 seconds.
+          # --max-turns has no default: leave it out and turns are unbounded.
+          # The action passes it through only when set, and the CLI's loop only
+          # checks a limit that exists. #27 set 30 here believing the default
+          # was 10 and that the default had truncated the review on #6 — but
+          # this workflow had no claude_args at all until #27, so that run was
+          # already unbounded and turns cannot have been what stopped it. The
+          # Skill denial fixed in #32 was.
           #
-          # show_full_output is temporary, to confirm that turns really are what
-          # ends the session — without it the log holds no turns or tool results
-          # at all. Revert it once the answer is in: it writes whole transcripts
-          # into a public repository's logs.
+          # 200, matching claude.yml, because turns are a poor proxy for cost:
+          # the review of #6 that succeeded once Skill was allowed took 22 of
+          # the 30 (run 31893928695, 16 minutes), so a diff half again as large
+          # would fail the required check for reasons unrelated to the code.
+          # Hitting the cap ends the run as error_max_turns, which the action
+          # reports as a failure, so this is not a silent truncation — it is a
+          # red check on a review that was working. timeout-minutes above is
+          # the bound that actually matters; 200 is only a runaway backstop,
+          # unreachable at the observed turn rate inside 30 minutes.
+          #
           # `Skill` is not in the action's default tool set, so the one thing
           # this workflow exists to do — invoke code-review:code-review — was
           # denied on every run since it was written. Claude fell back to
@@ -83,6 +91,5 @@ jobs:
           # large ones. The skill grants its own tools through frontmatter once
           # it can start, so this should be the only entry needed.
           claude_args: |
-            --max-turns 30
+            --max-turns 200
             --allowedTools "Skill"
-          show_full_output: true
