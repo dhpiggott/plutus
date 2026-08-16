@@ -67,7 +67,12 @@ jobs:
           track_progress: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # `--comment` is the skill's own instruction to post findings as
+          # inline comments, and is what the install-github-app template ships.
+          # Without it the reviewer still commented (verified on the #40 probe,
+          # because the tool below is allowlisted) but only because it elected
+          # to; this asks for it outright.
+          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # This, not the `actions: read` in `permissions:` above, is what lets
           # the review read this PR's CI results: the action parses this string
           # and asks the token exchange for it, on top of the write permissions
