@@ -67,12 +67,18 @@ jobs:
           track_progress: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # `--comment` is the skill's own instruction to post findings as
-          # inline comments, and is what the install-github-app template ships.
-          # Without it the reviewer still commented (verified on the #40 probe,
-          # because the tool below is allowlisted) but only because it elected
-          # to; this asks for it outright.
-          prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # No `--comment`, despite it being what the install-github-app
+          # template ships and being the skill's own instruction to post
+          # findings inline. It made the reviewer worse, not better: with it,
+          # the skill plans a fan-out of parallel review agents, and `Task` is
+          # not in the tool set the action assembles (see the allowlist below —
+          # the same gap that hid the `Skill` denial until #32). #43 spent 20
+          # turns and $1.33 collecting 10 permission denials, then finished
+          # green having posted nothing at all. Without the flag the reviewer
+          # takes the single-agent path and comments inline anyway, because the
+          # tool is allowlisted — 36s and one good line comment on #40.
+          # Re-adding this means adding `Task` too, and verifying on a probe.
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # This, not the `actions: read` in `permissions:` above, is what lets
           # the review read this PR's CI results: the action parses this string
           # and asks the token exchange for it, on top of the write permissions
