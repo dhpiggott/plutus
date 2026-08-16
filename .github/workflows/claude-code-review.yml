@@ -67,11 +67,12 @@ jobs:
           track_progress: true
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          # `--comment` is the skill's own instruction to post findings as
-          # inline comments, and is what the install-github-app template ships.
-          # Without it the reviewer still commented (verified on the #40 probe,
-          # because the tool below is allowlisted) but only because it elected
-          # to; this asks for it outright.
+          # `--comment` is load-bearing, not a nicety. The skill's step 7 reads
+          # "If `--comment` argument was NOT provided, stop here. Do not post
+          # any GitHub comments" — so without it a review that finds something
+          # is instructed to keep it to itself. The #40 probe posted a comment
+          # without the flag only because that run did not follow the skill's
+          # protocol; that is luck, not configuration.
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
           # This, not the `actions: read` in `permissions:` above, is what lets
           # the review read this PR's CI results: the action parses this string
@@ -80,10 +81,14 @@ jobs:
           additional_permissions: |
             actions: read
 
-          # `Skill` is not in the action's default tool set, so the one thing
-          # this workflow exists to do — invoke code-review:code-review — was
-          # denied on every run from the day it was written until #32. Claude
-          # fell back to reviewing unaided, which read as working on small diffs
-          # and died retrying on large ones.
+          # The action's tool set is narrower than the skill assumes, and every
+          # gap fails the same silent-and-green way. `Skill` was missing until
+          # #32, which denied the review outright. `Task` was missing until
+          # #45, and the skill is agents all the way down — a haiku eligibility
+          # check, a sonnet summariser, four parallel reviewers, then a
+          # validator per finding — so #43 planned the fan-out, collected ten
+          # permission denials, and reported success having posted nothing.
+          # `gh pr comment` is the skill's step-7 path for the no-issues-found
+          # summary; the inline tool covers the issues-found path.
           claude_args: |
-            --allowedTools "Skill,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*)"
+            --allowedTools "Skill,Task,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
