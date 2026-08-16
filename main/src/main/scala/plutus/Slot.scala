@@ -27,7 +27,7 @@ object Slot:
 
   // GnuCash stores a counter (e.g. the "next invoice number" book option) as an
   // INT64 slot rather than a STRING one.
-  val SlotTypeInt64: Long = 4
+  val SlotTypeInt64: Long = 1
 
   def int64Slot(objGuid: String, name: String, value: Long): Slot =
     Slot(
