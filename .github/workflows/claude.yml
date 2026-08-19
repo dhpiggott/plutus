@@ -84,6 +84,38 @@ jobs:
           bot_id: "209825114"
           bot_name: "claude[bot]"
 
+          # Installed, never invoked on its own: this workflow has no `prompt`,
+          # so it takes its instructions from the comment that mentioned
+          # Claude, and all these two lines do is put the review skill within
+          # reach of one. `@claude full review` is the short form: CLAUDE.md
+          # maps that phrasing onto the full invocation, so the skill and its
+          # mandatory `--comment` don't have to be typed out. Spelling it in
+          # full still works:
+          #
+          #   @claude /code-review:code-review --comment ${{ github.repository }}/pull/<N>
+          #
+          # `--comment` is load-bearing rather than decorative. The skill's
+          # step 7 reads "If `--comment` argument was NOT provided, stop here.
+          # Do not post any GitHub comments", so without it a review that finds
+          # something is instructed to keep it to itself.
+          #
+          # The skill is agents all the way down — a haiku eligibility check, a
+          # haiku CLAUDE.md-path lister, a sonnet summariser, four parallel
+          # reviewers (two sonnet on CLAUDE.md compliance, two opus on bugs),
+          # then a validator subagent per finding — so it needs `Skill` and
+          # `Task`, and the action grants neither. That is what killed the
+          # review workflow this repo used to have. It works here only because
+          # of `--permission-mode auto` below, which sends both to the
+          # classifier rather than to the floor.
+          #
+          # Two of the four reviewers exist to check CLAUDE.md compliance,
+          # which is the real argument for the skill over an unaided review in
+          # this repo: rules like the sn-bindgen system-header workaround or
+          # `nativeConfig ~=` having to append are quotable, and quotable is
+          # exactly what the skill tells its agents to require.
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+
           # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
           # prompt: 'Update the pull request description to include a summary of changes.'
 
