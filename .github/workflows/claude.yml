@@ -94,14 +94,15 @@ jobs:
           # `--permission-mode auto` is what keeps the allowlist this short.
           # The action sets `acceptEdits` and runs headless, and headless has
           # no prompt to fall back on, so under that mode every tool call the
-          # allowlist did not name was denied outright — which is how this repo
-          # spent months on a reviewer that could not invoke its own review
-          # skill. Under auto mode the unnamed calls go to the classifier
-          # instead of the floor, so `sbt`, `git`, `gh`, `verify.sh` and the
-          # `brew list` / `xcrun --show-sdk-path` diagnostics are all still
-          # reachable, on the merits, without being enumerated here. This
-          # relies on our args being appended after the action's own
-          # `--permission-mode`, so last flag wins.
+          # allowlist did not name was denied outright, and greenly. That is
+          # how the review workflow this replaces went from 26 July to #32 on
+          # 15 August unable to invoke its own review skill: every run of it
+          # wasted, none of them failing. Under auto mode the unnamed calls go
+          # to the classifier instead of the floor, so `sbt`, `git`, `gh`,
+          # `verify.sh` and the `brew list` / `xcrun --show-sdk-path`
+          # diagnostics are all still reachable, on the merits, without being
+          # enumerated here. This relies on our args being appended after the
+          # action's own `--permission-mode`, so last flag wins.
           #
           # What that does not cover, and why one entry survives: listing an
           # `mcp__github_*` tool is not only a permission, it is what
