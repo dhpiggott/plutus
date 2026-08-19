@@ -321,6 +321,7 @@ def importTransactions(
               // account that replaced it goes on being posted to.
               retired = account.closed.exists(_.value),
               monzoAccountId = account.id,
+              description = assetAccountDescription(account),
               tagged = taggedByMonzoAccountId(account.id),
               adoptUnsuffixed = !contestedPaths.contains(path),
               dryRun = dryRun
@@ -346,6 +347,7 @@ def importTransactions(
                   livePath = assetAccounts.pots :+ pot.name.value,
                   retired = pot.deleted.value,
                   monzoAccountId = monzoAccountId,
+                  description = potAssetAccountDescription(pot, monzoAccountId),
                   tagged = taggedByMonzoAccountId(monzoAccountId),
                   adoptUnsuffixed = !contestedPaths.contains(
                     assetAccounts.pots :+ pot.name.value
@@ -491,6 +493,24 @@ def assetAccountPath(
 def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
   monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
 
+// The description every Monzo-backed asset account carries, naming in Monzo's
+// own terms what posts into it. The name can't do that job: its copy of the
+// account ID is cosmetic and lossy (see monzoAccountIdLabel), and a pot's is
+// whatever the pot is called today. Without this the exact IDs would appear
+// nowhere the GnuCash GUI shows, the online_id tag being a KVP slot.
+// Deliberately identifiers alone, so that unlike the name it can't go stale:
+// a rename on the Monzo side changes nothing here, so enforcing it writes
+// once and matches on every run after.
+def assetAccountDescription(account: monzo.Account): String =
+  account.accountType.fold(s"Monzo account ${account.id.value}"): accountType =>
+    s"Monzo ${accountType.value} account ${account.id.value}"
+
+def potAssetAccountDescription(
+    pot: monzo.Pot,
+    monzoAccountId: monzo.AccountId
+): String =
+  s"Monzo pot ${pot.id.value} (backing account ${monzoAccountId.value})"
+
 // One resolver for every Monzo-backed asset account. Finds the account by its
 // online_id tag first (identity survives moves and renames), then at its
 // canonical location — live path or its archived twin — and, when the caller
@@ -509,6 +529,7 @@ def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
     monzoAccountId: monzo.AccountId,
+    description: String,
     tagged: Option[Account],
     adoptUnsuffixed: Boolean,
     dryRun: Boolean
@@ -525,11 +546,23 @@ def resolveAssetAccount(
           unsuffixedPaths).collectFirstSomeM(Account.atPath)
     account <- located match
       case Some(account) =>
-        enforcePlacement(account, canonicalPath, retired, dryRun)
+        enforcePlacement(
+          account,
+          canonicalPath,
+          retired,
+          description,
+          dryRun
+        )
       case None =>
         for
           parent <- parentFor(canonicalPath.init, retired, dryRun)
-          child <- createOrRetrieveChild(parent, canonicalPath.last, dryRun)
+          // Born described, so the alignment below has nothing to do.
+          child <- createOrRetrieveChild(
+            parent,
+            canonicalPath.last,
+            dryRun,
+            description = Some(description)
+          )
           placed <- alignHidden(child, retired, canonicalPath, dryRun)
         yield placed
     _ <- IO.unlessA(dryRun || tagged.isDefined):
@@ -574,6 +607,29 @@ def alignHidden(
       .flatTap: _ =>
         info(s"${if hidden then "Hid" else "Unhid"} $label.")
 
+// The description tracks the Monzo identifiers behind the account, aligned
+// like hidden. This is where an adopted account gets one: an account created
+// here is born described (see resolveAssetAccount), but one found at a
+// canonical or un-suffixed path, or one a past GUI import of the exported OFX
+// tagged, predates us and carries whatever it carried. Written only when it
+// differs, so the run after the first touches nothing and says nothing.
+def alignDescription(
+    account: Account,
+    description: String,
+    livePath: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  if account.description.contains(description) then IO.pure(account)
+  else if dryRun then
+    info(s"Would describe $label as \"$description\".").as(account)
+  else
+    account
+      .updateDescription(description)
+      .flatTap: _ =>
+        info(s"Described $label as \"$description\".")
+
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
   val canonical =
@@ -585,16 +641,18 @@ def canonicalPathString(livePath: List[String], retired: Boolean): String =
 // live, and the same path nested under the Archive subroot once retired (a
 // closed account, a deleted pot); its name is the path's leaf — for pots, the
 // pot's current Monzo name — with the Monzo account ID appended (see
-// assetAccountPath); and hidden tracks retirement. All of it is
-// enforced in both directions on every run — un-archiving, un-hiding and
-// renaming included — so a hand-move lasts only until the next import. A
-// *different* account already occupying the canonical spot fails the run:
-// merging or deleting it could orphan its transactions, so the user resolves
-// that collision by hand.
+// assetAccountPath); its description names the Monzo account or pot behind it
+// (see assetAccountDescription); and hidden tracks retirement. All of it is
+// enforced in both directions on every run — un-archiving, un-hiding,
+// renaming and re-describing included — so a hand-move lasts only until the
+// next import. A *different* account already occupying the canonical spot
+// fails the run: merging or deleting it could orphan its transactions, so the
+// user resolves that collision by hand.
 def enforcePlacement(
     account: Account,
     livePath: List[String],
     retired: Boolean,
+    description: String,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val name = livePath.last
@@ -622,7 +680,14 @@ def enforcePlacement(
                   info(s"Moved $accountPath to $targetPath.")
         yield moved
     aligned <- alignHidden(placed, retired, livePath, dryRun)
-  yield aligned
+    described <- alignDescription(
+      aligned,
+      description,
+      livePath,
+      retired,
+      dryRun
+    )
+  yield described
 
 // The canonical parent for a retired account: the live parent chain nested
 // under the Archive subroot, created on demand — each missing segment as a
@@ -699,7 +764,8 @@ def createOrRetrieveChild(
     name: String,
     dryRun: Boolean,
     placeholder: Boolean = false,
-    template: Option[Account] = None
+    template: Option[Account] = None,
+    description: Option[String] = None
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   parent
     .child(name)
@@ -716,7 +782,7 @@ def createOrRetrieveChild(
               name = name,
               parentGuid = Some(parent.guid),
               code = None,
-              description = None,
+              description = description,
               hidden = false,
               placeholder = placeholder
             )
