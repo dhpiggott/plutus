@@ -14,6 +14,11 @@ package plutus
 // by tag rather than name. A backing account the book doesn't know and no
 // recorded link names fails the run rather than being mis-filed — mis-filings
 // would be permanent, because online_id dedup skips the rows on every re-run.
+// The paths below name only the shared part: every asset account's leaf name
+// also carries the Monzo account ID posting into it (see
+// GnuCashCommands.assetAccountPath), so accounts that share a type — a closed
+// account and its replacement — and pots that share a name each get one of
+// their own, and a book account shared by two Monzo accounts fails the run.
 final case class AssetAccounts(
     byAccountType: Map[String, List[String]],
     pots: List[String]
