@@ -87,7 +87,10 @@ jobs:
           # Installed, never invoked on its own: this workflow has no `prompt`,
           # so it takes its instructions from the comment that mentioned
           # Claude, and all these two lines do is put the review skill within
-          # reach of one. Ask for it by name:
+          # reach of one. `@claude full review` is the short form: CLAUDE.md
+          # maps that phrasing onto the full invocation, so the skill and its
+          # mandatory `--comment` don't have to be typed out. Spelling it in
+          # full still works:
           #
           #   @claude /code-review:code-review --comment ${{ github.repository }}/pull/<N>
           #
