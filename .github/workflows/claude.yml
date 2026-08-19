@@ -96,6 +96,17 @@ jobs:
           # compile. Everything else it needs (reading, editing, committing) is
           # on by default.
           #
+          # `brew list` and `xcrun` are diagnostic, not build steps: the build
+          # reaches both by itself, `build.sbt` shelling out to
+          # `xcrun --show-sdk-path` and setup-build running `brew install`, and
+          # neither needs a grant to do that. They are here because this repo's
+          # two worst build failures are silent ones. A missing `llvm@17` makes
+          # sn-bindgen abort with exit 134 and no diagnostic, and an SDK path
+          # that doesn't resolve yields empty bindings rather than an error, so
+          # `brew list` and `xcrun --show-sdk-path` are how those two get told
+          # apart from an ordinary compile error. Note `brew list` and not
+          # `brew` — installing is setup-build's job, not Claude's.
+          #
           # The inline-comment entry is what makes "@claude review this" leave
           # findings on the lines they concern rather than as one wall of prose
           # in the thread. Listing it does two jobs: the action's
