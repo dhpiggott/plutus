@@ -95,6 +95,14 @@ jobs:
           # Claude cannot run sbt and can only guess whether its changes
           # compile. Everything else it needs (reading, editing, committing) is
           # on by default.
+          #
+          # The inline-comment entry is what makes "@claude review this" leave
+          # findings on the lines they concern rather than as one wall of prose
+          # in the thread. Listing it does two jobs: the action's
+          # install-mcp-server.ts only starts the github_inline_comment MCP
+          # server when something matching that prefix appears in the
+          # allowlist, so without it the tool is not merely denied, it does not
+          # exist.
           claude_args: |
             --model opus
-            --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*)"
+            --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*),mcp__github_inline_comment__create_inline_comment"
