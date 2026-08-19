@@ -91,10 +91,32 @@ jobs:
           # this seat is Sonnet; local work on this repo is on Opus, and the
           # asymmetry is invisible from either side.
           #
-          # The action grants no Bash access by default, so without an allowlist
-          # Claude cannot run sbt and can only guess whether its changes
-          # compile. Everything else it needs (reading, editing, committing) is
-          # on by default.
+          # `--permission-mode auto` is what keeps the allowlist this short.
+          # The action sets `acceptEdits` and runs headless, and headless has
+          # no prompt to fall back on, so under that mode every tool call the
+          # allowlist did not name was denied outright, and greenly. That is
+          # how the review workflow this replaces went from 26 July to #32 on
+          # 15 August unable to invoke its own review skill: every run of it
+          # wasted, none of them failing. Under auto mode the unnamed calls go
+          # to the classifier instead of the floor, so `sbt`, `git`, `gh`,
+          # `verify.sh` and the `brew list` / `xcrun --show-sdk-path`
+          # diagnostics are all still reachable, on the merits, without being
+          # enumerated here. This relies on our args being appended after the
+          # action's own `--permission-mode`, so last flag wins.
+          #
+          # What that does not cover, and why one entry survives: listing an
+          # `mcp__github_*` tool is not only a permission, it is what
+          # provisions the server. install-mcp-server.ts starts
+          # github_inline_comment only when something matching that prefix
+          # appears in the allowlist, so dropping it would not leave the tool
+          # to the classifier — the tool would not exist. It is what makes
+          # "@claude review this" land on the lines it concerns.
+          #
+          # Auto mode reshapes the silent failure rather than removing it: a
+          # classifier block in a headless run has nothing to fall back to, so
+          # the action simply does not run and Claude carries on to a green
+          # job. `permission_denials_count` in the run log stays the tell.
           claude_args: |
             --model opus
-            --allowedTools "Bash(.github/scripts/verify.sh),Bash(sbt:*),Bash(git:*),Bash(gh:*),Bash(brew list:*),Bash(xcrun:*)"
+            --permission-mode auto
+            --allowedTools "mcp__github_inline_comment__create_inline_comment"
