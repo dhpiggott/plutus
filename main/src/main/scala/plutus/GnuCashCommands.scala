@@ -7,6 +7,7 @@ import cue4s.*
 import porcupine.*
 
 import java.time.Instant
+import java.util.Locale
 import scala.collection.immutable.SortedMap
 
 lazy val gnucashOpts: Opts[IO[Unit]] = Opts.subcommand(
@@ -361,13 +362,15 @@ def importTransactions(
         // One book account per Monzo account, checked rather than assumed.
         // Names carry the Monzo account ID and a contested un-suffixed path
         // is adopted by nobody, so two Monzo accounts can only land on one
-        // book account if the book itself says they do: an online_id tag
-        // added by hand to an account another one already answers to. Sharing
-        // an account would commingle two Monzo accounts' rows permanently —
-        // online_id dedup skips them on every later run — so the run fails
-        // instead. Resolution creates, moves and renames accounts but files
-        // nothing, and the whole run is one transaction (a dry run writes
-        // nothing at all), so failing here leaves the book unimported.
+        // book account if the book itself says they do — an online_id tag
+        // added by hand to an account another one already answers to — or if
+        // their IDs differ only in case, which the name folds together (see
+        // monzoAccountIdLabel). Sharing an account would commingle two Monzo
+        // accounts' rows permanently — online_id dedup skips them on every
+        // later run — so the run fails instead. Resolution creates, moves and
+        // renames accounts but files nothing, and the whole run is one
+        // transaction (a dry run writes nothing at all), so failing here
+        // leaves the book unimported.
         overloaded = assets.toList
           .groupBy((_, account) => account.guid)
           .values
@@ -461,18 +464,32 @@ def titleCased(category: String): String =
 
 // The canonical path of the asset account a Monzo account posts into: the
 // code-defined path with that account's Monzo ID in the leaf name. The ID is
-// there so no two Monzo accounts can ever contend for one account — the
-// type-keyed map gives a closed account and the one that replaced it the same
-// path, and two pots may share a name — because a shared account is a
-// permanent commingling: online_id dedup skips its rows on every later run,
-// and nothing in the book then says which Monzo account a row came from. It
-// also puts the identity the resolver matches on (the online_id tag) in plain
-// sight in GnuCash's account tree.
+// there so no two Monzo accounts contend for one account — the type-keyed map
+// gives a closed account and the one that replaced it the same path, and two
+// pots may share a name — because a shared account is a permanent
+// commingling: online_id dedup skips its rows on every later run, and nothing
+// in the book then says which Monzo account a row came from. It also puts the
+// identity the resolver matches on (the online_id tag) in plain sight in
+// GnuCash's account tree.
 def assetAccountPath(
     livePath: List[String],
     monzoAccountId: monzo.AccountId
 ): List[String] =
-  livePath.init :+ s"${livePath.last} (${monzoAccountId.value})"
+  livePath.init :+ s"${livePath.last} (${monzoAccountIdLabel(monzoAccountId)})"
+
+// The Monzo account ID as it reads in an account name: acc_ dropped, since
+// every account named this way is a Monzo account and the prefix tells a
+// reader nothing, and the rest upper-cased, so it sits among account names
+// the way a sort code or an account number does rather than as a stretch of
+// mixed-case noise. Purely cosmetic: the identity the resolver matches on is
+// the raw ID in the online_id tag, so nothing needs the ID back out of a
+// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but two IDs
+// differing only in case would land on one book account, and the run fails
+// there rather than commingling them. Locale.ROOT because a Turkish-locale
+// machine upper-cases i to İ, which would give one account two different
+// canonical names on two machines.
+def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
+  monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
 
 // One resolver for every Monzo-backed asset account. Finds the account by its
 // online_id tag first (identity survives moves and renames), then at its
