@@ -25,6 +25,20 @@ object Slot:
       int64Val = None
     )
 
+  // GnuCash stores a counter (e.g. the "next invoice number" book option) as
+  // an INT64 slot rather than a STRING one.
+  val SlotTypeInt64: Long = 4
+
+  def int64Slot(objGuid: String, name: String, value: Long): Slot =
+    Slot(
+      objGuid,
+      name,
+      SlotTypeInt64,
+      stringVal = None,
+      int64Val = Some(value)
+    )
+
+  // Deletes every slot for the object.
   def deleteAll(objGuid: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""
