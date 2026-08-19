@@ -249,9 +249,9 @@ def importTransactions(
               assetAccounts.byAccountType.get(accountType.value)
             .map: assetPath =>
               (account, assetPath)
-        allPotAccountIds = byAccount.collect:
+        allPotMonzoAccountIds = byAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
-        materialPotAccountIds = materialByAccount.collect:
+        materialPotMonzoAccountIds = materialByAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
         // The book is the durable home of the account associations: each
         // asset account is tagged with the Monzo account ID that posts into
@@ -259,23 +259,23 @@ def importTransactions(
         // state store (say, moved to a new machine) still resolves by tag.
         // Looked up once per ID here — bySlot scans the whole slots table, so
         // the fail-fasts and the resolver share this one prefetch.
-        taggedByAccountId <- (typedAccountsAndPaths
-          .map((account, _) => account.id) ++ allPotAccountIds)
-          .traverse: accountId =>
+        taggedByMonzoAccountId <- (typedAccountsAndPaths
+          .map((account, _) => account.id) ++ allPotMonzoAccountIds)
+          .traverse: monzoAccountId =>
             Account
-              .bySlot(Slot.OnlineId, accountId.value)
-              .map(accountId -> _)
+              .bySlot(Slot.OnlineId, monzoAccountId.value)
+              .map(monzoAccountId -> _)
           .map(_.toMap)
-        taggedPots = allPotAccountIds
-          .flatMap: accountId =>
-            taggedByAccountId(accountId).map(accountId -> _)
+        taggedPots = allPotMonzoAccountIds
+          .flatMap: monzoAccountId =>
+            taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
           .toMap
         // Fail fast on a pot the book doesn't know and no recorded link
         // names: it can't be filed into its own account, and a mis-filed row
         // would be permanent — online_id dedup skips it on every later run.
         // One run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialPotAccountIds.filterNot: accountId =>
-          taggedPots.contains(accountId) || pots.contains(accountId)
+        unnamedPots = materialPotMonzoAccountIds.filterNot: monzoAccountId =>
+          taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
             s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
@@ -283,9 +283,9 @@ def importTransactions(
         currency <- Commodity.gbp
         // Fail fast on a pot denominated in anything but the book's currency:
         // its minor units would otherwise be posted as if they were pence.
-        foreignPots = materialPotAccountIds.flatMap: accountId =>
+        foreignPots = materialPotMonzoAccountIds.flatMap: monzoAccountId =>
           pots
-            .get(accountId)
+            .get(monzoAccountId)
             .filterNot(_.currency.value == currency.mnemonic)
             .map: pot =>
               s"${pot.name.value} (${pot.currency.value})"
@@ -300,7 +300,7 @@ def importTransactions(
         // history the account holds, and whichever resolved first would take
         // it, so neither does and each gets an account of its own.
         contestedPaths = (typedAccountsAndPaths.map((_, path) => path) ++
-          allPotAccountIds
+          allPotMonzoAccountIds
             .flatMap(pots.get)
             .map(pot => assetAccounts.pots :+ pot.name.value))
           .groupBy(identity)
@@ -319,8 +319,8 @@ def importTransactions(
               // is its own closure: a closed account is archived while the
               // account that replaced it goes on being posted to.
               retired = account.closed.exists(_.value),
-              accountId = account.id,
-              tagged = taggedByAccountId(account.id),
+              monzoAccountId = account.id,
+              tagged = taggedByMonzoAccountId(account.id),
               adoptUnsuffixed = !contestedPaths.contains(path),
               dryRun = dryRun
             ).map(account.id -> _)
@@ -335,27 +335,27 @@ def importTransactions(
         // one of its transfers is fetched there is no name and no deleted
         // flag to enforce against.
         // The run that does fetch one records the link and enforces then.
-        potAssets <- allPotAccountIds
-          .traverse: accountId =>
-            pots.get(accountId) match
+        potAssets <- allPotMonzoAccountIds
+          .traverse: monzoAccountId =>
+            pots.get(monzoAccountId) match
               case Some(pot)
-                  if materialPotAccountIds.contains(accountId) ||
-                    taggedPots.contains(accountId) =>
+                  if materialPotMonzoAccountIds.contains(monzoAccountId) ||
+                    taggedPots.contains(monzoAccountId) =>
                 resolveAssetAccount(
                   livePath = assetAccounts.pots :+ pot.name.value,
                   retired = pot.deleted.value,
-                  accountId = accountId,
-                  tagged = taggedByAccountId(accountId),
+                  monzoAccountId = monzoAccountId,
+                  tagged = taggedByMonzoAccountId(monzoAccountId),
                   adoptUnsuffixed = !contestedPaths.contains(
                     assetAccounts.pots :+ pot.name.value
                   ),
                   dryRun = dryRun
-                ).map(account => accountId -> Some(account))
+                ).map(account => monzoAccountId -> Some(account))
               case _ =>
-                IO.pure(accountId -> taggedPots.get(accountId))
+                IO.pure(monzoAccountId -> taggedPots.get(monzoAccountId))
           .map:
             _.collect:
-              case (accountId, Some(account)) => accountId -> account
+              case (monzoAccountId, Some(account)) => monzoAccountId -> account
             .toMap
         assets = typedAssets ++ potAssets
         // One book account per Monzo account, checked rather than assumed.
@@ -374,8 +374,9 @@ def importTransactions(
           .filter(_.sizeIs > 1)
           .map: shared =>
             val (_, account) = shared.head
-            val accountIds = shared.map((accountId, _) => accountId.value)
-            s"${account.name} (${accountIds.sorted.mkString(", ")})"
+            val monzoAccountIds =
+              shared.map((monzoAccountId, _) => monzoAccountId.value)
+            s"${account.name} (${monzoAccountIds.sorted.mkString(", ")})"
           .toList
         _ <- IO.raiseUnless(overloaded.isEmpty):
           Error(
@@ -469,9 +470,9 @@ def titleCased(category: String): String =
 // sight in GnuCash's account tree.
 def assetAccountPath(
     livePath: List[String],
-    accountId: monzo.AccountId
+    monzoAccountId: monzo.AccountId
 ): List[String] =
-  livePath.init :+ s"${livePath.last} (${accountId.value})"
+  livePath.init :+ s"${livePath.last} (${monzoAccountId.value})"
 
 // One resolver for every Monzo-backed asset account. Finds the account by its
 // online_id tag first (identity survives moves and renames), then at its
@@ -490,12 +491,12 @@ def assetAccountPath(
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
-    accountId: monzo.AccountId,
+    monzoAccountId: monzo.AccountId,
     tagged: Option[Account],
     adoptUnsuffixed: Boolean,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val canonicalPath = assetAccountPath(livePath, accountId)
+  val canonicalPath = assetAccountPath(livePath, monzoAccountId)
   val unsuffixedPaths =
     if adoptUnsuffixed then List(livePath, Account.ArchiveName :: livePath)
     else Nil
@@ -515,17 +516,17 @@ def resolveAssetAccount(
           placed <- alignHidden(child, retired, canonicalPath, dryRun)
         yield placed
     _ <- IO.unlessA(dryRun || tagged.isDefined):
-      tagOnlineId(account.guid, accountId)
+      tagOnlineId(account.guid, monzoAccountId)
   yield account
 
-def tagOnlineId(guid: String, accountId: monzo.AccountId)(using
+def tagOnlineId(guid: String, monzoAccountId: monzo.AccountId)(using
     db: Database[IO]
 ): IO[Unit] =
   Slot
     .stringSlot(
       objGuid = guid,
       name = Slot.OnlineId,
-      value = accountId.value
+      value = monzoAccountId.value
     )
     .insert
 
