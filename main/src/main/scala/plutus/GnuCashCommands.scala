@@ -294,24 +294,9 @@ def importTransactions(
           Error(
             s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
           )
-        // An account still at the un-suffixed path — the name it had before
-        // the Monzo account ID joined it — is adoptable only while a single
-        // Monzo account claims that path (see resolveAssetAccount). Two
-        // claimants is the very case the ID exists for: nothing says whose
-        // history the account holds, and whichever resolved first would take
-        // it, so neither does and each gets an account of its own.
-        contestedPaths = (typedAccountsAndPaths.map((_, path) => path) ++
-          allPotMonzoAccountIds
-            .flatMap(pots.get)
-            .map(pot => assetAccounts.pots :+ pot.name.value))
-          .groupBy(identity)
-          .collect:
-            case (path, claimants) if claimants.sizeIs > 1 => path
-          .toSet
         // Typed asset accounts and pot accounts resolve through the same
-        // path: resolveAssetAccount finds by online_id tag, then by canonical
-        // location, creates otherwise, enforces placement, and tags an
-        // account that isn't tagged yet.
+        // path: resolveAssetAccount finds by online_id tag, creates the
+        // account otherwise, enforces placement, and tags one it created.
         typedAssets <- typedAccountsAndPaths
           .traverse: (account, path) =>
             resolveAssetAccount(
@@ -323,7 +308,6 @@ def importTransactions(
               monzoAccountId = account.id,
               description = assetAccountDescription(account),
               tagged = taggedByMonzoAccountId(account.id),
-              adoptUnsuffixed = !contestedPaths.contains(path),
               dryRun = dryRun
             ).map(account.id -> _)
           .map(_.toMap)
@@ -349,9 +333,6 @@ def importTransactions(
                   monzoAccountId = monzoAccountId,
                   description = potAssetAccountDescription(pot, monzoAccountId),
                   tagged = taggedByMonzoAccountId(monzoAccountId),
-                  adoptUnsuffixed = !contestedPaths.contains(
-                    assetAccounts.pots :+ pot.name.value
-                  ),
                   dryRun = dryRun
                 ).map(account => monzoAccountId -> Some(account))
               case _ =>
@@ -362,17 +343,16 @@ def importTransactions(
             .toMap
         assets = typedAssets ++ potAssets
         // One book account per Monzo account, checked rather than assumed.
-        // Names carry the Monzo account ID and a contested un-suffixed path
-        // is adopted by nobody, so two Monzo accounts can only land on one
-        // book account if the book itself says they do — an online_id tag
-        // added by hand to an account another one already answers to — or if
-        // their IDs differ only in case, which the name folds together (see
-        // monzoAccountIdLabel). Sharing an account would commingle two Monzo
-        // accounts' rows permanently — online_id dedup skips them on every
-        // later run — so the run fails instead. Resolution creates, moves and
-        // renames accounts but files nothing, and the whole run is one
-        // transaction (a dry run writes nothing at all), so failing here
-        // leaves the book unimported.
+        // Names carry the Monzo account ID, so two Monzo accounts can only
+        // land on one book account if the book itself says they do — an
+        // online_id tag added by hand to an account another one already
+        // answers to — or if their IDs differ only in case, which the name
+        // folds together (see monzoAccountIdLabel). Sharing an account would
+        // commingle two Monzo accounts' rows permanently — online_id dedup
+        // skips them on every later run — so the run fails instead.
+        // Resolution creates, moves and renames accounts but files nothing,
+        // and the whole run is one transaction (a dry run writes nothing at
+        // all), so failing here leaves the book unimported.
         overloaded = assets.toList
           .groupBy((_, account) => account.guid)
           .values
@@ -511,40 +491,26 @@ def potAssetAccountDescription(
 ): String =
   s"Monzo pot ${pot.id.value} (backing account ${monzoAccountId.value})"
 
-// One resolver for every Monzo-backed asset account. Finds the account by its
-// online_id tag first (identity survives moves and renames), then at its
-// canonical location — live path or its archived twin — and, when the caller
-// says the un-suffixed path is this account's alone, at that and its archived
-// twin too: that is how an account named before the ID joined the name, or
-// one created by hand at the obvious path, is adopted and renamed rather than
-// left behind holding the history. Failing all that it is created at the
-// canonical spot. Placement is then enforced (for a fresh child only the
-// hidden flag can be out of line), and an untagged account is tagged. That
-// last step is what puts tags in the book at all — an account this run
-// creates carries none — and it is also what gives an identity to one found
-// by location: made by hand, or predating tagging. An account a past GUI
-// import of export-transactions' OFX associated already carries this slot
-// (see Slot.OnlineId), so it is found by tag without needing any of it.
+// One resolver for every Monzo-backed asset account. The online_id tag is the
+// only thing it matches on, and identity therefore survives moves and
+// renames. An account a past GUI import of export-transactions' OFX
+// associated already carries that slot (see Slot.OnlineId), so an untagged
+// account is one no run and no import has ever touched: it is created at its
+// canonical spot rather than looked for anywhere else, then tagged, which is
+// what puts tags in the book at all and what makes every later run find it by
+// tag. Placement is enforced either way — for a fresh child only the hidden
+// flag can be out of line.
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
     monzoAccountId: monzo.AccountId,
     description: String,
     tagged: Option[Account],
-    adoptUnsuffixed: Boolean,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val canonicalPath = assetAccountPath(livePath, monzoAccountId)
-  val unsuffixedPaths =
-    if adoptUnsuffixed then List(livePath, Account.ArchiveName :: livePath)
-    else Nil
   for
-    located <- tagged match
-      case Some(account) => IO.pure(Some(account))
-      case None          =>
-        (List(canonicalPath, Account.ArchiveName :: canonicalPath) ++
-          unsuffixedPaths).collectFirstSomeM(Account.atPath)
-    account <- located match
+    account <- tagged match
       case Some(account) =>
         enforcePlacement(
           account,
@@ -608,11 +574,11 @@ def alignHidden(
         info(s"${if hidden then "Hid" else "Unhid"} $label.")
 
 // The description tracks the Monzo identifiers behind the account, aligned
-// like hidden. This is where an adopted account gets one: an account created
-// here is born described (see resolveAssetAccount), but one found at a
-// canonical or un-suffixed path, or one a past GUI import of the exported OFX
-// tagged, predates us and carries whatever it carried. Written only when it
-// differs, so the run after the first touches nothing and says nothing.
+// like hidden. This is where an account that predates us gets one: an account
+// created here is born described (see resolveAssetAccount), but one a past
+// GUI import of the exported OFX tagged carries whatever it carried. Written
+// only when it differs, so the run after the first touches nothing and says
+// nothing.
 def alignDescription(
     account: Account,
     description: String,
