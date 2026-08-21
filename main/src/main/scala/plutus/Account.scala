@@ -309,18 +309,18 @@ final case class Account(
     yield copy(hidden = hidden)
 
   // description is a plain accounts column, with no KVP slot behind it (unlike
-  // hidden and placeholder), so there is nothing to keep in step here.
-  def updateDescription(description: String)(using
-      db: Database[IO]
-  ): IO[Account] =
+  // hidden and placeholder), so there is nothing to keep in step here. Null
+  // rather than the empty string, so a cleared account decodes back the same
+  // way as one that never carried a description.
+  def clearDescription(using db: Database[IO]): IO[Account] =
     db.execute(
       query = sql"""
         update accounts
-        set description = $text
+        set description = null
         where guid = $text
       """.command,
-      args = (description, guid)
-    ).as(copy(description = Some(description)))
+      args = guid
+    ).as(copy(description = None))
 
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(

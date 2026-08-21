@@ -250,9 +250,9 @@ def importTransactions(
               assetAccounts.byAccountType.get(accountType.value)
             .map: assetPath =>
               (account, assetPath)
-        allPotMonzoAccountIds = byAccount.collect:
+        allMonzoPotAccountIds = byAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
-        materialPotMonzoAccountIds = materialByAccount.collect:
+        materialMonzoPotAccountIds = materialByAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
         // The book is the durable home of the account associations: each
         // asset account is tagged with the Monzo account ID that posts into
@@ -261,13 +261,13 @@ def importTransactions(
         // Looked up once per ID here — bySlot scans the whole slots table, so
         // the fail-fasts and the resolver share this one prefetch.
         taggedByMonzoAccountId <- (typedAccountsAndPaths
-          .map((account, _) => account.id) ++ allPotMonzoAccountIds)
+          .map((account, _) => account.id) ++ allMonzoPotAccountIds)
           .traverse: monzoAccountId =>
             Account
               .bySlot(Slot.OnlineId, monzoAccountId.value)
               .map(monzoAccountId -> _)
           .map(_.toMap)
-        taggedPots = allPotMonzoAccountIds
+        taggedPots = allMonzoPotAccountIds
           .flatMap: monzoAccountId =>
             taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
           .toMap
@@ -275,7 +275,7 @@ def importTransactions(
         // names: it can't be filed into its own account, and a mis-filed row
         // would be permanent — online_id dedup skips it on every later run.
         // One run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialPotMonzoAccountIds.filterNot: monzoAccountId =>
+        unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
           taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
         _ <- IO.raiseUnless(unnamedPots.isEmpty):
           Error(
@@ -284,7 +284,7 @@ def importTransactions(
         currency <- Commodity.gbp
         // Fail fast on a pot denominated in anything but the book's currency:
         // its minor units would otherwise be posted as if they were pence.
-        foreignPots = materialPotMonzoAccountIds.flatMap: monzoAccountId =>
+        foreignPots = materialMonzoPotAccountIds.flatMap: monzoAccountId =>
           pots
             .get(monzoAccountId)
             .filterNot(_.currency.value == currency.mnemonic)
@@ -306,7 +306,6 @@ def importTransactions(
               // account that replaced it goes on being posted to.
               retired = account.closed.exists(_.value),
               monzoAccountId = account.id,
-              description = assetAccountDescription(account),
               tagged = taggedByMonzoAccountId(account.id),
               dryRun = dryRun
             ).map(account.id -> _)
@@ -321,17 +320,16 @@ def importTransactions(
         // one of its transfers is fetched there is no name and no deleted
         // flag to enforce against.
         // The run that does fetch one records the link and enforces then.
-        potAssets <- allPotMonzoAccountIds
+        potAssets <- allMonzoPotAccountIds
           .traverse: monzoAccountId =>
             pots.get(monzoAccountId) match
               case Some(pot)
-                  if materialPotMonzoAccountIds.contains(monzoAccountId) ||
+                  if materialMonzoPotAccountIds.contains(monzoAccountId) ||
                     taggedPots.contains(monzoAccountId) =>
                 resolveAssetAccount(
                   livePath = assetAccounts.pots :+ pot.name.value,
                   retired = pot.deleted.value,
                   monzoAccountId = monzoAccountId,
-                  description = potAssetAccountDescription(pot, monzoAccountId),
                   tagged = taggedByMonzoAccountId(monzoAccountId),
                   dryRun = dryRun
                 ).map(account => monzoAccountId -> Some(account))
@@ -473,24 +471,6 @@ def assetAccountPath(
 def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
   monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
 
-// The description every Monzo-backed asset account carries, naming in Monzo's
-// own terms what posts into it. The name can't do that job: its copy of the
-// account ID is cosmetic and lossy (see monzoAccountIdLabel), and a pot's is
-// whatever the pot is called today. Without this the exact IDs would appear
-// nowhere the GnuCash GUI shows, the online_id tag being a KVP slot.
-// Deliberately identifiers alone, so that unlike the name it can't go stale:
-// a rename on the Monzo side changes nothing here, so enforcing it writes
-// once and matches on every run after.
-def assetAccountDescription(account: monzo.Account): String =
-  account.accountType.fold(s"Monzo account ${account.id.value}"): accountType =>
-    s"Monzo ${accountType.value} account ${account.id.value}"
-
-def potAssetAccountDescription(
-    pot: monzo.Pot,
-    monzoAccountId: monzo.AccountId
-): String =
-  s"Monzo pot ${pot.id.value} (backing account ${monzoAccountId.value})"
-
 // One resolver for every Monzo-backed asset account. The online_id tag is the
 // only thing it matches on, and identity therefore survives moves and
 // renames. An account a past GUI import of export-transactions' OFX
@@ -504,7 +484,6 @@ def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
     monzoAccountId: monzo.AccountId,
-    description: String,
     tagged: Option[Account],
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
@@ -512,23 +491,11 @@ def resolveAssetAccount(
   for
     account <- tagged match
       case Some(account) =>
-        enforcePlacement(
-          account,
-          canonicalPath,
-          retired,
-          description,
-          dryRun
-        )
+        enforcePlacement(account, canonicalPath, retired, dryRun)
       case None =>
         for
           parent <- parentFor(canonicalPath.init, retired, dryRun)
-          // Born described, so the alignment below has nothing to do.
-          child <- createOrRetrieveChild(
-            parent,
-            canonicalPath.last,
-            dryRun,
-            description = Some(description)
-          )
+          child <- createOrRetrieveChild(parent, canonicalPath.last, dryRun)
           placed <- alignHidden(child, retired, canonicalPath, dryRun)
         yield placed
     _ <- IO.unlessA(dryRun || tagged.isDefined):
@@ -573,28 +540,27 @@ def alignHidden(
       .flatTap: _ =>
         info(s"${if hidden then "Hid" else "Unhid"} $label.")
 
-// The description tracks the Monzo identifiers behind the account, aligned
-// like hidden. This is where an account that predates us gets one: an account
-// created here is born described (see resolveAssetAccount), but one a past
-// GUI import of the exported OFX tagged carries whatever it carried. Written
-// only when it differs, so the run after the first touches nothing and says
-// nothing.
+// The canonical description of a Monzo-backed asset account is none at all:
+// the name already says which Monzo account or pot posts into it, down to the
+// ID that keeps two of a kind apart (see assetAccountPath), so anything here
+// could only restate it. Aligned like hidden, so a description added by hand
+// or carried in by a GUI OFX import doesn't outlive the next run. No
+// description and an empty one both count as aligned, so whichever of the two
+// the book holds is left alone.
 def alignDescription(
     account: Account,
-    description: String,
     livePath: List[String],
     retired: Boolean,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val label = canonicalPathString(livePath, retired)
-  if account.description.contains(description) then IO.pure(account)
+  if account.description.forall(_.isEmpty) then IO.pure(account)
   else if dryRun then
-    info(s"Would describe $label as \"$description\".").as(account)
+    info(s"Would clear the description of $label.").as(account)
   else
-    account
-      .updateDescription(description)
+    account.clearDescription
       .flatTap: _ =>
-        info(s"Described $label as \"$description\".")
+        info(s"Cleared the description of $label.")
 
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
@@ -607,18 +573,16 @@ def canonicalPathString(livePath: List[String], retired: Boolean): String =
 // live, and the same path nested under the Archive subroot once retired (a
 // closed account, a deleted pot); its name is the path's leaf — for pots, the
 // pot's current Monzo name — with the Monzo account ID appended (see
-// assetAccountPath); its description names the Monzo account or pot behind it
-// (see assetAccountDescription); and hidden tracks retirement. All of it is
-// enforced in both directions on every run — un-archiving, un-hiding,
-// renaming and re-describing included — so a hand-move lasts only until the
-// next import. A *different* account already occupying the canonical spot
-// fails the run: merging or deleting it could orphan its transactions, so the
-// user resolves that collision by hand.
+// assetAccountPath); its description is empty (see alignDescription); and
+// hidden tracks retirement. All of it is enforced in both directions on every
+// run — un-archiving, un-hiding, renaming and un-describing included — so a
+// hand-move lasts only until the next import. A *different* account already
+// occupying the canonical spot fails the run: merging or deleting it could
+// orphan its transactions, so the user resolves that collision by hand.
 def enforcePlacement(
     account: Account,
     livePath: List[String],
     retired: Boolean,
-    description: String,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val name = livePath.last
@@ -646,13 +610,7 @@ def enforcePlacement(
                   info(s"Moved $accountPath to $targetPath.")
         yield moved
     aligned <- alignHidden(placed, retired, livePath, dryRun)
-    described <- alignDescription(
-      aligned,
-      description,
-      livePath,
-      retired,
-      dryRun
-    )
+    described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
 
 // The canonical parent for a retired account: the live parent chain nested
@@ -730,8 +688,7 @@ def createOrRetrieveChild(
     name: String,
     dryRun: Boolean,
     placeholder: Boolean = false,
-    template: Option[Account] = None,
-    description: Option[String] = None
+    template: Option[Account] = None
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   parent
     .child(name)
@@ -748,7 +705,7 @@ def createOrRetrieveChild(
               name = name,
               parentGuid = Some(parent.guid),
               code = None,
-              description = description,
+              description = None,
               hidden = false,
               placeholder = placeholder
             )
