@@ -128,9 +128,6 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
 
-          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
-          # prompt: 'Update the pull request description to include a summary of changes.'
-
           # Without --model the run takes the account-type default, which for
           # this seat is Sonnet; local work on this repo is on Opus, and the
           # asymmetry is invisible from either side.
