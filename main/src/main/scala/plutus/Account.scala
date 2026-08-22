@@ -6,17 +6,56 @@ import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
+// GnuCash GUIDs are 32-char hex with the UUID dashes stripped.
+val newGuid: IO[String] =
+  UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))
+
 object Account:
+
+  // Resolve a path of names from the root ("Expenses" :: "Groceries" :: Nil),
+  // reusing the existing `child` navigation. None if any segment is missing, so
+  // the importer can fail fast rather than silently mis-file.
+  def atPath(
+      segments: List[String]
+  )(using db: Database[IO]): IO[Option[Account]] =
+    Account.root.flatMap: root =>
+      segments.foldLeftM(Option(root)):
+        case (Some(parent), segment) => parent.child(segment)
+        case (None, _)               => IO.pure(None)
+
+  val ArchiveName = "Archive"
 
   def createOrRetrieveArchiveSubroot(using db: Database[IO]): IO[Account] =
     for
       root <- Account.root
       archiveSubroot <- root.createOrRetrieveMirror(
         parent = root,
-        name = "Archive",
+        name = ArchiveName,
         hidden = true
       )
     yield archiveSubroot
+
+  // The read-only sibling of createOrRetrieveArchiveSubroot, for callers that
+  // only ask "is this account already archived?" and must not create the
+  // subroot as a side effect (a dry-run import, for one).
+  def retrieveArchiveSubroot(using db: Database[IO]): IO[Option[Account]] =
+    root.flatMap(_.child(ArchiveName))
+
+  // The account a guid names, if it names one at all — the importer resolves
+  // an online_id tag this way, by the primary key, having read every tag in
+  // one scan (see Slot.onlineIds). None covers the ordinary case of a tag
+  // hanging off something that isn't an account: every imported split carries
+  // one too.
+  def byGuid(guid: String)(using db: Database[IO]): IO[Option[Account]] =
+    db.option(
+      query = sql"""
+        ${Account.selectAccountsWithFlags}
+        where accounts.guid = $text
+      """.query:
+        decoder
+      ,
+      args = guid
+    )
 
   def root(using db: Database[IO]): IO[Account] =
     db.unique:
@@ -111,9 +150,9 @@ final case class Account(
     .flatMap:
       case None =>
         for
-          guid <- UUIDGen[IO].randomUUID
+          guid <- newGuid
           mirror = copy(
-            guid = guid.toString.replaceAll("-", ""),
+            guid = guid,
             name = name,
             parentGuid = Some(parent.guid),
             hidden = hidden,
@@ -195,50 +234,57 @@ final case class Account(
           "/"
     )
 
-  // (from, to) is the boundary pair: when `from` would appear as a parent it
-  // is replaced by `to`. Archiving uses (root, archiveSubroot); restoring
-  // uses (archiveSubroot, root).
-  def createOrRetrieveMirrorParent(
-      from: Account,
-      to: Account
-  )(using db: Database[IO]): IO[Account] =
-    parent.flatMap:
-      case None =>
-        IO.pure:
-          this
-
-      case Some(parent) if parent == from =>
-        IO.pure:
-          to
-
-      case Some(parent) =>
-        for
-          grandparentMirror <- parent.createOrRetrieveMirrorParent(
-            from = from,
-            to = to
-          )
-          mirrorParent <- parent.createOrRetrieveMirror(
-            parent = grandparentMirror,
-            name = parent.name
-          )
-        yield mirrorParent
-
-  // Only parent_guid changes here; hidden/placeholder (both column and slot)
-  // are set once at insert time and Plutus never toggles them on an existing
-  // account, so there is no slot to keep in sync.
-  def update(parent: Account)(using db: Database[IO]): IO[Account] =
+  // Moves and renames share one updater. hidden has its own (updateHidden)
+  // because it also owns a KVP slot; placeholder is still set only at insert
+  // time and never toggled.
+  def update(parent: Account, name: String = this.name)(using
+      db: Database[IO]
+  ): IO[Account] =
     db.execute(
       query = sql"""
         update accounts
-        set parent_guid = $text
+        set parent_guid = $text, name = $text
         where guid = $text
       """.command,
-      args = (parent.guid, guid)
+      args = (parent.guid, name, guid)
     ).as(
       copy(
-        parentGuid = Some(parent.guid)
+        parentGuid = Some(parent.guid),
+        name = name
       )
     )
+
+  // GnuCash reads hidden from the KVP slot and treats the column as a cache
+  // (see selectAccountsWithFlags), and a false flag is the slot's absence —
+  // so clearing deletes the slot rather than writing "false".
+  def updateHidden(hidden: Boolean)(using db: Database[IO]): IO[Account] =
+    for
+      _ <- db.execute(
+        query = sql"""
+          update accounts
+          set hidden = $boolean
+          where guid = $text
+        """.command,
+        args = (hidden, guid)
+      )
+      _ <- Slot.delete(objGuid = guid, name = "hidden")
+      _ <- IO.whenA(hidden):
+        Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
+    yield copy(hidden = hidden)
+
+  // description is a plain accounts column, with no KVP slot behind it (unlike
+  // hidden and placeholder), so there is nothing to keep in step here. Null
+  // rather than the empty string, so a cleared account decodes back the same
+  // way as one that never carried a description.
+  def clearDescription(using db: Database[IO]): IO[Account] =
+    db.execute(
+      query = sql"""
+        update accounts
+        set description = null
+        where guid = $text
+      """.command,
+      args = guid
+    ).as(copy(description = None))
 
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(

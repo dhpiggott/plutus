@@ -32,6 +32,14 @@ The state-store boundary is just `object Keychain` exposed by `keychain-jvm` / `
 
 `porcupine-jvm` and `porcupine-native` each expose an `object porcupine.Sqlite` with parallel `Connection` / `Statement` traits over the `sqlite3` C API, trafficking only in primitive types (`Long`, `Double`, `String`, `Array[Byte]`, `Any | Null`). `porcupine` depends on both (one per row) and layers `Database[F]` on top — codec encoding/decoding, `Mutex`-serialised access, `F.blocking`, `Resource`. Adding a column or function to `Sqlite` means matching changes in *both* platform files; the shapes drift silently because there's no shared trait.
 
+## GnuCash book access
+
+Every table the CLI touches has a row type in `main` that owns *all* the SQL for it — `Account`, `Commodity`, `Transaction`, `Split`, `Slot`, and `Posting` (a transaction plus its two balanced splits). Queries belong in those objects, not in the command files; `GnuCashCommands.scala` composes them and takes `Database[IO]` as a `using` parameter.
+
+`Transact.scala` adds two extensions used by all three commands: `db.transact` (one `begin immediate` … `commit`, rolled back on failure) and `db.withoutCommitting` (a deferred `begin` always rolled back, which is how `--dry-run` guarantees nothing survives). `db.rowsChanged` reads SQLite's own `total_changes()`, so no write path has to report itself — after `transact` it answers "did this run change anything?", after `withoutCommitting` "did this run try to?".
+
+The `online_id` slot carries two unrelated meanings, both of which this code writes: on an *account* it is GnuCash's OFX association, keyed here by Monzo account ID; on a *split* it is the imported row's dedup key, the Monzo transaction ID. `Slot.onlineIds` returns both in one scan — `slots` is unindexed and grows with history, so prefer widening that prefetch to adding another scan.
+
 ## macOS Keychain FFI gotchas
 
 The Keychain is reached two different ways: `keychain-native` (Scala Native, sn-bindgen) and `keychain-jvm` (JVM, Java's Foreign Function & Memory API). Both end up calling `SecItemCopyMatching`/`SecItemAdd`/`SecItemUpdate`; the `extern const CFStringRef` constants (`kSecClass`, …) are the main wrinkle on both sides.
