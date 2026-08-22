@@ -341,13 +341,12 @@ def importTransactions(
             .toMap
         assets = typedAssets ++ potAssets
         // One book account per Monzo account, checked rather than assumed.
-        // Names carry the Monzo account ID, so two Monzo accounts can only
-        // land on one book account if the book itself says they do — an
-        // online_id tag added by hand to an account another one already
-        // answers to — or if their IDs differ only in case, which the name
-        // folds together (see monzoAccountIdLabel). Sharing an account would
-        // commingle two Monzo accounts' rows permanently — online_id dedup
-        // skips them on every later run — so the run fails instead.
+        // Resolution never adopts an account it found by location, so two
+        // Monzo accounts can only land on one book account if the book itself
+        // says they do: an online_id tag added by hand to an account another
+        // one already answers to. Sharing an account would commingle two
+        // Monzo accounts' rows permanently — online_id dedup skips them on
+        // every later run — so the run fails instead.
         // Resolution creates, moves and renames accounts but files nothing,
         // and the whole run is one transaction (a dry run writes nothing at
         // all), so failing here leaves the book unimported.
@@ -443,14 +442,14 @@ def titleCased(category: String): String =
     .mkString(" ")
 
 // The canonical path of the asset account a Monzo account posts into: the
-// code-defined path with that account's Monzo ID in the leaf name. The ID is
-// there so no two Monzo accounts contend for one account — the type-keyed map
-// gives a closed account and the one that replaced it the same path, and two
-// pots may share a name — because a shared account is a permanent
-// commingling: online_id dedup skips its rows on every later run, and nothing
-// in the book then says which Monzo account a row came from. It also puts the
-// identity the resolver matches on (the online_id tag) in plain sight in
-// GnuCash's account tree.
+// code-defined path with that account's Monzo ID in the leaf name. Several
+// Monzo accounts can share a code-defined path — the map is keyed by type, so
+// a closed account and the one that replaced it land on the same one, and two
+// pots may share a name — and each gets an account of its own regardless
+// (resolveAssetAccount never adopts by location). The ID in the name is what
+// tells those siblings apart in GnuCash's account tree, and it puts the
+// identity the resolver actually matches on, the online_id tag, in plain
+// sight beside them.
 def assetAccountPath(
     livePath: List[String],
     monzoAccountId: monzo.AccountId
@@ -463,11 +462,11 @@ def assetAccountPath(
 // the way a sort code or an account number does rather than as a stretch of
 // mixed-case noise. Purely cosmetic: the identity the resolver matches on is
 // the raw ID in the online_id tag, so nothing needs the ID back out of a
-// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but two IDs
-// differing only in case would land on one book account, and the run fails
-// there rather than commingling them. Locale.ROOT because a Turkish-locale
-// machine upper-cases i to İ, which would give one account two different
-// canonical names on two machines.
+// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but only for the
+// name: two IDs differing only in case still get an account each, because
+// resolution matches on the tag, not on the name. Locale.ROOT because a
+// Turkish-locale machine upper-cases i to İ, which would give one account two
+// different canonical names on two machines.
 def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
   monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
 
@@ -475,11 +474,21 @@ def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
 // only thing it matches on, and identity therefore survives moves and
 // renames. An account a past GUI import of export-transactions' OFX
 // associated already carries that slot (see Slot.OnlineId), so an untagged
-// account is one no run and no import has ever touched: it is created at its
-// canonical spot rather than looked for anywhere else, then tagged, which is
-// what puts tags in the book at all and what makes every later run find it by
-// tag. Placement is enforced either way — for a fresh child only the hidden
-// flag can be out of line.
+// account is one no run and no import has ever touched: a fresh account is
+// created at the canonical spot and tagged, which is what puts tags in the
+// book at all and what makes every later run find it by tag.
+//
+// That creation is unconditional (createChild, not createOrRetrieveChild):
+// an account already sitting at the canonical path is left alone, and the new
+// one lands beside it under the same name — which GnuCash permits. Adopting
+// it instead would be a guess, since nothing in the book says it belongs to
+// this Monzo account, and a wrong guess is permanent: the tag would send
+// every later run's rows to the same place and online_id dedup would skip
+// them, so they could never be re-filed. Two same-named siblings are the
+// visible, fixable outcome instead — the tagged one is what later runs post
+// to, so move the other's transactions into it and delete the empty one.
+// Placement is enforced either way — for a fresh child only the hidden flag
+// can be out of line.
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
@@ -495,7 +504,7 @@ def resolveAssetAccount(
       case None =>
         for
           parent <- parentFor(canonicalPath.init, retired, dryRun)
-          child <- createOrRetrieveChild(parent, canonicalPath.last, dryRun)
+          child <- createChild(parent, canonicalPath.last, dryRun)
           placed <- alignHidden(child, retired, canonicalPath, dryRun)
         yield placed
     _ <- IO.unlessA(dryRun || tagged.isDefined):
@@ -675,14 +684,9 @@ def liveParentFor(
       createOrRetrieveChild(parent, segment, dryRun, placeholder = true)
   yield parent
 
-// Get-or-create one child. A created child inherits its account type and
-// commodity from `template` — by default the parent, so an Expenses child is
-// an EXPENSE account and a Liabilities child a LIABILITY (the literal
-// accounts.account_type values); archiveParentFor passes the live twin so
-// archived mirrors match what they mirror.
-// Structural path segments are created as placeholders, leaves that take
-// postings are not. A dry run inserts nothing but still yields the would-be
-// account, so the rest of the plan can proceed against it.
+// Get-or-create one child, for the paths where sharing is the point: a
+// category leaf several transactions file into, and the structural segments
+// above it.
 def createOrRetrieveChild(
     parent: Account,
     name: String,
@@ -694,22 +698,42 @@ def createOrRetrieveChild(
     .child(name)
     .flatMap:
       case Some(child) => IO.pure(child)
-      case None        =>
-        for
-          guid <- newGuid
-          parentPath <- parent.pathString
-          child = template
-            .getOrElse(parent)
-            .copy(
-              guid = guid,
-              name = name,
-              parentGuid = Some(parent.guid),
-              code = None,
-              description = None,
-              hidden = false,
-              placeholder = placeholder
-            )
-          _ <-
-            if dryRun then info(s"Would create account $parentPath/$name.")
-            else child.insert *> info(s"Created account $parentPath/$name.")
-        yield child
+      case None => createChild(parent, name, dryRun, placeholder, template)
+
+// Create one child, whether or not a sibling of that name already exists —
+// GnuCash identifies an account by guid and permits the duplicate name, and
+// resolveAssetAccount relies on that to avoid adopting an account it can't
+// know is the right one.
+//
+// A created child inherits its account type and commodity from `template` —
+// by default the parent, so an Expenses child is an EXPENSE account and a
+// Liabilities child a LIABILITY (the literal accounts.account_type values);
+// archiveParentFor passes the live twin so archived mirrors match what they
+// mirror. Structural path segments are created as placeholders, leaves that
+// take postings are not. A dry run inserts nothing but still yields the
+// would-be account, so the rest of the plan can proceed against it.
+def createChild(
+    parent: Account,
+    name: String,
+    dryRun: Boolean,
+    placeholder: Boolean = false,
+    template: Option[Account] = None
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  for
+    guid <- newGuid
+    parentPath <- parent.pathString
+    child = template
+      .getOrElse(parent)
+      .copy(
+        guid = guid,
+        name = name,
+        parentGuid = Some(parent.guid),
+        code = None,
+        description = None,
+        hidden = false,
+        placeholder = placeholder
+      )
+    _ <-
+      if dryRun then info(s"Would create account $parentPath/$name.")
+      else child.insert *> info(s"Created account $parentPath/$name.")
+  yield child
