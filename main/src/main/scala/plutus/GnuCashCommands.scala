@@ -96,9 +96,9 @@ def restoreAccount(
       input.toString
     .use: db =>
       given Database[IO] = db
-      val nothingToRestore = Error("No archived accounts to restore.")
       for
         root <- Account.root
+        nothingToRestore = Error("No archived accounts to restore.")
         // Retrieved, never created: a book that has never archived anything
         // has no Archive subroot and nothing to restore, and creating one
         // here would be a write outside the transaction below, on behalf of a
