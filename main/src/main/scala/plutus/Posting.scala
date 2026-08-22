@@ -90,14 +90,19 @@ object Posting:
           memo = memo.getOrElse(""),
           valueNum = value,
           valueDenom = currency.fraction,
-          // value is in the book's currency; quantity is in the account's own
-          // commodity. They're equal in a single-currency book, but the
-          // quantity denominator is sourced from the account (commodity_scu,
-          // its Smallest Commodity Unit — the fraction the account is
-          // denominated in) rather than assumed, so a differently-scaled
-          // account still gets a valid split.
+          // value is what the split is worth in the transaction's currency;
+          // quantity is how much of the account's own commodity moved. The
+          // two only diverge across commodities, and the importer posts into
+          // book-currency accounts only — it fails the run otherwise, since
+          // it has no exchange rate to convert with — so quantity is the same
+          // rational number as value, written the same way. Not
+          // account.commodityScu as the denominator: an account whose
+          // Smallest Commodity Unit differs from the currency's fraction
+          // (GnuCash allows it — accounts.non_std_scu) would then be handed a
+          // numerator scaled to the currency and a denominator scaled to the
+          // account, i.e. a quantity wrong by the ratio between them.
           quantityNum = value,
-          quantityDenom = account.commodityScu
+          quantityDenom = currency.fraction
         )
       Posting(
         transaction = transaction,

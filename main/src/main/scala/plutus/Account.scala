@@ -41,28 +41,20 @@ object Account:
   def retrieveArchiveSubroot(using db: Database[IO]): IO[Option[Account]] =
     root.flatMap(_.child(ArchiveName))
 
-  // The account carrying a slot with this name and value — how the importer
-  // finds a pot's asset account by the backing-account ID it was tagged with,
-  // wherever (and whatever) that account has since been moved or renamed to.
-  // Values compare with surrounding whitespace trimmed: GnuCash's OFX importer
-  // stores online_id values in libofx's shape, which prefixes the (empty)
-  // BANKID/BRANCHID with unconditional space separators ("  acc_…"), while
-  // Plutus tags with the bare ID. See Slot.OnlineId.
-  def bySlot(
-      name: String,
-      value: String
-  )(using db: Database[IO]): IO[Option[Account]] =
+  // The account a guid names, if it names one at all — the importer resolves
+  // an online_id tag this way, by the primary key, having read every tag in
+  // one scan (see Slot.onlineIds). None covers the ordinary case of a tag
+  // hanging off something that isn't an account: every imported split carries
+  // one too.
+  def byGuid(guid: String)(using db: Database[IO]): IO[Option[Account]] =
     db.option(
       query = sql"""
         ${Account.selectAccountsWithFlags}
-        join slots tag
-          on tag.obj_guid = accounts.guid
-          and tag.name = $text
-          and trim(tag.string_val) = $text
+        where accounts.guid = $text
       """.query:
         decoder
       ,
-      args = (name, value)
+      args = guid
     )
 
   def root(using db: Database[IO]): IO[Account] =
@@ -241,34 +233,6 @@ final case class Account(
         .mkString:
           "/"
     )
-
-  // (from, to) is the boundary pair: when `from` would appear as a parent it
-  // is replaced by `to`. Archiving uses (root, archiveSubroot); restoring
-  // uses (archiveSubroot, root).
-  def createOrRetrieveMirrorParent(
-      from: Account,
-      to: Account
-  )(using db: Database[IO]): IO[Account] =
-    parent.flatMap:
-      case None =>
-        IO.pure:
-          this
-
-      case Some(parent) if parent == from =>
-        IO.pure:
-          to
-
-      case Some(parent) =>
-        for
-          grandparentMirror <- parent.createOrRetrieveMirrorParent(
-            from = from,
-            to = to
-          )
-          mirrorParent <- parent.createOrRetrieveMirror(
-            parent = grandparentMirror,
-            name = parent.name
-          )
-        yield mirrorParent
 
   // Moves and renames share one updater. hidden has its own (updateHidden)
   // because it also owns a KVP slot; placeholder is still set only at insert

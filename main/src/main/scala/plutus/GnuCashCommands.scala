@@ -4,6 +4,8 @@ import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
 import cue4s.*
+import fs2.io.file.CopyFlag
+import fs2.io.file.CopyFlags
 import porcupine.*
 
 import java.time.Instant
@@ -33,39 +35,46 @@ def archiveAccounts(
       given Database[IO] = db
       for
         root <- Account.root
-        archiveSubroot <- Account.createOrRetrieveArchiveSubroot
         // TODO: Change this to accept a single account to archive, like
         // restore-account does?
         _ <- info:
           "Finding hidden accounts…"
-        hiddenAccounts <- root.hiddenChildren:
-          archiveSubroot
-        // Whole loop in one transaction: a failure partway through rolls
-        // every account archived so far in this run back to where it started,
-        // rather than leaving some archived and others not.
+        // Whole run in one transaction, the Archive subroot's own creation
+        // included: a failure partway through rolls every account archived so
+        // far in this run — and, on a book's first archive, the subroot it
+        // created to hold them — back to where it started, rather than
+        // leaving some archived and others not.
         _ <- db.transact:
-          (IO.traverse:
-            hiddenAccounts
-          ): hiddenAccount =>
-            for
-              hiddenAccountPath <- hiddenAccount.pathString
-              archiveParent <- hiddenAccount.createOrRetrieveMirrorParent(
-                from = root,
-                to = archiveSubroot
-              )
-              _ <- cleanUpRedundantMirror(
-                original = hiddenAccount,
-                originalPath = hiddenAccountPath,
-                mirrorParent = archiveParent,
-                mirrorKind = "Archive"
-              )
-              archivedAccount <- hiddenAccount.update(
-                parent = archiveParent
-              )
-              archivedPath <- archivedAccount.pathString
-              _ <- info:
-                s"Archived $hiddenAccountPath to $archivedPath."
-            yield ()
+          for
+            archiveSubroot <- Account.createOrRetrieveArchiveSubroot
+            hiddenAccounts <- root.hiddenChildren:
+              archiveSubroot
+            _ <- (IO.traverse:
+              hiddenAccounts
+            ): hiddenAccount =>
+              for
+                hiddenAccountPath <- hiddenAccount.pathString
+                livePathInit <- pathInitBelow(hiddenAccount, root)
+                archiveParent <- mirrorParentFor(
+                  livePathInit,
+                  from = root,
+                  to = archiveSubroot,
+                  dryRun = false
+                )
+                _ <- cleanUpRedundantMirror(
+                  original = hiddenAccount,
+                  originalPath = hiddenAccountPath,
+                  mirrorParent = archiveParent,
+                  mirrorKind = "Archive"
+                )
+                archivedAccount <- hiddenAccount.update(
+                  parent = archiveParent
+                )
+                archivedPath <- archivedAccount.pathString
+                _ <- info:
+                  s"Archived $hiddenAccountPath to $archivedPath."
+              yield ()
+          yield ()
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
@@ -85,10 +94,19 @@ def restoreAccount(
       input.toString
     .use: db =>
       given Database[IO] = db
+      val nothingToRestore = Error("No archived accounts to restore.")
       for
         root <- Account.root
-        archiveSubroot <- Account.createOrRetrieveArchiveSubroot
+        // Retrieved, never created: a book that has never archived anything
+        // has no Archive subroot and nothing to restore, and creating one
+        // here would be a write outside the transaction below, on behalf of a
+        // command that is about to do nothing.
+        archiveSubroot <- Account.retrieveArchiveSubroot.flatMap:
+          IO.fromOption(_):
+            nothingToRestore
         archivedAccounts <- archiveSubroot.allChildren
+        _ <- IO.raiseWhen(archivedAccounts.isEmpty):
+          nothingToRestore
         archivedAccountsByPath <- (IO
           .traverse:
             archivedAccounts
@@ -114,9 +132,12 @@ def restoreAccount(
         // long as the prompt sits unanswered.
         _ <- db.transact:
           for
-            nonArchiveParent <- archivedAccount.createOrRetrieveMirrorParent(
+            archivePathInit <- pathInitBelow(archivedAccount, archiveSubroot)
+            nonArchiveParent <- mirrorParentFor(
+              archivePathInit,
               from = archiveSubroot,
-              to = root
+              to = root,
+              dryRun = false
             )
             _ <- cleanUpRedundantMirror(
               original = archivedAccount,
@@ -208,10 +229,16 @@ def importTransactions(
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
-  // Snapshot first: a bad run becomes a restore, not a rebuild.
+  // Snapshot first: a bad run becomes a restore, not a rebuild. The snapshot
+  // is of the run about to happen, so it replaces the one the last run left —
+  // without ReplaceExisting the copy throws once a .bak exists, which is to
+  // say on every run after the first.
   _ <- IO.unlessA(dryRun):
     val backup = fs2.io.file.Path(s"$input.bak")
-    fs2.io.file.Files[IO].copy(input, backup) *> info(s"Backed up to $backup.")
+    fs2.io.file
+      .Files[IO]
+      .copy(input, backup, CopyFlags(CopyFlag.ReplaceExisting)) *>
+      info(s"Backed up to $backup.")
   _ <- Database
     .open[IO](input.toString)
     .use: db =>
@@ -254,17 +281,41 @@ def importTransactions(
           case (account, _) if isPotBacking(account) => account.id
         materialMonzoPotAccountIds = materialByAccount.collect:
           case (account, _) if isPotBacking(account) => account.id
+        // Every online_id in the book, in one scan: the tags below and the
+        // dedup check further down are the run's only two readers of them,
+        // and both would otherwise scan an unindexed table that grows with
+        // the book's history. See Slot.onlineIds.
+        onlineIds <- Slot.onlineIds
         // The book is the durable home of the account associations: each
         // asset account is tagged with the Monzo account ID that posts into
         // it in an account-level online_id slot, so a book that outlives the
         // state store (say, moved to a new machine) still resolves by tag.
-        // Looked up once per ID here — bySlot scans the whole slots table, so
-        // the fail-fasts and the resolver share this one prefetch.
-        taggedByMonzoAccountId <- (typedAccountsAndPaths
-          .map((account, _) => account.id) ++ allMonzoPotAccountIds)
+        // Resolved from the prefetch by primary key, and only for the IDs
+        // this run asks about — most online_id slots name a split, not an
+        // account. Two accounts tagged with one Monzo account ID fail the
+        // run: nothing in the book says which is meant, and posting into the
+        // wrong one would be permanent.
+        monzoAccountIds = typedAccountsAndPaths
+          .map((account, _) => account.id) ++ allMonzoPotAccountIds
+        taggedGuids = onlineIds
+          .filter: (value, _) =>
+            monzoAccountIds.exists(_.value == value)
+          .groupMap((value, _) => value)((_, objGuid) => objGuid)
+        taggedByMonzoAccountId <- monzoAccountIds
           .traverse: monzoAccountId =>
-            Account
-              .bySlot(Slot.OnlineId, monzoAccountId.value)
+            taggedGuids
+              .getOrElse(monzoAccountId.value, Nil)
+              .distinct
+              .traverse(Account.byGuid)
+              .map(_.flatten)
+              .flatMap:
+                case Nil            => IO.none
+                case account :: Nil => IO.pure(Some(account))
+                case accounts       =>
+                  IO.raiseError:
+                    Error(
+                      s"Several accounts are tagged with the Monzo account ID ${monzoAccountId.value}: ${accounts.map(_.name).sorted.mkString(", ")}; resolve by hand — only one account can be the one it posts into."
+                    )
               .map(monzoAccountId -> _)
           .map(_.toMap)
         taggedPots = allMonzoPotAccountIds
@@ -381,10 +432,30 @@ def importTransactions(
                 createOrRetrieveChild(parent, path.last, dryRun)
                   .map(path -> _)
           .map(_.toMap)
-        // One upfront read of every online_id in the book; the whole run sits
-        // in a single SQLite transaction and fetched transaction IDs are
-        // unique, so the set can't go stale mid-run. See Slot.onlineIdValues.
-        importedIds <- Slot.onlineIdValues
+        // Every account a posting touches is denominated in the book's
+        // currency, so a split's value and its quantity are the same rational
+        // number and neither needs an exchange rate — which is what lets
+        // Posting.fromMonzo write one pair of numerators and denominators for
+        // both. An account in another commodity would need a rate, and
+        // posting Monzo's minor units into it as though they were the book's
+        // would be wrong by it, so fail rather than file: online_id dedup
+        // skips a mis-filed row on every later run, so it could never be
+        // re-filed.
+        foreignAccounts = (assets.values ++ categories.values).toList
+          .filterNot(_.commodityGuid.contains(currency.guid))
+          .map(_.name)
+          .distinct
+        _ <- IO.raiseUnless(foreignAccounts.isEmpty):
+          Error(
+            s"Account(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignAccounts.sorted.mkString(", ")}."
+          )
+        // The dedup keys out of the same prefetch: the whole run sits in a
+        // single SQLite transaction and fetched transaction IDs are unique,
+        // so the set can't go stale mid-run. The account tags resolution has
+        // just written aren't in it, and needn't be — those are Monzo account
+        // IDs, and what this answers is whether a Monzo *transaction* ID is
+        // already filed.
+        importedIds = onlineIds.map((value, _) => value).toSet
         results <- materialByAccount.flatTraverse: (account, material) =>
           // Total: unmapped types and unnamed pots failed the run up front,
           // and `assets` was built from this same list of accounts.
@@ -622,11 +693,9 @@ def enforcePlacement(
     described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
 
-// The canonical parent for a retired account: the live parent chain nested
-// under the Archive subroot, created on demand — each missing segment as a
-// placeholder copy of its live counterpart (or of the archive-side parent,
-// when the live segment no longer exists). In a dry run nothing is written;
-// missing segments are fabricated so the rest of the plan can proceed.
+// The canonical parent for a retired account: the live parent chain mirrored
+// under the Archive subroot. In a dry run nothing is written; the subroot
+// itself is fabricated when missing so the rest of the plan can proceed.
 def archiveParentFor(
     livePathInit: List[String],
     dryRun: Boolean
@@ -648,23 +717,62 @@ def archiveParentFor(
           .flatTap: _ =>
             info(s"Would create account Root Account/${Account.ArchiveName}.")
       case None => Account.createOrRetrieveArchiveSubroot
-    cursors <- livePathInit
-      .foldLeftM(
-        (archive = archiveSubroot, live = Some(root): Option[Account])
-      ): (cursors, segment) =>
-        for
-          nextLive <- cursors.live match
-            case Some(live) => live.child(segment)
-            case None       => IO.pure(None)
-          nextArchive <- createOrRetrieveChild(
-            cursors.archive,
-            segment,
-            dryRun,
-            placeholder = true,
-            template = nextLive
+    archiveParent <- mirrorParentFor(
+      livePathInit,
+      from = root,
+      to = archiveSubroot,
+      dryRun
+    )
+  yield archiveParent
+
+// One parent chain mirrored across the live/archive boundary, for every way
+// an account crosses it: (from = root, to = the Archive subroot) going in,
+// the reverse coming out, so import, archive-accounts and restore-account
+// share one notion of what a mirror is rather than each carrying its own.
+// Missing segments are created on demand, each a placeholder copy of its
+// counterpart under `from` — or of the parent it's created under, when that
+// counterpart no longer exists (an account whose live twin has since been
+// deleted still needs somewhere to sit).
+def mirrorParentFor(
+    pathInit: List[String],
+    from: Account,
+    to: Account,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  pathInit
+    .foldLeftM(
+      (mirror = to, counterpart = Some(from): Option[Account])
+    ): (cursors, segment) =>
+      for
+        nextCounterpart <- cursors.counterpart match
+          case Some(counterpart) => counterpart.child(segment)
+          case None              => IO.pure(None)
+        nextMirror <- createOrRetrieveChild(
+          cursors.mirror,
+          segment,
+          dryRun,
+          placeholder = true,
+          template = nextCounterpart
+        )
+      yield (mirror = nextMirror, counterpart = nextCounterpart)
+    .map(_.mirror)
+
+// The names between `ancestor` and `account`, exclusive: the path a mirror of
+// `account` on the other side of the boundary has to reproduce. The import
+// path knows its paths up front (they are code-defined); archive-accounts and
+// restore-account start from an account instead and read theirs out of the
+// book.
+def pathInitBelow(account: Account, ancestor: Account)(using
+    db: Database[IO]
+): IO[List[String]] =
+  account.path.flatMap: accounts =>
+    accounts.indexWhere(_.guid == ancestor.guid) match
+      case -1 =>
+        IO.raiseError:
+          Error(
+            s"${ancestor.name} is not an ancestor of ${account.name}."
           )
-        yield (archive = nextArchive, live = nextLive)
-  yield cursors.archive
+      case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
 
 // The live parent chain for a code-defined path, created on demand below its
 // top-level account — which must already exist, and does in any freshly

@@ -54,19 +54,22 @@ object Slot:
       args = objGuid
     )
 
-  // Every online_id value in the book, trimmed, in one query — the importer's
-  // idempotency check is then an in-memory membership test per transaction.
-  // slots has no index on (name, string_val), so per-transaction queries
-  // would each scan the whole table. Mirrors GnuCash's own OFX-import dedup,
-  // which recognises the same slots.
-  def onlineIdValues(using db: Database[IO]): IO[Set[String]] =
+  // Every online_id slot in the book as (trimmed value, obj_guid), in one
+  // query: slots has no index on (name, string_val), so a lookup per value
+  // would scan the whole table each time — a table that also holds every
+  // imported split's dedup slot, and so grows with the book's history. The
+  // importer reads this once and answers both of its online_id questions in
+  // memory: which Monzo transactions are already filed (mirroring GnuCash's
+  // own OFX-import dedup, which recognises the same slots) and which account
+  // carries each Monzo account ID's tag.
+  def onlineIds(using db: Database[IO]): IO[List[(String, String)]] =
     db.execute(
       query = sql"""
-        select trim(string_val) from slots
+        select trim(string_val), obj_guid from slots
         where name = $text and string_val is not null
-      """.query(text),
+      """.query(text *: text *: nil),
       args = OnlineId
-    ).map(_.toSet)
+    )
 
 /** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
   * AUTOINCREMENT NOT NULL, obj_guid text(32) NOT NULL, name text(4096) NOT
