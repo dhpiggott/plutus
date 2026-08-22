@@ -84,6 +84,18 @@ jobs:
           bot_id: "209825114"
           bot_name: "claude[bot]"
 
+          # Everything this session says ends up in a GitHub comment, read long
+          # after the run finished, where the default style's step-by-step
+          # narration and closing recap only bury the result. `Concise` changes
+          # the reporting, not the work: error output, failing check details and
+          # confirmations before destructive actions keep their full detail.
+          # Passed as `settings` rather than in claude_args because the CLI has
+          # no --output-style flag, only the setting.
+          settings: |
+            {
+              "outputStyle": "Concise"
+            }
+
           # Installed, never invoked on its own: this workflow has no `prompt`,
           # so it takes its instructions from the comment that mentioned
           # Claude, and all these two lines do is put the review skill within
