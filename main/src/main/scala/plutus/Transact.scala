@@ -21,3 +21,12 @@ extension [F[_]](db: Database[F])(using F: MonadCancel[F, Throwable])
     begin *> body.attempt.flatMap:
       case Right(a) => commit.as(a)
       case Left(e)  => rollback *> F.raiseError(e)
+
+// Rows inserted, updated or deleted on this connection since it was opened —
+// SQLite's own count, so no write path has to remember to report itself. Read
+// after a commit it answers "did this run change anything?"; the counter isn't
+// decremented by a rollback, so it only means that when the transaction it
+// covers succeeded.
+extension [F[_]](db: Database[F])
+  def rowsChanged: F[Long] =
+    db.unique(sql"select total_changes()".query(porcupine.Codec.integer))

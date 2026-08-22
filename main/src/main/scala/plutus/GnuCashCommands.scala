@@ -9,6 +9,8 @@ import fs2.io.file.CopyFlags
 import porcupine.*
 
 import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 import scala.collection.immutable.SortedMap
 
@@ -229,17 +231,22 @@ def importTransactions(
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
-  // Snapshot first: a bad run becomes a restore, not a rebuild. The snapshot
-  // is of the run about to happen, so it replaces the one the last run left —
-  // without ReplaceExisting the copy throws once a .bak exists, which is to
-  // say on every run after the first.
+  // Snapshot first: a bad run becomes a restore, not a rebuild. Whether a run
+  // will write anything isn't knowable until the book is open — even a fetch
+  // with no material transactions can create, move, rename, un-hide or tag an
+  // asset account — so the copy is taken before we know, under a temporary
+  // name, and promoted below only once the run has actually changed something.
+  // A scheduled run that files nothing therefore leaves no artefact behind,
+  // and no run's backup overwrites another's: the name carries the run's own
+  // timestamp, so every backup is kept and each undoes exactly the run it
+  // precedes. Nothing prunes them — see the README.
+  temporaryBackup = fs2.io.file.Path(s"$input.bak.tmp")
+  backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
   _ <- IO.unlessA(dryRun):
-    val backup = fs2.io.file.Path(s"$input.bak")
     fs2.io.file
       .Files[IO]
-      .copy(input, backup, CopyFlags(CopyFlag.ReplaceExisting)) *>
-      info(s"Backed up to $backup.")
-  _ <- Database
+      .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting))
+  changed <- Database
     .open[IO](input.toString)
     .use: db =>
       given Database[IO] = db
@@ -481,8 +488,38 @@ def importTransactions(
           s"$filed filed, $skipped already present."
       yield ()
       // Everything-or-nothing, unless we're only previewing.
-      if dryRun then run else db.transact(run)
+      if dryRun then run.as(0L) else db.transact(run) *> db.rowsChanged
+    .onError:
+      // Keep the snapshot: the transaction rolls the book back, but a run that
+      // failed is exactly when you want the copy that predates it.
+      case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
+  _ <- IO.unlessA(dryRun):
+    // The book is untouched when nothing changed, so its backup would be a
+    // copy of a file that already exists, aging out the one that could undo
+    // the last run that did write.
+    if changed > 0 then promoteBackup(temporaryBackup, backup)
+    else fs2.io.file.Files[IO].delete(temporaryBackup)
 yield ()
+
+// ReplaceExisting so a second run inside the same second can't fail here,
+// after its writes have already been committed.
+def promoteBackup(
+    temporaryBackup: fs2.io.file.Path,
+    backup: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .move(temporaryBackup, backup, CopyFlags(CopyFlag.ReplaceExisting)) *>
+    info(s"Backed up to $backup.")
+
+// Compact UTC, so backups sort chronologically by name, and no colons, which
+// Finder renders as slashes. The instant is the Monzo session's own, so every
+// artefact of a run carries the same stamp.
+val backupTimestamp: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+
+def formatBackupTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
 
 enum Imported:
   case Filed, Skipped
