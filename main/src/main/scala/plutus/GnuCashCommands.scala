@@ -247,7 +247,8 @@ def importTransactions(
   _ <- IO.unlessA(dryRun):
     fs2.io.file
       .Files[IO]
-      .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting))
+      .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting)) *>
+      info(s"Copied $input to $temporaryBackup.")
   changed <- Database
     .open[IO](input.toString)
     .use: db =>
@@ -538,7 +539,9 @@ def importTransactions(
     // copy of a file that already exists, aging out the one that could undo
     // the last run that did write.
     else if changed > 0 then promoteBackup(temporaryBackup, backup)
-    else fs2.io.file.Files[IO].delete(temporaryBackup)
+    else
+      fs2.io.file.Files[IO].delete(temporaryBackup) *>
+        info(s"Nothing changed, so deleted $temporaryBackup.")
 yield ()
 
 // AtomicMove, so the promotion either happens or doesn't: the backup never
@@ -559,7 +562,7 @@ def promoteBackup(
       temporaryBackup,
       backup,
       CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
-    ) *> info(s"Backed up to $backup.")
+    ) *> info(s"Moved $temporaryBackup to $backup.")
 
 // Compact UTC, so backups sort chronologically by name, and no colons, which
 // Finder renders as slashes. The instant is the Monzo session's own, so every
