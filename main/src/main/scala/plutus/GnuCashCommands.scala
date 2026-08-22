@@ -767,9 +767,14 @@ def archiveParentFor(
 // the reverse coming out, so import, archive-accounts and restore-account
 // share one notion of what a mirror is rather than each carrying its own.
 // Missing segments are created on demand, each a placeholder copy of its
-// counterpart under `from` — or of the parent it's created under, when that
-// counterpart no longer exists (an account whose live twin has since been
-// deleted still needs somewhere to sit).
+// counterpart under `from` — or of the parent it's created under when there
+// is no counterpart. That last case is import's alone: archive-accounts and
+// restore-account read their paths out of the book, so every segment has a
+// counterpart by construction, while import's are code-defined
+// (AssetAccounts.default) and only each path's top-level account is
+// guaranteed to exist. A Monzo account closed before the book ever saw it is
+// the ordinary way there: its archive chain mirrors a live chain that was
+// never created, since nothing was ever live to create it.
 def mirrorParentFor(
     pathInit: List[String],
     from: Account,
