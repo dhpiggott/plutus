@@ -61,6 +61,7 @@ def archiveAccounts(
                   livePathInit,
                   from = root,
                   to = archiveSubroot,
+                  toPath = canonicalPathString(Nil, retired = true),
                   dryRun = false
                 )
                 _ <- cleanUpRedundantMirror(
@@ -139,6 +140,7 @@ def restoreAccount(
               archivePathInit,
               from = archiveSubroot,
               to = root,
+              toPath = canonicalPathString(Nil, retired = false),
               dryRun = false
             )
             _ <- cleanUpRedundantMirror(
@@ -436,8 +438,12 @@ def importTransactions(
           .flatTraverse: (parentPath, paths) =>
             liveParentFor(parentPath, dryRun).flatMap: parent =>
               paths.traverse: path =>
-                createOrRetrieveChild(parent, path.last, dryRun)
-                  .map(path -> _)
+                createOrRetrieveChild(
+                  parent,
+                  canonicalPathString(parentPath, retired = false),
+                  path.last,
+                  dryRun
+                ).map(path -> _)
           .map(_.toMap)
         // Every account a posting touches is denominated in the book's
         // currency, so a split's value and its quantity are the same rational
@@ -638,7 +644,12 @@ def resolveAssetAccount(
       case None =>
         for
           parent <- parentFor(canonicalPath.init, retired, dryRun)
-          child <- createChild(parent, canonicalPath.last, dryRun)
+          child <- createChild(
+            parent,
+            canonicalPathString(canonicalPath.init, retired),
+            canonicalPath.last,
+            dryRun
+          )
           placed <- alignHidden(child, retired, canonicalPath, dryRun)
         yield placed
     _ <- IO.unlessA(dryRun || tagged.isDefined):
@@ -784,6 +795,7 @@ def archiveParentFor(
       livePathInit,
       from = root,
       to = archiveSubroot,
+      toPath = canonicalPathString(Nil, retired = true),
       dryRun
     )
   yield archiveParent
@@ -794,7 +806,9 @@ def archiveParentFor(
 // share one notion of what a mirror is rather than each carrying its own.
 // Missing segments are created on demand, each a placeholder copy of its
 // counterpart under `from` — or of the parent it's created under when there
-// is no counterpart. That last case is import's alone: archive-accounts and
+// is no counterpart. `toPath` names where `to` sits, for the same reason
+// createChild takes a parent path: a dry run's Archive subroot may be one
+// this run only pretended to create. That last case is import's alone: archive-accounts and
 // restore-account read their paths out of the book, so every segment has a
 // counterpart by construction, while import's are code-defined
 // (AssetAccounts.default) and only each path's top-level account is
@@ -805,11 +819,16 @@ def mirrorParentFor(
     pathInit: List[String],
     from: Account,
     to: Account,
+    toPath: String,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   pathInit
     .foldLeftM(
-      (mirror = to, counterpart = Some(from): Option[Account])
+      (
+        mirror = to,
+        mirrorPath = toPath,
+        counterpart = Some(from): Option[Account]
+      )
     ): (cursors, segment) =>
       for
         nextCounterpart <- cursors.counterpart match
@@ -817,12 +836,17 @@ def mirrorParentFor(
           case None              => IO.pure(None)
         nextMirror <- createOrRetrieveChild(
           cursors.mirror,
+          cursors.mirrorPath,
           segment,
           dryRun,
           placeholder = true,
           template = nextCounterpart
         )
-      yield (mirror = nextMirror, counterpart = nextCounterpart)
+      yield (
+        mirror = nextMirror,
+        mirrorPath = s"${cursors.mirrorPath}/$segment",
+        counterpart = nextCounterpart
+      )
     .map(_.mirror)
 
 // The names between `ancestor` and `account`, exclusive: the path a mirror of
@@ -856,8 +880,22 @@ def liveParentFor(
       .flatMap:
         IO.fromOption(_):
           Error(s"No account at ${pathInit.head}")
-    parent <- pathInit.tail.foldLeftM(top): (parent, segment) =>
-      createOrRetrieveChild(parent, segment, dryRun, placeholder = true)
+    parent <- pathInit.tail
+      .foldLeftM(
+        (
+          account = top,
+          path = canonicalPathString(List(pathInit.head), retired = false)
+        )
+      ): (cursor, segment) =>
+        createOrRetrieveChild(
+          cursor.account,
+          cursor.path,
+          segment,
+          dryRun,
+          placeholder = true
+        ).map: child =>
+          (account = child, path = s"${cursor.path}/$segment")
+      .map(_.account)
   yield parent
 
 // Get-or-create one child, for the paths where sharing is the point: a
@@ -865,6 +903,7 @@ def liveParentFor(
 // above it.
 def createOrRetrieveChild(
     parent: Account,
+    parentPath: String,
     name: String,
     dryRun: Boolean,
     placeholder: Boolean = false,
@@ -874,7 +913,8 @@ def createOrRetrieveChild(
     .child(name)
     .flatMap:
       case Some(child) => IO.pure(child)
-      case None => createChild(parent, name, dryRun, placeholder, template)
+      case None        =>
+        createChild(parent, parentPath, name, dryRun, placeholder, template)
 
 // Create one child, whether or not a sibling of that name already exists —
 // GnuCash identifies an account by guid and permits the duplicate name, and
@@ -892,9 +932,13 @@ def createOrRetrieveChild(
 // would then clear. Structural path segments are created as placeholders,
 // leaves that take postings are not. A dry run inserts nothing but still
 // yields the would-be account, so the rest of the plan can proceed against
-// it.
+// it — which is why `parentPath` is passed in rather than read back out of
+// the book: in a dry run the parent may itself be a would-be account that was
+// never inserted, and Account.pathString walks parent_guid through the
+// accounts table, so it would come back empty and log "/Monzo".
 def createChild(
     parent: Account,
+    parentPath: String,
     name: String,
     dryRun: Boolean,
     placeholder: Boolean = false,
@@ -902,7 +946,6 @@ def createChild(
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
     guid <- newGuid
-    parentPath <- parent.pathString
     child = template
       .getOrElse(parent)
       .copy(
