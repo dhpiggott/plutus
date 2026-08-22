@@ -816,10 +816,15 @@ def createOrRetrieveChild(
 // A created child inherits its account type and commodity from `template` —
 // by default the parent, so an Expenses child is an EXPENSE account and a
 // Liabilities child a LIABILITY (the literal accounts.account_type values);
-// archiveParentFor passes the live twin so archived mirrors match what they
-// mirror. Structural path segments are created as placeholders, leaves that
-// take postings are not. A dry run inserts nothing but still yields the
-// would-be account, so the rest of the plan can proceed against it.
+// mirrorParentFor passes the counterpart being mirrored so archived and
+// restored parents match what they mirror. Code and description come from an
+// explicit template only, never from the parent: a mirror is a copy of its
+// counterpart down to those fields, while a fresh asset or category account
+// is born carrying neither, so nothing inherits a description enforcePlacement
+// would then clear. Structural path segments are created as placeholders,
+// leaves that take postings are not. A dry run inserts nothing but still
+// yields the would-be account, so the rest of the plan can proceed against
+// it.
 def createChild(
     parent: Account,
     name: String,
@@ -836,8 +841,8 @@ def createChild(
         guid = guid,
         name = name,
         parentGuid = Some(parent.guid),
-        code = None,
-        description = None,
+        code = template.flatMap(_.code),
+        description = template.flatMap(_.description),
         hidden = false,
         placeholder = placeholder
       )
