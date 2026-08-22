@@ -2,9 +2,9 @@ package plutus
 
 // Where Monzo money lands in GnuCash. Main accounts map deterministically by
 // their type (uk_retail, uk_retail_joint, …) via byAccountType — no per-account
-// CLI wiring — and are found by their online_id tags (or, untagged, at their
-// canonical paths), created on demand, and kept at their code-defined
-// placement (see GnuCashCommands.enforcePlacement); an account whose type
+// CLI wiring — and are found by their online_id tags and nothing else, created
+// and tagged when no tag names them, and kept at their code-defined placement
+// (see GnuCashCommands.enforcePlacement); an account whose type
 // isn't in the map fails the run rather than being guessed at. Pot
 // backing accounts never appear in /accounts and so carry no type (they're
 // discovered from transaction metadata); each posts into a child of `pots`

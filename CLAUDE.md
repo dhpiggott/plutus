@@ -14,7 +14,7 @@ When a change touches code, build configuration, or smithy IDL that's reachable 
 sbt 'main3/compile' 'mainNative3/compile'
 ```
 
-There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, `scalafmtSbtCheck`, both of those compiles, and `scalafixAll --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
+There are no tests in the repo — `sbt test` is a no-op, and there is no `src/test` directory in any module. `.github/scripts/verify.sh` is the whole verification story: `scalafmtCheckAll`, `scalafmtSbtCheck`, a bare `compile` (the root project aggregates every row, so this covers both platforms and survives a new module), and `scalafixAll --check`. Prefer running it over hand-assembling sbt invocations, so that what you check locally is what CI checks.
 
 `scalafmtCheckAll` does not cover `build.sbt` or `project/` — those are what `scalafmtSbtCheck` is for, and `.scalafmt.conf` has an `sbt1` `fileOverride` for them.
 
@@ -31,6 +31,14 @@ The state-store boundary is just `object Keychain` exposed by `keychain-jvm` / `
 ## SQLite boundary
 
 `porcupine-jvm` and `porcupine-native` each expose an `object porcupine.Sqlite` with parallel `Connection` / `Statement` traits over the `sqlite3` C API, trafficking only in primitive types (`Long`, `Double`, `String`, `Array[Byte]`, `Any | Null`). `porcupine` depends on both (one per row) and layers `Database[F]` on top — codec encoding/decoding, `Mutex`-serialised access, `F.blocking`, `Resource`. Adding a column or function to `Sqlite` means matching changes in *both* platform files; the shapes drift silently because there's no shared trait.
+
+## GnuCash book access
+
+Every table the CLI touches has a row type in `main` that owns *all* the SQL for it — `Account`, `Commodity`, `Transaction`, `Split`, `Slot`, and `Posting` (a transaction plus its two balanced splits). Queries belong in those objects, not in the command files; `GnuCashCommands.scala` composes them and takes `Database[IO]` as a `using` parameter.
+
+`Transact.scala` adds two extensions used by all three commands: `db.transact` (one `begin immediate` … `commit`, rolled back on failure) and `db.withoutCommitting` (a deferred `begin` always rolled back, which is how `--dry-run` guarantees nothing survives). `db.rowsChanged` reads SQLite's own `total_changes()`, so no write path has to report itself — after `transact` it answers "did this run change anything?", after `withoutCommitting` "did this run try to?".
+
+The `online_id` slot carries two unrelated meanings, both of which this code writes: on an *account* it is GnuCash's OFX association, keyed here by Monzo account ID; on a *split* it is the imported row's dedup key, the Monzo transaction ID. `Slot.onlineIds` returns both in one scan — `slots` is unindexed and grows with history, so prefer widening that prefetch to adding another scan.
 
 ## macOS Keychain FFI gotchas
 
@@ -69,14 +77,39 @@ The Keychain is reached two different ways: `keychain-native` (Scala Native, sn-
 
 ## GitHub Actions
 
-Three workflows, all in `.github/workflows/`: `ci.yml` (build), `claude.yml` (`@claude` mentions on issues and PRs), and `claude-code-review.yml` (automatic review of every PR).
+Two workflows, both in `.github/workflows/`: `ci.yml` (build) and `claude.yml` (`@claude` mentions on issues and PRs).
+
+There is deliberately no automatic reviewer. `claude-code-review.yml` existed until it was removed, and never worked: it produced a green required check without reviewing anything, three separate ways — the `Skill` tool missing from the action's tool set (#32), `Task` missing too so the review plugin's agent fan-out could not run (#43), and the action's workflow-validation skip on any PR that edits `claude*.yml`. Each failure exits 0. Ask for review instead by commenting `@claude review this` on the pull request, which runs `claude.yml`: Opus, on macOS, able to run `verify.sh` — none of which the reviewer could do.
+
+For a heavier pass, `claude.yml` also installs the `code-review@claude-code-plugins` skill. **When a comment asks for a full, deep or thorough review — `@claude full review` is the intended phrasing — invoke it for the pull request the comment is on:**
+
+```
+/code-review:code-review --comment <owner>/<repo>/pull/<N>
+```
+
+**Always pass `--comment`.** The skill's step 7 reads "If `--comment` argument was NOT provided, stop here. Do not post any GitHub comments", so without the flag a review that finds something keeps it to itself. Fill in the repository and PR number from the comment's own context rather than asking for them.
+
+A plain `@claude review this` means the unaided review, which is cheaper and has been enough so far — reach for the skill when the diff is large or touches the FFI and build rules.
+
+The skill fans out to four parallel reviewers — two on CLAUDE.md compliance, two on bugs — then validates every finding with a second agent before posting. It needs `Skill` and `Task`, which the action does not grant, so it works only because `claude.yml` runs under `--permission-mode auto`.
 
 - **`ci.yml` and `claude.yml` run on `macos-latest`, and have to.** Not just for the Scala Native row: the JVM row's `keychain-jvm` and `porcupine-jvm` bindings are generated by jextract against the SDK that `xcrun --show-sdk-path` resolves, so *nothing* in this build compiles on Linux. If a build step is failing at the very first bindings task, check the runner OS before anything else.
 - **`.github/actions/setup-build` is the one place that provisions the toolchain** — Homebrew packages via `.github/scripts/install-build-deps.sh`, a JDK (22+, for the Foreign Function & Memory API), sbt via `sbt/setup-sbt`, and caches for coursier/sbt, the vcpkg-built `libsqlite3.a`, and the ~150MB jextract distribution. Add setup there rather than inline in a workflow, so the build and Claude workflows can't drift apart.
-- **The action allows no Bash commands by default.** `claude.yml` passes an explicit `--allowedTools` allowlist covering `.github/scripts/verify.sh`, `sbt`, `git`, `gh`, `brew list` and `xcrun`. Anything outside that list is simply unavailable on the runner; the fix is to widen the allowlist in the workflow, not to work around it.
-- **`claude-code-review.yml` runs on Linux and cannot build anything.** It is a read-only reviewer; treat "does this compile?" as CI's answer, not something that review can establish.
-- **Checkout is `fetch-depth: 0` everywhere on purpose.** sbt-dynver derives `version` from the tag history and that version lands in `BuildInfo`; a shallow clone silently yields `0.0.0+…`.
-- A cold run — no cache hits, sqlite3 built from source by vcpkg, jextract downloaded — takes a good fraction of the job timeout. `ci.yml` runs on pushes to `main` as well as PRs specifically so the caches it populates are visible to PR and `@claude` runs.
+- **The action allows no Bash commands by default, and `claude.yml` answers that with `--permission-mode auto` rather than a long allowlist.** The action runs headless under `acceptEdits`, where an unlisted call has no prompt to fall back to and is denied outright; under auto mode a classifier reviews it instead, so `sbt`, `git`, `gh` and `verify.sh` are reachable without being enumerated. So the fix for "Claude couldn't run X" is no longer to widen a list. The one surviving entry, `mcp__github_inline_comment__create_inline_comment`, is not there for permission: `install-mcp-server.ts` starts the `github_inline_comment` server only when a tool with that prefix is in the allowlist, so omitting it removes the tool rather than deferring it to the classifier.
+- **`mcp__github_inline_comment__create_inline_comment` is in that allowlist so review-on-request lands on the diff.** Listing an `mcp__github_*` tool does two jobs: the action's `install-mcp-server.ts` only starts the matching MCP server when a tool with that prefix appears in the allowlist, so omitting it doesn't merely deny the tool, the server never starts and the tool does not exist.
+- **A green Claude check is not evidence Claude did anything.** Headless runs have no prompt handler, so a call the mode won't auto-approve is refused rather than asked about, and the job still exits 0 — under `acceptEdits` because the tool wasn't allowlisted, under auto mode because the classifier blocked it and "the action doesn't run and Claude keeps working". The tells are in the run log's result block: `permission_denials_count` above zero, and `No buffered inline comments` from the post-step.
+- **Checkout is `fetch-depth: 0` everywhere on purpose**, for two different reasons. In the workflows that build, sbt-dynver derives `version` from the tag history and that version lands in `BuildInfo`, so a shallow clone silently yields `0.0.0+…`. It also gives Claude the history to read while it works.
+- `ci.yml` runs on pushes to `main` as well as PRs specifically so the caches it populates are visible to PR and `@claude` runs. Those runs are also the only ones that reach `nativeLink`, so they are exempt from `cancel-in-progress`.
+
+### The ruleset on `main`
+
+`main` is governed by a repository ruleset: pull requests required with no bypass actors, `Build` must pass, commits must be signed, and only squash and merge commits are allowed.
+
+- **Rebase merging is impossible while signatures are required.** GitHub refuses it outright — "Rebase merges cannot be automatically signed by GitHub" — because it rewrites commits server-side and cannot sign the results. Squash is fine: GitHub authors that commit and signs it. A merge commit preserves the branch's own commits, so every one of them must already be signed.
+- **A job's `name` is its check-run name, and `Build` is a ruleset context.** Renaming a job therefore breaks merging until the ruleset's required contexts are updated — including for the renaming PR itself, which reports under the new names while the old ones are still required. Sequence: open the PR, let its checks report, update the contexts, then merge.
+- **Auto-merge is re-evaluated on pull request events, not on ruleset edits.** Clearing the last blocking condition by changing the ruleset leaves the PR mergeable but unmerged; a check completing afterwards is what makes GitHub look again.
+- Commits Claude pushes are created through the GitHub API and signed by GitHub (`use_commit_signing: true` in `claude.yml`), which is what lets them satisfy the signature rule. That path builds single-parent commits, so Claude cannot produce a signed merge commit this way.
+- **`bot_id: "209825114"` is a workaround, not a preference.** The action's default is `41898282`, which is `github-actions[bot]` despite being documented as Claude's — see anthropics/claude-code-action#759. GitHub resolves a commit to an account by the numeric ID in its noreply address, so on the default every commit Claude pushes is misattributed. Drop the override once upstream fixes the constant.
 
 ## Conventions
 

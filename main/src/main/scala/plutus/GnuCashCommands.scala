@@ -485,7 +485,10 @@ def importTransactions(
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
-          s"$filed filed, $skipped already present."
+          // A dry run files nothing, so it says what it would have done,
+          // as the account creations above do.
+          val verb = if dryRun then "would file" else "filed"
+          s"$filed $verb, $skipped already present."
       yield ()
       // Everything-or-nothing either way: a real run commits, a dry run is
       // rolled back rather than merely left unwritten, so that a write that
