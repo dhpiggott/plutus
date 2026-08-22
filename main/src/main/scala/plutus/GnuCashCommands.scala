@@ -487,17 +487,31 @@ def importTransactions(
           val skipped = results.count(_ == Imported.Skipped)
           s"$filed filed, $skipped already present."
       yield ()
-      // Everything-or-nothing, unless we're only previewing.
-      if dryRun then run.as(0L) else db.transact(run) *> db.rowsChanged
+      // Everything-or-nothing either way: a real run commits, a dry run is
+      // rolled back rather than merely left unwritten, so that a write that
+      // slipped past a dryRun guard doesn't survive a run that took no
+      // backup.
+      if dryRun then db.withoutCommitting(run) *> db.rowsChanged
+      else db.transact(run) *> db.rowsChanged
     .onError:
       // Keep the snapshot: the transaction rolls the book back, but a run that
       // failed is exactly when you want the copy that predates it.
       case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
-  _ <- IO.unlessA(dryRun):
+  _ <-
+    if dryRun then
+      // The rollback above has already undone them, so the book is intact and
+      // this is a report about the code rather than about the book: a dry run
+      // reaching any write at all means a dryRun guard is missing, and the
+      // next real run would file whatever that path writes without anyone
+      // having seen it in the plan.
+      IO.raiseWhen(changed > 0):
+        Error(
+          s"Dry run attempted $changed row change(s), which were rolled back; the book is unchanged. This is a bug — please report it."
+        )
     // The book is untouched when nothing changed, so its backup would be a
     // copy of a file that already exists, aging out the one that could undo
     // the last run that did write.
-    if changed > 0 then promoteBackup(temporaryBackup, backup)
+    else if changed > 0 then promoteBackup(temporaryBackup, backup)
     else fs2.io.file.Files[IO].delete(temporaryBackup)
 yield ()
 
