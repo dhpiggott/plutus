@@ -6,7 +6,7 @@ on:
   pull_request:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   # Cancel superseded PR builds, but never a build of main: those are the runs
   # that populate the caches every other run restores from, and the only ones
   # that link the native binary.

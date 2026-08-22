@@ -126,7 +126,7 @@ sbt dependencyUpdates       # fails (rather than just reporting) if any dep is s
 ### Continuous integration
 
 ```
-.github/scripts/verify.sh   # the four checks above, minus dependencyUpdates, plus both rows compiled
+.github/scripts/verify.sh   # scalafmtCheckAll, scalafmtSbtCheck, compile, scalafixAll --check
 ```
 
 That is what CI runs, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
