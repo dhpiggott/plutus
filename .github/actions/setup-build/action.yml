@@ -20,6 +20,12 @@ runs:
 
     - name: Set up sbt
       uses: sbt/setup-sbt@v1
+      with:
+        # sbt 2.x's disk cache, at ~/Library/Caches/sbt. This build is sbt 1
+        # (project/build.properties), so nothing ever creates that directory
+        # and the step can only ever end in "Path Validation Error: Path(s)
+        # specified in the action for caching do(es) not exist".
+        disk-cache: false
 
     # Not using setup-java's `cache: sbt`: it caches ~/.cache/coursier, but on
     # macOS coursier defaults to ~/Library/Caches/Coursier and the cache misses
