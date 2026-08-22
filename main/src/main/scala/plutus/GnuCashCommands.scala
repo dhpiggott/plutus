@@ -222,7 +222,7 @@ lazy val importDryRunOpts: Opts[Boolean] =
     .flag(
       "dry-run",
       help =
-        "Print the plan (filed / already-present counts and the accounts that would be created) without writing to the book and without taking a backup."
+        "Print the plan (a line per transaction that would be filed, the already-present count, and the accounts that would be created) without writing to the book and without taking a backup."
     )
     .orFalse
 
@@ -477,17 +477,34 @@ def importTransactions(
             if importedIds.contains(transaction.id.value) then
               Imported.Skipped.pure[IO]
             else
+              val categoryPath = categoryTarget(transaction)
               Posting
                 .fromMonzo(
                   transaction,
                   assetAccount,
-                  categories(categoryTarget(transaction)),
+                  categories(categoryPath),
                   currency,
                   now
                 )
                 .flatMap: posting =>
-                  IO.unlessA(dryRun)(posting.insert)
-                    .as(Imported.Filed)
+                  // One line per transaction filed, so the plan can be read
+                  // row by row rather than trusted as a count: the post date
+                  // and payee GnuCash will show, the signed amount as it
+                  // lands on the asset leg (the category leg is its
+                  // negation), and the two accounts the money moves between.
+                  // The asset account is named by its leaf, which carries the
+                  // Monzo account ID, so two accounts of a kind are told
+                  // apart without repeating the path on every line. A dry run
+                  // says what it would do, as the account creations above do.
+                  val verb = if dryRun then "Would file" else "Filed"
+                  val postDate = formatTimestamp:
+                    transaction.created.value.asInstant
+                  val amount =
+                    formatMinorUnits(posting.assetSplit.valueNum, currency)
+                  val category = categoryPath.mkString(":")
+                  (IO.unlessA(dryRun)(posting.insert) *> info(
+                    s"$verb $postDate $amount ${assetAccount.name} / $category: ${payee(transaction)}."
+                  )).as(Imported.Filed)
         _ <- info:
           val filed = results.count(_ == Imported.Filed)
           val skipped = results.count(_ == Imported.Skipped)
@@ -552,6 +569,14 @@ val backupTimestamp: DateTimeFormatter =
 
 def formatBackupTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
+
+// Minor units as the book's currency reads them: 1234 at a fraction of 100 is
+// "12.34". Scaled rather than divided, so the string is exact and keeps its
+// trailing zeroes; the scale is the fraction's digit count, which is what a
+// power-of-ten fraction means, and GnuCash's currency commodities have no
+// other kind.
+def formatMinorUnits(minorUnits: Long, currency: Commodity): String =
+  BigDecimal(minorUnits, currency.fraction.toString.length - 1).toString
 
 enum Imported:
   case Filed, Skipped
