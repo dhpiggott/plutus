@@ -275,6 +275,32 @@ def importTransactions(
           Error(
             s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
           )
+        // Fail fast on the assumption the dedup set below rests on. That
+        // set is read once, before the write loop, and never updated as
+        // postings are inserted, so one transaction ID appearing under two
+        // accounts in the same fetch would be judged unseen twice and posted
+        // twice — and there is no unique constraint on the online_id slot to
+        // catch it. Monzo's model says a pot transfer is one transaction in
+        // the main account's statement and a separate one in the pot's own
+        // (see fetchTransactionsByAccount), so this should never fire; it is
+        // here because the alternative to it firing is a silent double-post.
+        duplicates = materialByAccount
+          .flatMap: (account, material) =>
+            material.map: transaction =>
+              transaction.id.value -> account.id.value
+          .groupMap((transactionId, _) => transactionId): (_, monzoAccountId) =>
+            monzoAccountId
+          .filter: (_, monzoAccountIds) =>
+            monzoAccountIds.sizeIs > 1
+        _ <- IO.raiseUnless(duplicates.isEmpty):
+          val occurrences = duplicates.toList
+            .sortBy((transactionId, _) => transactionId)
+            .map: (transactionId, monzoAccountIds) =>
+              s"$transactionId (in ${monzoAccountIds.sorted.mkString(", ")})"
+            .mkString("; ")
+          Error(
+            s"Monzo returned the same transaction under more than one account in a single run: $occurrences. Filing every occurrence would double-count it, so nothing has been written. Please report this."
+          )
         // Every typed account paired with the code-defined path its type
         // maps to. The mapping is type-keyed, so several Monzo accounts — a
         // closed account and the one that replaced it — can share a path;
