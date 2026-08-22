@@ -48,6 +48,15 @@ jobs:
     # wanted — it bypasses the signing above, and the ruleset on `main` rejects
     # unsigned commits — so read makes it fail loudly rather than quietly
     # produce commits that cannot merge.
+    #
+    # The visible cost is a warning annotation: the Actions cache service
+    # refuses a write from a job whose token has no writable scope, so any
+    # cache whose key misses here ends the run with "cache write denied: token
+    # has no writable scopes". That is the outcome to want rather than a thing
+    # to fix. ci.yml on `main` is what populates these caches, and an entry
+    # saved from a PR ref would be evicted with the branch — so a run here has
+    # nothing to contribute. Expect it whenever a key misses, which for the
+    # caches in setup-build means a PR that edits build.sbt.
     permissions:
       contents: read
       pull-requests: read
