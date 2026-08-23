@@ -106,6 +106,7 @@ string AccessToken
 service Api {
     operations: [
         ListAccounts
+        ListPots
         ListTransactions
     ]
 }
@@ -117,6 +118,25 @@ operation ListAccounts {
     output := {
         @required
         accounts: Accounts
+
+        @jsonUnknown
+        unknown: UnknownProperties
+    }
+}
+
+@externalDocumentation(url: "https://docs.monzo.com/?shell#list-pots")
+@readonly
+@http(method: "GET", uri: "/pots")
+operation ListPots {
+    input := {
+        @required
+        @httpQuery("current_account_id")
+        currentAccountId: AccountId
+    }
+
+    output := {
+        @required
+        pots: Pots
 
         @jsonUnknown
         unknown: UnknownProperties
@@ -155,7 +175,28 @@ list Accounts {
     member: Account
 }
 
+list Pots {
+    member: Pot
+}
+
 string AccountId
+
+string PotId
+
+string Currency
+
+boolean Deleted
+
+/// The archive trigger for main accounts, as Deleted is for pots. Optional
+/// because pot backing accounts are constructed from transfer metadata rather
+/// than decoded from /accounts, so no closed flag is ever seen for them.
+boolean Closed
+
+/// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
+/// a type Monzo adds later can't fail a decode. Optional because pot backing
+/// accounts are discovered from transaction metadata rather than /accounts, so
+/// no type is ever seen for them — AssetAccounts treats its absence as "pot".
+string AccountType
 
 /// This can be a date-time string or a transaction ID. Ideally we'd model it as
 /// a union, but because it's a query parameter, we can't.
@@ -172,6 +213,33 @@ list Transactions {
 structure Account {
     @required
     id: AccountId
+
+    @jsonName("type")
+    accountType: AccountType
+
+    closed: Closed
+
+    @jsonUnknown
+    unknown: UnknownProperties
+}
+
+/// The fields import consumes: name names the pot's asset account, currency
+/// backs the fail-fast check that a pot is denominated in the book's currency,
+/// and deleted triggers automatic archiving of the pot's asset account.
+/// Deleted pots are listed too (with their names intact), which is exactly
+/// right: their historical transactions may still fall in an import window.
+structure Pot {
+    @required
+    id: PotId
+
+    @required
+    name: Name
+
+    @required
+    currency: Currency
+
+    @required
+    deleted: Deleted
 
     @jsonUnknown
     unknown: UnknownProperties
@@ -190,6 +258,8 @@ structure Transaction {
     @jsonName("decline_reason")
     declineReason: DeclineReason
 
+    category: Category
+
     merchant: Merchant
 
     @required
@@ -207,15 +277,23 @@ structure Transaction {
     unknown: UnknownProperties
 }
 
-/// Documented as string-to-string, but modelled with document values so an
-/// unexpected non-string value can't fail the decode of a whole transaction
-/// page. The key we care about is pot_account_id: pots are backed by real
-/// account objects whose transactions (interest, in particular) are only
-/// reachable by passing that ID to /transactions. See
-/// https://community.monzo.com/t/-/193089/11 — undocumented, may change.
-map Metadata {
-    key: String
-    value: Document
+/// The two keys Plutus consumes are modelled as members; every other key lands
+/// in unknown, with document values so an unexpected shape there can't fail the
+/// decode of a whole transaction page. Both members appear on pot-transfer
+/// legs: pot_account_id (main-account side) is the pot's backing account —
+/// a real account object whose transactions (interest, in particular) are only
+/// reachable by passing that ID to /transactions — and pot_id names which pot,
+/// linking the two. See https://community.monzo.com/t/-/193089/11 —
+/// undocumented, may change.
+structure Metadata {
+    @jsonName("pot_account_id")
+    potAccountId: AccountId
+
+    @jsonName("pot_id")
+    potId: PotId
+
+    @jsonUnknown
+    unknown: UnknownProperties
 }
 
 string TransactionId
@@ -226,6 +304,12 @@ timestamp Created
 bigInteger Amount
 
 string DeclineReason
+
+// Monzo's own categorisation (general, eating_out, groceries, transport, …).
+// Modelled as an open string rather than an enum so a category Monzo adds later
+// can't fail the decode of a whole transaction page; import files by it,
+// creating the category's expense account on first sight.
+string Category
 
 string Description
 

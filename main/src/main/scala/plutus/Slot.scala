@@ -6,6 +6,16 @@ import porcupine.Codec.*
 
 object Slot:
 
+  // The slot name behind both halves of the online-identity scheme: split
+  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
+  // OFX FITID convention) and account slots carrying a Monzo account ID (the
+  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
+  // export emits). One wrinkle: libofx builds the stored account value as
+  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
+  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
+  // lookups compare trimmed, honouring both shapes.
+  val OnlineId: String = "online_id"
+
   // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
   // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
   // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
@@ -25,6 +35,16 @@ object Slot:
       int64Val = None
     )
 
+  def delete(objGuid: String, name: String)(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        delete from slots
+        where obj_guid = $text
+          and name = $text
+      """.command,
+      args = (objGuid, name)
+    )
+
   def deleteAll(objGuid: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""
@@ -32,6 +52,23 @@ object Slot:
         where obj_guid = $text
       """.command,
       args = objGuid
+    )
+
+  // Every online_id slot in the book as (trimmed value, obj_guid), in one
+  // query: slots has no index on (name, string_val), so a lookup per value
+  // would scan the whole table each time — a table that also holds every
+  // imported split's dedup slot, and so grows with the book's history. The
+  // importer reads this once and answers both of its online_id questions in
+  // memory: which Monzo transactions are already filed (mirroring GnuCash's
+  // own OFX-import dedup, which recognises the same slots) and which account
+  // carries each Monzo account ID's tag.
+  def onlineIds(using db: Database[IO]): IO[List[(String, String)]] =
+    db.execute(
+      query = sql"""
+        select trim(string_val), obj_guid from slots
+        where name = $text and string_val is not null
+      """.query(text *: text *: nil),
+      args = OnlineId
     )
 
 /** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
