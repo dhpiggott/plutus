@@ -440,7 +440,7 @@ val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
 // Where the extend-access feature lives in the Monzo app, so the reminder can
 // point straight at it rather than leaving the user to hunt.
 val monzoRefreshPermissionsPath: String =
-  "Settings > Privacy & security > Manage apps > Refresh permissions"
+  "Settings > Security > Manage apps > Refresh permissions"
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
