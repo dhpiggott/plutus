@@ -496,14 +496,17 @@ def importTransactions(
         // IDs, and what this answers is whether a Monzo *transaction* ID is
         // already filed.
         importedIds = onlineIds.map((value, _) => value).toSet
-        results <- materialByAccount.flatTraverse: (account, material) =>
+        // Every row the run will file, settled before any of them is
+        // written: the lines below pad each column to the widest value in
+        // it, which isn't known until every row is.
+        rows <- materialByAccount.flatTraverse: (account, material) =>
           // Total: unmapped types and unnamed pots failed the run up front,
           // and `assets` was built from this same list of accounts.
           val assetAccount = assets(account.id)
-          material.traverse: transaction =>
-            if importedIds.contains(transaction.id.value) then
-              Imported.Skipped.pure[IO]
-            else
+          material
+            .filterNot: transaction =>
+              importedIds.contains(transaction.id.value)
+            .traverse: transaction =>
               val categoryPath = categoryTarget(transaction)
               Posting
                 .fromMonzo(
@@ -513,32 +516,54 @@ def importTransactions(
                   currency,
                   now
                 )
-                .flatMap: posting =>
-                  // One line per transaction filed, so the plan can be read
-                  // row by row rather than trusted as a count: the post date
-                  // and payee GnuCash will show, the signed amount as it
-                  // lands on the asset leg (the category leg is its
-                  // negation), and the two accounts the money moves between.
-                  // The asset account is named by its leaf, which carries the
-                  // Monzo account ID, so two accounts of a kind are told
-                  // apart without repeating the path on every line. A dry run
-                  // says what it would do, as the account creations above do.
-                  val verb = if dryRun then "Would file" else "Filed"
-                  val postDate = formatTimestamp:
-                    transaction.created.value.asInstant
-                  val amount =
-                    formatMinorUnits(posting.assetSplit.valueNum, currency)
-                  val category = categoryPath.mkString(":")
-                  (IO.unlessA(dryRun)(posting.insert) *> info(
-                    s"$verb $postDate $amount ${assetAccount.name} / $category: ${payee(transaction)}."
-                  )).as(Imported.Filed)
+                .map: posting =>
+                  (
+                    transaction = transaction,
+                    assetAccount = assetAccount,
+                    category = categoryPath.mkString(":"),
+                    amount =
+                      formatAmount(posting.assetSplit.valueNum, currency),
+                    posting = posting
+                  )
+        skipped = materialByAccount
+          .flatMap((_, material) => material)
+          .count: transaction =>
+            importedIds.contains(transaction.id.value)
+        // One line per transaction filed, so the plan can be read row by row
+        // rather than trusted as a count: the post date and payee GnuCash
+        // will show, the signed amount as it lands on the asset leg (the
+        // category leg is its negation), and the two accounts the money moves
+        // between. The asset account is named by its leaf, which carries the
+        // Monzo account ID, so two accounts of a kind are told apart without
+        // repeating the path on every line. A dry run says what it would do,
+        // as the account creations above do.
+        verb = if dryRun then "Would file" else "Filed"
+        // Each column padded to the widest value in it, so a run's lines read
+        // as a table rather than as prose of varying length. The amounts are
+        // right-aligned — every one carries the currency's full fraction, so
+        // that lines them up on the decimal point — and the rest left.
+        amountWidth = rows.map(_.amount.length).maxOption.getOrElse(0)
+        assetWidth = rows.map(_.assetAccount.name.length).maxOption.getOrElse(0)
+        categoryWidth = rows.map(_.category.length).maxOption.getOrElse(0)
+        _ <- rows.traverse: row =>
+          val line = List(
+            verb,
+            formatTimestamp(row.transaction.created.value.asInstant),
+            " " * (amountWidth - row.amount.length) + row.amount,
+            row.assetAccount.name.padTo(assetWidth, ' '),
+            "/",
+            // The colon punctuates the category, so it goes before the
+            // padding rather than after it, where it would sit a column away
+            // from the word it belongs to.
+            (row.category + ":").padTo(categoryWidth + 1, ' '),
+            s"${payee(row.transaction)}."
+          ).mkString(" ")
+          IO.unlessA(dryRun)(row.posting.insert) *> info(line)
         _ <- info:
-          val filed = results.count(_ == Imported.Filed)
-          val skipped = results.count(_ == Imported.Skipped)
           // A dry run files nothing, so it says what it would have done,
           // as the account creations above do.
           val verb = if dryRun then "would file" else "filed"
-          s"$filed $verb, $skipped already present."
+          s"${rows.size} $verb, $skipped already present."
       yield ()
       // Everything-or-nothing either way: a real run commits, a dry run is
       // rolled back rather than merely left unwritten, so that a write that
@@ -600,15 +625,26 @@ def formatBackupTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
 
 // Minor units as the book's currency reads them: 1234 at a fraction of 100 is
-// "12.34". Scaled rather than divided, so the string is exact and keeps its
+// "£12.34". Scaled rather than divided, so the string is exact and keeps its
 // trailing zeroes; the scale is the fraction's digit count, which is what a
 // power-of-ten fraction means, and GnuCash's currency commodities have no
-// other kind.
-def formatMinorUnits(minorUnits: Long, currency: Commodity): String =
-  BigDecimal(minorUnits, currency.fraction.toString.length - 1).toString
+// other kind. The sign goes outside the symbol ("-£3.60"), where a reader
+// expects it.
+def formatAmount(minorUnits: Long, currency: Commodity): String =
+  val scale = currency.fraction.toString.length - 1
+  val magnitude = BigDecimal(minorUnits.abs, scale).toString
+  val sign = if minorUnits < 0 then "-" else ""
+  s"$sign${currencySymbol(currency.mnemonic)}$magnitude"
 
-enum Imported:
-  case Filed, Skipped
+// GnuCash's commodities table carries a mnemonic but no symbol, and
+// java.util.Currency would answer locale-dependently — the same book would
+// read "£12.34" on one machine and "GBP12.34" on another. So the symbol is
+// named here, and a currency not named falls back to its own mnemonic, which
+// is unambiguous if less compact. Only GBP is reachable today: Commodity.gbp
+// is where the book's currency comes from.
+def currencySymbol(mnemonic: String): String = mnemonic match
+  case "GBP"    => "£"
+  case mnemonic => mnemonic
 
 // The account path a transaction's category leg posts to. Monzo's categories
 // are authoritative, but not all of them are spending: income files under
