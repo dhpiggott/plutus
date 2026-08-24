@@ -158,19 +158,34 @@ def withMonzoApi[A](
     case Some(state) =>
       val leeway = Duration.ofSeconds:
         10
-      since
-        .getOrElse:
-          state.lastTransactions.values
-            .map:
-              _.created.value.asInstant
-            .min
-        .isBefore:
-          now
-            .minus:
-              Period.ofDays:
-                90
-            .plus:
-              leeway
+      // minOption, not min: a state can hold tokens and no bookmarks at all —
+      // accessToken writes one on first authorisation, and withMonzoApi's
+      // onError persists it if the fetch then fails — and `min` on an empty
+      // collection throws with no message. With no bookmark and no --since
+      // there is no window, so nothing is fetched and no authentication is
+      // needed for one; the warning below says as much.
+      val windowStart = since.orElse:
+        state.lastTransactions.values
+          .map:
+            _.created.value.asInstant
+          .minOption
+      windowStart
+        .exists:
+          _.isBefore:
+            now
+              .minus:
+                Period.ofDays:
+                  90
+              .plus:
+                leeway
+  // The state that reaches here with tokens but no bookmarks fetches nothing
+  // at all (listAllTransactions keeps only the accounts that have one), which
+  // would otherwise look like a successful run against a quiet account.
+  _ <- IO.whenA(
+    since.isEmpty && checkedState.exists(_.lastTransactions.isEmpty)
+  ):
+    warn:
+      "No --since given and no last transaction recorded for any account, so there is no window to fetch; specify --since."
   result <- EmberClientBuilder
     .default[IO]
     .build
@@ -640,6 +655,16 @@ def exportTransactions(
       )
 yield updatedState
 
+// Monzo reports an amount in the minor unit of the account's own currency, and
+// OFX wants major units. Export has no book to read a fraction from — the
+// import path divides by the book currency's own `fraction` — so the 100 here
+// is GBP's, which is the only currency either path handles today, named rather
+// than inlined so the two at least spell the same idea the same way.
+val gbpMinorUnitsPerMajorUnit = 100
+
+def majorUnits(minorUnits: BigInt): BigDecimal =
+  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
+
 // Skip £0 active-card checks and declined authorisations: neither is real
 // spend, so export leaves them out of the OFX and import leaves them out of
 // the book. Shared so both paths filter identically.
@@ -840,11 +865,25 @@ def potsByAccountId(
         "Listing pots…"
       pots <- byAccount
         .collect:
-          case (account, _) if !isPotBacking(account) => account.id
+          // Closed accounts are skipped: /accounts keeps returning them, but
+          // their pots are gone with them, so the call can only fail or come
+          // back empty.
+          case (account, _)
+              if !isPotBacking(account) && !account.closed.exists(_.value) =>
+            account.id
         .parTraverse: accountId =>
+          // One owner's failure doesn't sink the run: the pots that matter
+          // may well belong to another account, and a pot that really does go
+          // unnamed is caught downstream by import's unnamedPots fail-fast,
+          // which says which pot and what to do about it. Without this a
+          // single 403 on one account aborts the whole import.
           monzoApi
             .listPots(accountId)
             .map(_.pots)
+            .handleErrorWith: error =>
+              warn(
+                s"Couldn't list pots for ${accountId.value}: ${error.getMessage}"
+              ).as(Nil)
       potsById = pots.flatten
         .map: pot =>
           pot.id -> pot
@@ -1039,9 +1078,7 @@ def toOfx(
                         ofxDateTimeFormatter
                   ,
                   transactionAmount = ofx.TransactionAmount:
-                    BigDecimal:
-                      transaction.amount.value
-                    / 100
+                    majorUnits(transaction.amount.value)
                   ,
                   financialInstitutionId = ofx.FinancialInstitutionId:
                     transaction.id.value
