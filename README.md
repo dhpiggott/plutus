@@ -11,8 +11,8 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ## Commands
 
 ```
-plutus gnucash archive-accounts    [--input PATH] [verbosity]
-plutus gnucash restore-account     [--input PATH] [verbosity]
+plutus gnucash archive-accounts    [--input PATH] [--dry-run] [verbosity]
+plutus gnucash restore-account     [--input PATH] [--dry-run] [verbosity]
 plutus gnucash import-transactions [--input PATH]
                                    [--since INSTANT] [--before INSTANT]
                                    [--dry-run] [verbosity]
@@ -29,6 +29,8 @@ Finds hidden accounts in the GnuCash file at `--input` (default `./Accounts.gnuc
 ### `restore-account`
 
 Lists archived accounts and prompts (via [cue4s](https://github.com/neandertech/cue4s)) for one to move back to its original parent.
+
+Both of these move — and, when they find a redundant mirror, delete — accounts, so both carry the same safety net as `import-transactions`: a missing `--input` fails before anything is opened, the whole run is one SQLite transaction, a non-dry run that changes something keeps a timestamped `.bak` of the book as it was beforehand, and `--dry-run` prints what would be archived, restored, created, moved or deleted without writing or backing up.
 
 ### `export-transactions`
 
@@ -73,7 +75,9 @@ Re-runs are idempotent: the Monzo transaction ID is written into an `online_id` 
 
 - Unlike `export-transactions`, this command doesn't advance the state-store bookmarks — dedup is by `online_id`, not by bookmark — so `--since` defaults to each account's bookmark only for choosing the fetch window.
 - Both splits are written unreconciled; you reconcile them against a statement yourself, as with an OFX import.
-- Before any non-dry run the book is copied aside, and once the run has actually written something that copy is kept as `<input>.<yyyyMMddTHHmmssZ>.bak` — the state the book was in just before that run, so restoring it undoes exactly that run and no other. A run that turns out to change nothing (nothing new to file, no account to create, move, rename, un-hide or tag) leaves no backup behind, so a scheduled import that finds nothing doesn't age out the backup that could undo the last one that did. The whole write runs in a single SQLite transaction, so a mid-run failure rolls back to the pre-run state (and the backup, kept in that case too, is the belt-and-braces restore). **Nothing ever deletes these** — an import won't remove a file you might need — so prune them yourself: they're the size of the book, one per run that changed it, and the names sort chronologically.
+- A missing `--input` fails immediately, before the Monzo fetch: SQLite would otherwise create an empty book at a mistyped path and fail obscurely several queries later.
+- Each transaction is posted at GnuCash's own "neutral time", 10:59:00 UTC on the transaction's local calendar date, which is what `xaccTransSetDatePostedSecsNormalized` does to every date GnuCash itself records. That leaves enough slack either side for the row to render as the same day in any timezone, and puts imported rows in the same within-day position as hand-entered ones. The split's `enter_date` keeps the real instant.
+- Before any non-dry run the book is copied aside, and once the run has actually written something that copy is kept as `<input>.<yyyyMMddTHHmmssZ>.bak` — the state the book was in just before that run, so restoring it undoes exactly that run and no other. A run that turns out to change nothing (nothing new to file, no account to create, move, rename, un-hide or tag) leaves no backup behind, so a scheduled import that finds nothing doesn't age out the backup that could undo the last one that did. The whole write runs in a single SQLite transaction, so a mid-run failure rolls back to the pre-run state (and the backup, kept in that case too, is the belt-and-braces restore). **Nothing ever deletes these** — an import won't remove a file you might need — so prune them yourself: they're the size of the book, one per run that changed it, and the names sort chronologically. If a run is killed between the copy and that decision, the copy is left behind as a `.bak.tmp`; the next run keeps it (under the dead run's own timestamp, since that's the run it would undo) rather than overwriting it, because there's no way to tell from the outside whether that run had already committed.
 - Every transaction filed is printed as it goes — post date, signed amount, the asset and category accounts it lands in, and the payee — followed by the run's totals, so what a run did (or would do) can be read row by row rather than trusted as a count.
 - `--dry-run` prints that same plan (each transaction as "would file", the already-present count, and the accounts that would be created) without writing to the book and without taking a backup. It runs inside a transaction that is always rolled back, so even a bug that reached a write would leave the book unchanged; a dry run that touches any row fails with an error saying so, rather than passing the plan off as complete.
 - The same 90-day pot-window cap as `export-transactions` applies, for the same SCA reason.
