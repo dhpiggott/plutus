@@ -35,6 +35,12 @@ extension [F[_]](db: Database[F])(using F: MonadCancel[F, Throwable])
     begin *> body.attempt.flatMap: result =>
       rollback *> F.fromEither(result)
 
+  // The pair above chosen by the flag every command that writes carries, so
+  // no caller has to remember that a dry run wants a rollback rather than
+  // merely no commit.
+  def transactOrRollBack[A](dryRun: Boolean)(body: F[A]): F[A] =
+    if dryRun then db.withoutCommitting(body) else db.transact(body)
+
 // Rows inserted, updated or deleted on this connection since it was opened —
 // SQLite's own count, so no write path has to remember to report itself. The
 // counter isn't decremented by a rollback, which is what makes it answer two

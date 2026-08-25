@@ -286,8 +286,16 @@ final case class Account(
       args = guid
     ).as(copy(description = None))
 
+  // Every row rather than db.option, only to say something useful when there
+  // is more than one: db.option raises a bare "More than 1 row", and same-named
+  // siblings are a state this codebase deliberately creates — resolveAssetAccount
+  // creates an asset account beside an untagged one rather than adopting it, and
+  // GnuCash itself permits the duplicate name. Steady state never reaches here
+  // (enforcePlacement short-circuits on an in-place account), but a rename or a
+  // move does, as does a pair a user made by hand on a canonical path — and
+  // then the run has to name what it found.
   def child(name: String)(using db: Database[IO]): IO[Option[Account]] =
-    db.option(
+    db.execute(
       query = sql"""
         ${Account.selectAccountsWithFlags}
         where accounts.parent_guid = $text
@@ -296,14 +304,36 @@ final case class Account(
         Account.decoder
       ,
       args = (guid, name)
-    )
+    ).flatMap:
+      case Nil          => IO.none
+      case child :: Nil => IO.pure(Some(child))
+      case children     =>
+        pathString.flatMap: parentPath =>
+          IO.raiseError:
+            Error(
+              s"${children.size} accounts are named $name under $parentPath; resolve by hand — merge them or rename all but one, since nothing here can tell which of them was meant."
+            )
 
   def insert(using db: Database[IO]): IO[Unit] =
     for
       _ <- db.execute(
+        // Columns named rather than positional, as in Split.insert and
+        // Slot.insert: a GnuCash release that adds one to this table would
+        // otherwise shift every value along by a column.
         query = sql"""
-          insert
-          into accounts
+          insert into accounts (
+            guid,
+            name,
+            account_type,
+            commodity_guid,
+            commodity_scu,
+            non_std_scu,
+            parent_guid,
+            code,
+            description,
+            hidden,
+            placeholder
+          )
           values (
             $text,
             $text,
