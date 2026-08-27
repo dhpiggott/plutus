@@ -655,16 +655,6 @@ def exportTransactions(
       )
 yield updatedState
 
-// Monzo reports an amount in the minor unit of the account's own currency, and
-// OFX wants major units. Export has no book to read a fraction from — the
-// import path divides by the book currency's own `fraction` — so the 100 here
-// is GBP's, which is the only currency either path handles today, named rather
-// than inlined so the two at least spell the same idea the same way.
-val gbpMinorUnitsPerMajorUnit = 100
-
-def majorUnits(minorUnits: BigInt): BigDecimal =
-  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
-
 // Skip £0 active-card checks and declined authorisations: neither is real
 // spend, so export leaves them out of the OFX and import leaves them out of
 // the book. Shared so both paths filter identically.
@@ -865,25 +855,11 @@ def potsByAccountId(
         "Listing pots…"
       pots <- byAccount
         .collect:
-          // Closed accounts are skipped: /accounts keeps returning them, but
-          // their pots are gone with them, so the call can only fail or come
-          // back empty.
-          case (account, _)
-              if !isPotBacking(account) && !account.closed.exists(_.value) =>
-            account.id
+          case (account, _) if !isPotBacking(account) => account.id
         .parTraverse: accountId =>
-          // One owner's failure doesn't sink the run: the pots that matter
-          // may well belong to another account, and a pot that really does go
-          // unnamed is caught downstream by import's unnamedPots fail-fast,
-          // which says which pot and what to do about it. Without this a
-          // single 403 on one account aborts the whole import.
           monzoApi
             .listPots(accountId)
             .map(_.pots)
-            .handleErrorWith: error =>
-              warn(
-                s"Couldn't list pots for ${accountId.value}: ${error.getMessage}"
-              ).as(Nil)
       potsById = pots.flatten
         .map: pot =>
           pot.id -> pot
@@ -1048,6 +1024,16 @@ def listTransactions(
           before
         )
   yield thisPage ++ otherPages
+
+// Monzo reports an amount in the minor unit of the account's own currency, and
+// OFX wants major units. Export has no book to read a fraction from — the
+// import path divides by the book currency's own `fraction` — so the 100 here
+// is GBP's, which is the only currency either path handles today, named rather
+// than inlined so the two at least spell the same idea the same way.
+val gbpMinorUnitsPerMajorUnit = 100
+
+def majorUnits(minorUnits: BigInt): BigDecimal =
+  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
 
 val ofxDateTimeFormatter: DateTimeFormatter =
   DateTimeFormatter.ofPattern:
