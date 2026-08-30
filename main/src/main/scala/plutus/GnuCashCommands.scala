@@ -9,6 +9,7 @@ import fs2.io.file.CopyFlags
 import porcupine.*
 
 import java.time.Instant
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -24,16 +25,26 @@ lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
 ):
-  (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
-    archiveAccounts(input)(using verbosity)
+  (verbosityOpts, inputOpts, archiveDryRunOpts).tupled.map:
+    (verbosity, input, dryRun) =>
+      archiveAccounts(input, dryRun)(using verbosity)
+
+lazy val archiveDryRunOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "dry-run",
+      help =
+        "Print what would be archived without writing to the book and without taking a backup."
+    )
+    .orFalse
 
 def archiveAccounts(
-    input: fs2.io.file.Path
+    input: fs2.io.file.Path,
+    dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
-  Database
-    .open[IO]:
-      input.toString
-    .use: db =>
+  for
+    now <- IO.realTimeInstant
+    _ <- withBook(input, now, dryRun): db =>
       given Database[IO] = db
       for
         root <- Account.root
@@ -46,9 +57,9 @@ def archiveAccounts(
         // far in this run — and, on a book's first archive, the subroot it
         // created to hold them — back to where it started, rather than
         // leaving some archived and others not.
-        _ <- db.transact:
+        _ <- db.transactOrRollBack(dryRun):
           for
-            archiveSubroot <- Account.createOrRetrieveArchiveSubroot
+            archiveSubroot <- archiveSubrootFor(dryRun)
             hiddenAccounts <- root.hiddenChildren:
               archiveSubroot
             _ <- (IO.traverse:
@@ -62,40 +73,55 @@ def archiveAccounts(
                   from = root,
                   to = archiveSubroot,
                   toPath = canonicalPathString(Nil, retired = true),
-                  dryRun = false
+                  dryRun
                 )
+                // Where the account will sit, spelled out rather than read
+                // back: in a dry run its parents are would-be accounts that
+                // were never inserted, so pathString would come back empty.
+                archivedPath =
+                  s"${canonicalPathString(livePathInit, retired = true)}/${hiddenAccount.name}"
                 _ <- cleanUpRedundantMirror(
                   original = hiddenAccount,
                   originalPath = hiddenAccountPath,
                   mirrorParent = archiveParent,
-                  mirrorKind = "Archive"
+                  mirrorKind = "Archive",
+                  dryRun
                 )
-                archivedAccount <- hiddenAccount.update(
-                  parent = archiveParent
-                )
-                archivedPath <- archivedAccount.pathString
+                _ <- IO.unlessA(dryRun):
+                  hiddenAccount.update(parent = archiveParent).void
                 _ <- info:
-                  s"Archived $hiddenAccountPath to $archivedPath."
+                  val verb = if dryRun then "Would archive" else "Archived"
+                  s"$verb $hiddenAccountPath to $archivedPath."
               yield ()
           yield ()
         _ <- info:
           "Finished archiving hidden accounts."
       yield ()
+  yield ()
 
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
   help = "Restore archived account."
 ):
-  (verbosityOpts, inputOpts).tupled.map: (verbosity, input) =>
-    restoreAccount(input)(using verbosity)
+  (verbosityOpts, inputOpts, restoreDryRunOpts).tupled.map:
+    (verbosity, input, dryRun) => restoreAccount(input, dryRun)(using verbosity)
+
+lazy val restoreDryRunOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "dry-run",
+      help =
+        "Print what would be restored without writing to the book and without taking a backup."
+    )
+    .orFalse
 
 def restoreAccount(
-    input: fs2.io.file.Path
+    input: fs2.io.file.Path,
+    dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
-  Database
-    .open[IO]:
-      input.toString
-    .use: db =>
+  for
+    now <- IO.realTimeInstant
+    _ <- withBook(input, now, dryRun): db =>
       given Database[IO] = db
       for
         root <- Account.root
@@ -133,7 +159,7 @@ def restoreAccount(
         // immediate takes SQLite's write lock immediately, and holding that
         // open while waiting on stdin would block any other writer for as
         // long as the prompt sits unanswered.
-        _ <- db.transact:
+        _ <- db.transactOrRollBack(dryRun):
           for
             archivePathInit <- pathInitBelow(archivedAccount, archiveSubroot)
             nonArchiveParent <- mirrorParentFor(
@@ -141,22 +167,48 @@ def restoreAccount(
               from = archiveSubroot,
               to = root,
               toPath = canonicalPathString(Nil, retired = false),
-              dryRun = false
+              dryRun
             )
+            restoredPath =
+              s"${canonicalPathString(archivePathInit, retired = false)}/${archivedAccount.name}"
             _ <- cleanUpRedundantMirror(
               original = archivedAccount,
               originalPath = archivedAccountPath,
               mirrorParent = nonArchiveParent,
-              mirrorKind = "Non-archive"
+              mirrorKind = "Non-archive",
+              dryRun
             )
-            restoredAccount <- archivedAccount.update(
-              parent = nonArchiveParent
-            )
-            restoredPath <- restoredAccount.pathString
+            _ <- IO.unlessA(dryRun):
+              archivedAccount.update(parent = nonArchiveParent).void
             _ <- info:
-              s"Restored $archivedAccountPath to $restoredPath."
+              val verb = if dryRun then "Would restore" else "Restored"
+              s"$verb $archivedAccountPath to $restoredPath."
           yield ()
       yield ()
+  yield ()
+
+// The Archive subroot, created on demand — or, in a dry run of a book that has
+// never archived anything, fabricated so the rest of the plan can name paths
+// under it without the run writing one.
+def archiveSubrootFor(
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  Account.retrieveArchiveSubroot.flatMap:
+    case Some(archiveSubroot) => IO.pure(archiveSubroot)
+    case None if dryRun       =>
+      Account.root.flatMap: root =>
+        newGuid
+          .map: guid =>
+            root.copy(
+              guid = guid,
+              name = Account.ArchiveName,
+              parentGuid = Some(root.guid),
+              hidden = true,
+              placeholder = true
+            )
+          .flatTap: _ =>
+            info(s"Would create account Root Account/${Account.ArchiveName}.")
+    case None => Account.createOrRetrieveArchiveSubroot
 
 // Handles the case where a mirror already exists at `mirrorParent` with the
 // same name as `original`. This happens when a child was already
@@ -171,7 +223,8 @@ def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
     mirrorParent: Account,
-    mirrorKind: String
+    mirrorKind: String,
+    dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
   for
     maybeExistingMirror <- mirrorParent.child(original.name)
@@ -181,24 +234,119 @@ def cleanUpRedundantMirror(
       for
         _ <- warn:
           s"$mirrorKind mirror for $originalPath already exists."
+        // Read before anything moves, and read rather than spelled out: the
+        // mirror is always a real account here — a fabricated dry-run parent
+        // has no children to find one under — but where it sits is only known
+        // to the book.
+        existingMirrorPath <- existingMirror.pathString
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren
         ): child =>
-          for
-            _ <- child.update(
-              parent = original
-            )
-            childPath <- child.pathString
-            _ <- warn:
-              s"Moved $childPath to $originalPath."
-          yield ()
-        existingMirrorPath <- existingMirror.pathString
-        _ <- existingMirror.delete
+          val childPath = s"$existingMirrorPath/${child.name}"
+          // Where the child ends up, spelled out rather than read back after
+          // the move: a dry run doesn't move it, and the path would otherwise
+          // have to be queried twice to say the same thing.
+          val movedChildPath = s"$originalPath/${child.name}"
+          IO.unlessA(dryRun)(child.update(parent = original).void) *> warn:
+            val verb = if dryRun then "Would move" else "Moved"
+            s"$verb $childPath to $movedChildPath."
+        _ <- IO.unlessA(dryRun)(existingMirror.delete)
         _ <- warn:
-          s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
+          val verb = if dryRun then "Would delete" else "Deleted"
+          s"$verb existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
       yield ()
   yield ()
+
+// Refuse a book that isn't there rather than letting SQLite create an empty
+// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
+// otherwise leave a stray zero-table file beside the real book and fail
+// several queries later with a bare NoSuchElementException from Account.root.
+def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .exists(input)
+    .flatMap: exists =>
+      IO.raiseUnless(exists):
+        Error(s"No GnuCash book at $input.")
+
+// The file-level safety net around every command that opens the book: refuse a
+// path that isn't there, copy the book aside before a real run, and afterwards
+// keep that copy as <input>.<yyyyMMddTHHmmssZ>.bak if the run changed anything
+// (or failed) and delete it if it didn't.
+//
+// Whether a run will write anything isn't knowable until the book is open — an
+// import with nothing to file can still create, move, rename, un-hide or tag
+// an asset account — so the copy is taken before we know, under a temporary
+// name, and promoted only once SQLite's own total_changes() says something
+// changed. A run that changes nothing therefore leaves no artefact behind, and
+// no run's backup overwrites another's: the name carries the run's own
+// timestamp, so every backup is kept and each undoes exactly the run it
+// precedes. Nothing prunes them — see the README.
+//
+// `body` picks its own transaction boundary (db.transactOrRollBack) rather
+// than being wrapped here, because restore-account has to keep its interactive
+// prompt outside the write lock. What is enforced here either way is that a
+// dry run leaves the book untouched: total_changes() counts rolled-back rows
+// too, so a write that slipped past a dryRun guard is caught and reported
+// rather than passing the plan off as complete.
+def withBook[A](
+    input: fs2.io.file.Path,
+    now: Instant,
+    dryRun: Boolean
+)(
+    body: Database[IO] => IO[A]
+)(using verbosity: Verbosity): IO[A] = for
+  _ <- requireExistingBook(input)
+  temporaryBackup = fs2.io.file.Path(s"$input.bak.tmp")
+  backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
+  _ <- IO.unlessA(dryRun):
+    for
+      // A leftover means a previous run died between the copy and the
+      // promotion, so the file about to be overwritten is that run's only
+      // backup. It is still overwritten — the copy has to happen, and the
+      // fixed name is what makes the promotion a rename within one directory
+      // — but not silently.
+      leftover <- fs2.io.file.Files[IO].exists(temporaryBackup)
+      _ <- IO.whenA(leftover):
+        warn:
+          s"$temporaryBackup already exists, so a previous run didn't finish; overwriting it."
+      _ <- fs2.io.file
+        .Files[IO]
+        .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting))
+      _ <- info(s"Copied $input to $temporaryBackup.")
+    yield ()
+  resultAndChanged <- Database
+    .open[IO](input.toString)
+    .use: db =>
+      for
+        result <- body(db)
+        changed <- db.rowsChanged
+      yield (result = result, changed = changed)
+    .onError:
+      // Keep the snapshot: the transaction rolls the book back, but a run that
+      // failed is exactly when you want the copy that predates it.
+      case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
+  _ <-
+    if dryRun then
+      // The rollback has already undone them, so the book is intact and this
+      // is a report about the code rather than about the book: a dry run
+      // reaching any write at all means a dryRun guard is missing, and the
+      // next real run would write whatever that path writes without anyone
+      // having seen it in the plan.
+      IO.raiseWhen(resultAndChanged.changed > 0):
+        Error(
+          s"Dry run attempted ${resultAndChanged.changed} row change(s), which were rolled back; the book is unchanged. This is a bug — please report it."
+        )
+    // The book is untouched when nothing changed, so its backup would be a
+    // copy of a file that already exists, aging out the one that could undo
+    // the last run that did write.
+    else if resultAndChanged.changed > 0 then
+      promoteBackup(temporaryBackup, backup)
+    else
+      fs2.io.file.Files[IO].delete(temporaryBackup) *>
+        info(s"Nothing changed, so deleted $temporaryBackup.")
+yield resultAndChanged.result
 
 // Lives here rather than under `monzo` because it's conceptually a GnuCash
 // import — a future variant could read the CSVs the Monzo app exports instead
@@ -232,367 +380,348 @@ def importTransactions(
     before: Option[Instant],
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
+  // Checked here as well as in withBook below, so a mistyped --input costs a
+  // message rather than the whole OAuth-and-fetch round trip that would
+  // otherwise run before the book is ever opened.
+  _ <- requireExistingBook(input)
+  // The zone the transactions' calendar dates are taken in (see
+  // neutralPostDate), read once so every row of a run agrees.
+  zone <- IO.delay(ZoneId.systemDefault)
   (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
-  // Snapshot first: a bad run becomes a restore, not a rebuild. Whether a run
-  // will write anything isn't knowable until the book is open — even a fetch
-  // with no material transactions can create, move, rename, un-hide or tag an
-  // asset account — so the copy is taken before we know, under a temporary
-  // name, and promoted below only once the run has actually changed something.
-  // A scheduled run that files nothing therefore leaves no artefact behind,
-  // and no run's backup overwrites another's: the name carries the run's own
-  // timestamp, so every backup is kept and each undoes exactly the run it
-  // precedes. Nothing prunes them — see the README.
-  temporaryBackup = fs2.io.file.Path(s"$input.bak.tmp")
-  backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
-  _ <- IO.unlessA(dryRun):
-    fs2.io.file
-      .Files[IO]
-      .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting)) *>
-      info(s"Copied $input to $temporaryBackup.")
-  changed <- Database
-    .open[IO](input.toString)
-    .use: db =>
-      given Database[IO] = db
-      val assetAccounts = AssetAccounts.default
-      // Only material transactions get posted; an account with none needs no
-      // asset account (byAccount lists every account, active or not) and would
-      // only add noise below, so drop it here.
-      val materialByAccount = byAccount
-        .map: (account, transactions) =>
-          (account, materialTransactions(transactions))
-        .filter: (_, transactions) =>
-          transactions.nonEmpty
-      val run = for
-        // Fail fast, before anything is resolved or written: an account type
-        // missing from the map needs a byAccountType entry, not a guess.
-        unmappedTypes = materialByAccount
-          .flatMap: (account, _) =>
-            account.accountType.filterNot: accountType =>
-              assetAccounts.byAccountType.contains(accountType.value)
-          .map(_.value)
-          .distinct
-        _ <- IO.raiseUnless(unmappedTypes.isEmpty):
-          Error(
-            s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
-          )
-        // Fail fast on the assumption the dedup set below rests on. That
-        // set is read once, before the write loop, and never updated as
-        // postings are inserted, so one transaction ID appearing under two
-        // accounts in the same fetch would be judged unseen twice and posted
-        // twice — and there is no unique constraint on the online_id slot to
-        // catch it. Monzo's model says a pot transfer is one transaction in
-        // the main account's statement and a separate one in the pot's own
-        // (see fetchTransactionsByAccount), so this should never fire; it is
-        // here because the alternative to it firing is a silent double-post.
-        duplicates = materialByAccount
-          .flatMap: (account, material) =>
-            material.map: transaction =>
-              transaction.id.value -> account.id.value
-          .groupMap((transactionId, _) => transactionId): (_, monzoAccountId) =>
-            monzoAccountId
-          .filter: (_, monzoAccountIds) =>
-            monzoAccountIds.sizeIs > 1
-        _ <- IO.raiseUnless(duplicates.isEmpty):
-          val occurrences = duplicates.toList
-            .sortBy((transactionId, _) => transactionId)
-            .map: (transactionId, monzoAccountIds) =>
-              s"$transactionId (in ${monzoAccountIds.sorted.mkString(", ")})"
-            .mkString("; ")
-          Error(
-            s"Monzo returned the same transaction under more than one account in a single run: $occurrences. Filing every occurrence would double-count it, so nothing has been written. Please report this."
-          )
-        // Every typed account paired with the code-defined path its type
-        // maps to. The mapping is type-keyed, so several Monzo accounts — a
-        // closed account and the one that replaced it — can share a path;
-        // the Monzo account ID in the leaf name is what keeps them apart
-        // (see assetAccountPath), so each gets its own asset account and is
-        // retired on its own closure rather than the whole type's.
-        typedAccountsAndPaths = byAccount.flatMap: (account, _) =>
-          account.accountType
-            .flatMap: accountType =>
-              assetAccounts.byAccountType.get(accountType.value)
-            .map: assetPath =>
-              (account, assetPath)
-        allMonzoPotAccountIds = byAccount.collect:
-          case (account, _) if isPotBacking(account) => account.id
-        materialMonzoPotAccountIds = materialByAccount.collect:
-          case (account, _) if isPotBacking(account) => account.id
-        // Every online_id in the book, in one scan: the tags below and the
-        // dedup check further down are the run's only two readers of them,
-        // and both would otherwise scan an unindexed table that grows with
-        // the book's history. See Slot.onlineIds.
-        onlineIds <- Slot.onlineIds
-        // The book is the durable home of the account associations: each
-        // asset account is tagged with the Monzo account ID that posts into
-        // it in an account-level online_id slot, so a book that outlives the
-        // state store (say, moved to a new machine) still resolves by tag.
-        // Resolved from the prefetch by primary key, and only for the IDs
-        // this run asks about — most online_id slots name a split, not an
-        // account. Two accounts tagged with one Monzo account ID fail the
-        // run: nothing in the book says which is meant, and posting into the
-        // wrong one would be permanent.
-        monzoAccountIds = typedAccountsAndPaths
-          .map((account, _) => account.id) ++ allMonzoPotAccountIds
-        taggedGuids = onlineIds
-          .filter: (value, _) =>
-            monzoAccountIds.exists(_.value == value)
-          .groupMap((value, _) => value)((_, objGuid) => objGuid)
-        taggedByMonzoAccountId <- monzoAccountIds
-          .traverse: monzoAccountId =>
-            taggedGuids
-              .getOrElse(monzoAccountId.value, Nil)
-              .distinct
-              .traverse(Account.byGuid)
-              .map(_.flatten)
-              .flatMap:
-                case Nil            => IO.none
-                case account :: Nil => IO.pure(Some(account))
-                case accounts       =>
-                  IO.raiseError:
-                    Error(
-                      s"Several accounts are tagged with the Monzo account ID ${monzoAccountId.value}: ${accounts.map(_.name).sorted.mkString(", ")}; resolve by hand — only one account can be the one it posts into."
-                    )
-              .map(monzoAccountId -> _)
-          .map(_.toMap)
-        taggedPots = allMonzoPotAccountIds
-          .flatMap: monzoAccountId =>
-            taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
-          .toMap
-        // Fail fast on a pot the book doesn't know and no recorded link
-        // names: it can't be filed into its own account, and a mis-filed row
-        // would be permanent — online_id dedup skips it on every later run.
-        // One run whose window spans a transfer for the pot records the link.
-        unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
-          taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
-        _ <- IO.raiseUnless(unnamedPots.isEmpty):
-          Error(
-            s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
-          )
-        currency <- Commodity.gbp
-        // Fail fast on a pot denominated in anything but the book's currency:
-        // its minor units would otherwise be posted as if they were pence.
-        foreignPots = materialMonzoPotAccountIds.flatMap: monzoAccountId =>
-          pots
-            .get(monzoAccountId)
-            .filterNot(_.currency.value == currency.mnemonic)
-            .map: pot =>
-              s"${pot.name.value} (${pot.currency.value})"
-        _ <- IO.raiseUnless(foreignPots.isEmpty):
-          Error(
-            s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
-          )
-        // Typed asset accounts and pot accounts resolve through the same
-        // path: resolveAssetAccount finds by online_id tag, creates the
-        // account otherwise, enforces placement, and tags one it created.
-        typedAssets <- typedAccountsAndPaths
-          .traverse: (account, path) =>
-            resolveAssetAccount(
-              livePath = path,
-              // Each Monzo account has its own asset account, so retirement
-              // is its own closure: a closed account is archived while the
-              // account that replaced it goes on being posted to.
-              retired = account.closed.exists(_.value),
-              monzoAccountId = account.id,
-              tagged = taggedByMonzoAccountId(account.id),
-              dryRun = dryRun
-            ).map(account.id -> _)
-          .map(_.toMap)
-        // A pot's canonical leaf name is its current Monzo name plus its
-        // backing-account ID, so renames propagate and two pots that share a
-        // name still get an account each. Only pots that are material this
-        // run or already known to the book get resolved; the rest are posted
-        // to as-is. `pots` only holds a backing account whose pot some
-        // transfer has named (see State.potIds), and a tagged account can
-        // outlive the state store that named it — so until a window spanning
-        // one of its transfers is fetched there is no name and no deleted
-        // flag to enforce against.
-        // The run that does fetch one records the link and enforces then.
-        potAssets <- allMonzoPotAccountIds
-          .traverse: monzoAccountId =>
-            pots.get(monzoAccountId) match
-              case Some(pot)
-                  if materialMonzoPotAccountIds.contains(monzoAccountId) ||
-                    taggedPots.contains(monzoAccountId) =>
-                resolveAssetAccount(
-                  livePath = assetAccounts.pots :+ pot.name.value,
-                  retired = pot.deleted.value,
-                  monzoAccountId = monzoAccountId,
-                  tagged = taggedByMonzoAccountId(monzoAccountId),
-                  dryRun = dryRun
-                ).map(account => monzoAccountId -> Some(account))
-              case _ =>
-                IO.pure(monzoAccountId -> taggedPots.get(monzoAccountId))
-          .map:
-            _.collect:
-              case (monzoAccountId, Some(account)) => monzoAccountId -> account
-            .toMap
-        assets = typedAssets ++ potAssets
-        // One book account per Monzo account, checked rather than assumed.
-        // Resolution never adopts an account it found by location, so two
-        // Monzo accounts can only land on one book account if the book itself
-        // says they do: an online_id tag added by hand to an account another
-        // one already answers to. Sharing an account would commingle two
-        // Monzo accounts' rows permanently — online_id dedup skips them on
-        // every later run — so the run fails instead.
-        // Resolution creates, moves and renames accounts but files nothing,
-        // and the whole run is one transaction (a dry run writes nothing at
-        // all), so failing here leaves the book unimported.
-        overloaded = assets.toList
-          .groupBy((_, account) => account.guid)
-          .values
-          .filter(_.sizeIs > 1)
-          .map: shared =>
-            val (_, account) = shared.head
-            val monzoAccountIds =
-              shared.map((monzoAccountId, _) => monzoAccountId.value)
-            s"${account.name} (${monzoAccountIds.sorted.mkString(", ")})"
-          .toList
-        _ <- IO.raiseUnless(overloaded.isEmpty):
-          Error(
-            s"Book account(s) shared by several Monzo accounts: ${overloaded.mkString("; ")}; resolve by hand — filing two Monzo accounts into one book account would commingle their transactions."
-          )
-        // Monzo's categories are authoritative: each files into the account
-        // categoryTarget names, created on first sight — no mapping to
-        // maintain. Grouped by parent so each distinct parent chain is
-        // resolved once, not once per category.
-        categories <- materialByAccount
-          .flatMap: (_, transactions) =>
-            transactions
-          .map(categoryTarget)
-          .distinct
-          .groupBy(_.init)
-          .toList
-          .flatTraverse: (parentPath, paths) =>
-            liveParentFor(parentPath, dryRun).flatMap: parent =>
-              paths.traverse: path =>
-                createOrRetrieveChild(
-                  parent,
-                  canonicalPathString(parentPath, retired = false),
-                  path.last,
-                  dryRun
-                ).map(path -> _)
-          .map(_.toMap)
-        // Every account a posting touches is denominated in the book's
-        // currency, so a split's value and its quantity are the same rational
-        // number and neither needs an exchange rate — which is what lets
-        // Posting.fromMonzo write one pair of numerators and denominators for
-        // both. An account in another commodity would need a rate, and
-        // posting Monzo's minor units into it as though they were the book's
-        // would be wrong by it, so fail rather than file: online_id dedup
-        // skips a mis-filed row on every later run, so it could never be
-        // re-filed.
-        foreignAccounts = (assets.values ++ categories.values).toList
-          .filterNot(_.commodityGuid.contains(currency.guid))
-          .map(_.name)
-          .distinct
-        _ <- IO.raiseUnless(foreignAccounts.isEmpty):
-          Error(
-            s"Account(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignAccounts.sorted.mkString(", ")}."
-          )
-        // The dedup keys out of the same prefetch: the whole run sits in a
-        // single SQLite transaction and fetched transaction IDs are unique,
-        // so the set can't go stale mid-run. The account tags resolution has
-        // just written aren't in it, and needn't be — those are Monzo account
-        // IDs, and what this answers is whether a Monzo *transaction* ID is
-        // already filed.
-        importedIds = onlineIds.map((value, _) => value).toSet
-        // Every row the run will file, settled before any of them is
-        // written: the lines below pad each column to the widest value in
-        // it, which isn't known until every row is.
-        rows <- materialByAccount.flatTraverse: (account, material) =>
-          // Total: unmapped types and unnamed pots failed the run up front,
-          // and `assets` was built from this same list of accounts.
-          val assetAccount = assets(account.id)
-          material
-            .filterNot: transaction =>
-              importedIds.contains(transaction.id.value)
-            .traverse: transaction =>
-              val categoryPath = categoryTarget(transaction)
-              Posting
-                .fromMonzo(
-                  transaction,
-                  assetAccount,
-                  categories(categoryPath),
-                  currency,
-                  now
-                )
-                .map: posting =>
-                  (
-                    transaction = transaction,
-                    assetAccount = assetAccount,
-                    category = categoryPath.mkString(":"),
-                    amount =
-                      formatAmount(posting.assetSplit.valueNum, currency),
-                    posting = posting
-                  )
-        skipped = materialByAccount
-          .flatMap((_, material) => material)
-          .count: transaction =>
-            importedIds.contains(transaction.id.value)
-        // One line per transaction filed, so the plan can be read row by row
-        // rather than trusted as a count: the post date and payee GnuCash
-        // will show, the signed amount as it lands on the asset leg (the
-        // category leg is its negation), and the two accounts the money moves
-        // between. The asset account is named by its leaf, which carries the
-        // Monzo account ID, so two accounts of a kind are told apart without
-        // repeating the path on every line. A dry run says what it would do,
-        // as the account creations above do.
-        verb = if dryRun then "Would file" else "Filed"
-        // Each column padded to the widest value in it, so a run's lines read
-        // as a table rather than as prose of varying length. The amounts are
-        // right-aligned — every one carries the currency's full fraction, so
-        // that lines them up on the decimal point — and the rest left.
-        amountWidth = rows.map(_.amount.length).maxOption.getOrElse(0)
-        assetWidth = rows.map(_.assetAccount.name.length).maxOption.getOrElse(0)
-        categoryWidth = rows.map(_.category.length).maxOption.getOrElse(0)
-        _ <- rows.traverse: row =>
-          val line = List(
-            verb,
-            formatTimestamp(row.transaction.created.value.asInstant),
-            " " * (amountWidth - row.amount.length) + row.amount,
-            row.assetAccount.name.padTo(assetWidth, ' '),
-            "/",
-            // The colon punctuates the category, so it goes before the
-            // padding rather than after it, where it would sit a column away
-            // from the word it belongs to.
-            (row.category + ":").padTo(categoryWidth + 1, ' '),
-            s"${payee(row.transaction)}."
-          ).mkString(" ")
-          IO.unlessA(dryRun)(row.posting.insert) *> info(line)
-        _ <- info:
-          // A dry run files nothing, so it says what it would have done,
-          // as the account creations above do.
-          val verb = if dryRun then "would file" else "filed"
-          s"${rows.size} $verb, $skipped already present."
-      yield ()
-      // Everything-or-nothing either way: a real run commits, a dry run is
-      // rolled back rather than merely left unwritten, so that a write that
-      // slipped past a dryRun guard doesn't survive a run that took no
-      // backup.
-      if dryRun then db.withoutCommitting(run) *> db.rowsChanged
-      else db.transact(run) *> db.rowsChanged
-    .onError:
-      // Keep the snapshot: the transaction rolls the book back, but a run that
-      // failed is exactly when you want the copy that predates it.
-      case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
-  _ <-
-    if dryRun then
-      // The rollback above has already undone them, so the book is intact and
-      // this is a report about the code rather than about the book: a dry run
-      // reaching any write at all means a dryRun guard is missing, and the
-      // next real run would file whatever that path writes without anyone
-      // having seen it in the plan.
-      IO.raiseWhen(changed > 0):
+  _ <- withBook(input, now, dryRun): db =>
+    given Database[IO] = db
+    val assetAccounts = AssetAccounts.default
+    // Only material transactions get posted; an account with none needs no
+    // asset account (byAccount lists every account, active or not) and would
+    // only add noise below, so drop it here.
+    val materialByAccount = byAccount
+      .map: (account, transactions) =>
+        (account, materialTransactions(transactions))
+      .filter: (_, transactions) =>
+        transactions.nonEmpty
+    val run = for
+      // Fail fast, before anything is resolved or written: an account type
+      // missing from the map needs a byAccountType entry, not a guess.
+      unmappedTypes = materialByAccount
+        .flatMap: (account, _) =>
+          account.accountType.filterNot: accountType =>
+            assetAccounts.byAccountType.contains(accountType.value)
+        .map(_.value)
+        .distinct
+      _ <- IO.raiseUnless(unmappedTypes.isEmpty):
         Error(
-          s"Dry run attempted $changed row change(s), which were rolled back; the book is unchanged. This is a bug — please report it."
+          s"No asset account mapped for Monzo account type(s) ${unmappedTypes.mkString(", ")}; add them to AssetAccounts.byAccountType."
         )
-    // The book is untouched when nothing changed, so its backup would be a
-    // copy of a file that already exists, aging out the one that could undo
-    // the last run that did write.
-    else if changed > 0 then promoteBackup(temporaryBackup, backup)
-    else
-      fs2.io.file.Files[IO].delete(temporaryBackup) *>
-        info(s"Nothing changed, so deleted $temporaryBackup.")
+      // Fail fast on the assumption the dedup set below rests on. That
+      // set is read once, before the write loop, and never updated as
+      // postings are inserted, so one transaction ID fetched twice in the
+      // same run would be judged unseen twice and posted twice — and there
+      // is no unique constraint on the online_id slot to catch it. Monzo's
+      // model says a pot transfer is one transaction in the main account's
+      // statement and a separate one in the pot's own (see
+      // fetchTransactionsByAccount), so neither check below should ever
+      // fire; they are here because the alternative to them firing is a
+      // silent double-post. They are separate checks because the two say
+      // different things about Monzo: the same ID under two accounts means
+      // one transaction appears in two statements, while the same ID twice
+      // under one account means a page repeated it.
+      occurrences = materialByAccount
+        .flatMap: (account, material) =>
+          material.map: transaction =>
+            transaction.id.value -> account.id.value
+        .groupMap((transactionId, _) => transactionId): (_, monzoAccountId) =>
+          monzoAccountId
+      acrossAccounts = occurrences.filter: (_, monzoAccountIds) =>
+        monzoAccountIds.distinct.sizeIs > 1
+      _ <- IO.raiseUnless(acrossAccounts.isEmpty):
+        val listed = acrossAccounts.toList
+          .sortBy((transactionId, _) => transactionId)
+          .map: (transactionId, monzoAccountIds) =>
+            s"$transactionId (in ${monzoAccountIds.distinct.sorted.mkString(", ")})"
+          .mkString("; ")
+        Error(
+          s"Monzo returned the same transaction under more than one account in a single run: $listed. Filing every occurrence would double-count it, so nothing has been written. Please report this."
+        )
+      withinAccount = occurrences.filter: (_, monzoAccountIds) =>
+        monzoAccountIds.distinct.sizeIs == 1 && monzoAccountIds.sizeIs > 1
+      _ <- IO.raiseUnless(withinAccount.isEmpty):
+        val listed = withinAccount.toList
+          .sortBy((transactionId, _) => transactionId)
+          .map: (transactionId, monzoAccountIds) =>
+            s"$transactionId (${monzoAccountIds.size} times in ${monzoAccountIds.head})"
+          .mkString("; ")
+        Error(
+          s"Monzo returned the same transaction more than once for one account in a single run: $listed. Filing every occurrence would double-count it, so nothing has been written. Please report this."
+        )
+      // Every typed account paired with the code-defined path its type
+      // maps to. The mapping is type-keyed, so several Monzo accounts — a
+      // closed account and the one that replaced it — can share a path;
+      // the Monzo account ID in the leaf name is what keeps them apart
+      // (see assetAccountPath), so each gets its own asset account and is
+      // retired on its own closure rather than the whole type's.
+      typedAccountsAndPaths = byAccount.flatMap: (account, _) =>
+        account.accountType
+          .flatMap: accountType =>
+            assetAccounts.byAccountType.get(accountType.value)
+          .map: assetPath =>
+            (account, assetPath)
+      allMonzoPotAccountIds = byAccount.collect:
+        case (account, _) if isPotBacking(account) => account.id
+      materialMonzoPotAccountIds = materialByAccount.collect:
+        case (account, _) if isPotBacking(account) => account.id
+      // Every online_id in the book, in one scan: the tags below and the
+      // dedup check further down are the run's only two readers of them,
+      // and both would otherwise scan an unindexed table that grows with
+      // the book's history. See Slot.onlineIds.
+      onlineIds <- Slot.onlineIds
+      // The book is the durable home of the account associations: each
+      // asset account is tagged with the Monzo account ID that posts into
+      // it in an account-level online_id slot, so a book that outlives the
+      // state store (say, moved to a new machine) still resolves by tag.
+      // Resolved from the prefetch by primary key, and only for the IDs
+      // this run asks about — most online_id slots name a split, not an
+      // account. Two accounts tagged with one Monzo account ID fail the
+      // run: nothing in the book says which is meant, and posting into the
+      // wrong one would be permanent.
+      monzoAccountIds = typedAccountsAndPaths
+        .map((account, _) => account.id) ++ allMonzoPotAccountIds
+      taggedGuids = onlineIds
+        .filter: (value, _) =>
+          monzoAccountIds.exists(_.value == value)
+        .groupMap((value, _) => value)((_, objGuid) => objGuid)
+      taggedByMonzoAccountId <- monzoAccountIds
+        .traverse: monzoAccountId =>
+          taggedGuids
+            .getOrElse(monzoAccountId.value, Nil)
+            .distinct
+            .traverse(Account.byGuid)
+            .map(_.flatten)
+            .flatMap:
+              case Nil            => IO.none
+              case account :: Nil => IO.pure(Some(account))
+              case accounts       =>
+                IO.raiseError:
+                  Error(
+                    s"Several accounts are tagged with the Monzo account ID ${monzoAccountId.value}: ${accounts.map(_.name).sorted.mkString(", ")}; resolve by hand — only one account can be the one it posts into."
+                  )
+            .map(monzoAccountId -> _)
+        .map(_.toMap)
+      taggedPots = allMonzoPotAccountIds
+        .flatMap: monzoAccountId =>
+          taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
+        .toMap
+      // Fail fast on a pot the book doesn't know and no recorded link
+      // names: it can't be filed into its own account, and a mis-filed row
+      // would be permanent — online_id dedup skips it on every later run.
+      // One run whose window spans a transfer for the pot records the link.
+      unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
+        taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
+      _ <- IO.raiseUnless(unnamedPots.isEmpty):
+        Error(
+          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
+        )
+      currency <- Commodity.gbp
+      // Fail fast on a pot denominated in anything but the book's currency:
+      // its minor units would otherwise be posted as if they were pence.
+      foreignPots = materialMonzoPotAccountIds.flatMap: monzoAccountId =>
+        pots
+          .get(monzoAccountId)
+          .filterNot(_.currency.value == currency.mnemonic)
+          .map: pot =>
+            s"${pot.name.value} (${pot.currency.value})"
+      _ <- IO.raiseUnless(foreignPots.isEmpty):
+        Error(
+          s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
+        )
+      // Typed asset accounts and pot accounts resolve through the same
+      // path: resolveAssetAccount finds by online_id tag, creates the
+      // account otherwise, enforces placement, and tags one it created.
+      typedAssets <- typedAccountsAndPaths
+        .traverse: (account, path) =>
+          resolveAssetAccount(
+            livePath = path,
+            // Each Monzo account has its own asset account, so retirement
+            // is its own closure: a closed account is archived while the
+            // account that replaced it goes on being posted to.
+            retired = account.closed.exists(_.value),
+            monzoAccountId = account.id,
+            tagged = taggedByMonzoAccountId(account.id),
+            dryRun = dryRun
+          ).map(account.id -> _)
+        .map(_.toMap)
+      // A pot's canonical leaf name is its current Monzo name plus its
+      // backing-account ID, so renames propagate and two pots that share a
+      // name still get an account each. Only pots that are material this
+      // run or already known to the book get resolved; the rest are posted
+      // to as-is. `pots` only holds a backing account whose pot some
+      // transfer has named (see State.potIds), and a tagged account can
+      // outlive the state store that named it — so until a window spanning
+      // one of its transfers is fetched there is no name and no deleted
+      // flag to enforce against.
+      // The run that does fetch one records the link and enforces then.
+      potAssets <- allMonzoPotAccountIds
+        .traverse: monzoAccountId =>
+          pots.get(monzoAccountId) match
+            case Some(pot)
+                if materialMonzoPotAccountIds.contains(monzoAccountId) ||
+                  taggedPots.contains(monzoAccountId) =>
+              resolveAssetAccount(
+                livePath = assetAccounts.pots :+ pot.name.value,
+                retired = pot.deleted.value,
+                monzoAccountId = monzoAccountId,
+                tagged = taggedByMonzoAccountId(monzoAccountId),
+                dryRun = dryRun
+              ).map(account => monzoAccountId -> Some(account))
+            case _ =>
+              IO.pure(monzoAccountId -> taggedPots.get(monzoAccountId))
+        .map:
+          _.collect:
+            case (monzoAccountId, Some(account)) => monzoAccountId -> account
+          .toMap
+      assets = typedAssets ++ potAssets
+      // One book account per Monzo account, checked rather than assumed.
+      // Resolution never adopts an account it found by location, so two
+      // Monzo accounts can only land on one book account if the book itself
+      // says they do: an online_id tag added by hand to an account another
+      // one already answers to. Sharing an account would commingle two
+      // Monzo accounts' rows permanently — online_id dedup skips them on
+      // every later run — so the run fails instead.
+      // Resolution creates, moves and renames accounts but files nothing,
+      // and the whole run is one transaction (a dry run writes nothing at
+      // all), so failing here leaves the book unimported.
+      overloaded = assets.toList
+        .groupBy((_, account) => account.guid)
+        .values
+        .filter(_.sizeIs > 1)
+        .map: shared =>
+          val (_, account) = shared.head
+          val monzoAccountIds =
+            shared.map((monzoAccountId, _) => monzoAccountId.value)
+          s"${account.name} (${monzoAccountIds.sorted.mkString(", ")})"
+        .toList
+      _ <- IO.raiseUnless(overloaded.isEmpty):
+        Error(
+          s"Book account(s) shared by several Monzo accounts: ${overloaded.mkString("; ")}; resolve by hand — filing two Monzo accounts into one book account would commingle their transactions."
+        )
+      // Monzo's categories are authoritative: each files into the account
+      // categoryTarget names, created on first sight — no mapping to
+      // maintain. Grouped by parent so each distinct parent chain is
+      // resolved once, not once per category.
+      categories <- materialByAccount
+        .flatMap: (_, transactions) =>
+          transactions
+        .map(categoryTarget)
+        .distinct
+        .groupBy(_.init)
+        .toList
+        .flatTraverse: (parentPath, paths) =>
+          liveParentFor(parentPath, dryRun).flatMap: parent =>
+            paths.traverse: path =>
+              createOrRetrieveChild(
+                parent,
+                canonicalPathString(parentPath, retired = false),
+                path.last,
+                dryRun
+              ).map(path -> _)
+        .map(_.toMap)
+      // Every account a posting touches is denominated in the book's
+      // currency, so a split's value and its quantity are the same rational
+      // number and neither needs an exchange rate — which is what lets
+      // Posting.fromMonzo write one pair of numerators and denominators for
+      // both. An account in another commodity would need a rate, and
+      // posting Monzo's minor units into it as though they were the book's
+      // would be wrong by it, so fail rather than file: online_id dedup
+      // skips a mis-filed row on every later run, so it could never be
+      // re-filed.
+      foreignAccounts = (assets.values ++ categories.values).toList
+        .filterNot(_.commodityGuid.contains(currency.guid))
+        .map(_.name)
+        .distinct
+      _ <- IO.raiseUnless(foreignAccounts.isEmpty):
+        Error(
+          s"Account(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignAccounts.sorted.mkString(", ")}."
+        )
+      // The dedup keys out of the same prefetch: the whole run sits in a
+      // single SQLite transaction and fetched transaction IDs are unique,
+      // so the set can't go stale mid-run. The account tags resolution has
+      // just written aren't in it, and needn't be — those are Monzo account
+      // IDs, and what this answers is whether a Monzo *transaction* ID is
+      // already filed.
+      importedIds = onlineIds.map((value, _) => value).toSet
+      // Every row the run will file, settled before any of them is
+      // written: the lines below pad each column to the widest value in
+      // it, which isn't known until every row is.
+      rows <- materialByAccount.flatTraverse: (account, material) =>
+        // Total: unmapped types and unnamed pots failed the run up front,
+        // and `assets` was built from this same list of accounts.
+        val assetAccount = assets(account.id)
+        material
+          .filterNot: transaction =>
+            importedIds.contains(transaction.id.value)
+          .traverse: transaction =>
+            val categoryPath = categoryTarget(transaction)
+            Posting
+              .fromMonzo(
+                transaction,
+                assetAccount,
+                categories(categoryPath),
+                currency,
+                now,
+                zone
+              )
+              .map: posting =>
+                (
+                  transaction = transaction,
+                  assetAccount = assetAccount,
+                  category = categoryPath.mkString(":"),
+                  amount = formatAmount(posting.assetSplit.valueNum, currency),
+                  posting = posting
+                )
+      skipped = materialByAccount
+        .flatMap((_, material) => material)
+        .count: transaction =>
+          importedIds.contains(transaction.id.value)
+      // One line per transaction filed, so the plan can be read row by row
+      // rather than trusted as a count: the post date and payee GnuCash
+      // will show, the signed amount as it lands on the asset leg (the
+      // category leg is its negation), and the two accounts the money moves
+      // between. The asset account is named by its leaf, which carries the
+      // Monzo account ID, so two accounts of a kind are told apart without
+      // repeating the path on every line. A dry run says what it would do,
+      // as the account creations above do.
+      verb = if dryRun then "Would file" else "Filed"
+      // Each column padded to the widest value in it, so a run's lines read
+      // as a table rather than as prose of varying length. The amounts are
+      // right-aligned — every one carries the currency's full fraction, so
+      // that lines them up on the decimal point — and the rest left.
+      amountWidth = rows.map(_.amount.length).maxOption.getOrElse(0)
+      assetWidth = rows.map(_.assetAccount.name.length).maxOption.getOrElse(0)
+      categoryWidth = rows.map(_.category.length).maxOption.getOrElse(0)
+      _ <- rows.traverse: row =>
+        val line = List(
+          verb,
+          formatConsoleTimestamp(row.transaction.created.value.asInstant),
+          " " * (amountWidth - row.amount.length) + row.amount,
+          row.assetAccount.name.padTo(assetWidth, ' '),
+          "/",
+          // The colon punctuates the category, so it goes before the
+          // padding rather than after it, where it would sit a column away
+          // from the word it belongs to.
+          (row.category + ":").padTo(categoryWidth + 1, ' '),
+          s"${payee(row.transaction)}."
+        ).mkString(" ")
+        IO.unlessA(dryRun)(row.posting.insert) *> info(line)
+      _ <- info:
+        // A dry run files nothing, so it says what it would have done,
+        // as the account creations above do.
+        val verb = if dryRun then "would file" else "filed"
+        s"${rows.size} $verb, $skipped already present."
+    yield ()
+    // Everything-or-nothing either way: a real run commits, a dry run is
+    // rolled back rather than merely left unwritten, so that a write that
+    // slipped past a dryRun guard doesn't survive a run that took no
+    // backup.
+    db.transactOrRollBack(dryRun)(run)
 yield ()
 
 // AtomicMove, so the promotion either happens or doesn't: the backup never
@@ -623,6 +752,18 @@ val backupTimestamp: DateTimeFormatter =
 
 def formatBackupTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
+
+// The console's own timestamp, deliberately not the one the transactions table
+// is written with: the two happen to agree on a shape, and sharing a formatter
+// would mean a change to how GnuCash stores a date silently reshaped what a
+// run prints. UTC, matching the raw instant Monzo reports, rather than the
+// local calendar day post_date is normalised onto — the line is a record of
+// what was fetched.
+val consoleTimestamp: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+
+def formatConsoleTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(consoleTimestamp)
 
 // Minor units as the book's currency reads them: 1234 at a fraction of 100 is
 // "£12.34". Scaled rather than divided, so the string is exact and keeps its
@@ -866,21 +1007,7 @@ def archiveParentFor(
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
     root <- Account.root
-    archiveSubroot <- Account.retrieveArchiveSubroot.flatMap:
-      case Some(archiveSubroot) => IO.pure(archiveSubroot)
-      case None if dryRun       =>
-        newGuid
-          .map: guid =>
-            root.copy(
-              guid = guid,
-              name = Account.ArchiveName,
-              parentGuid = Some(root.guid),
-              hidden = true,
-              placeholder = true
-            )
-          .flatTap: _ =>
-            info(s"Would create account Root Account/${Account.ArchiveName}.")
-      case None => Account.createOrRetrieveArchiveSubroot
+    archiveSubroot <- archiveSubrootFor(dryRun)
     archiveParent <- mirrorParentFor(
       livePathInit,
       from = root,
@@ -1047,7 +1174,8 @@ def createChild(
         hidden = false,
         placeholder = placeholder
       )
-    _ <-
-      if dryRun then info(s"Would create account $parentPath/$name.")
-      else child.insert *> info(s"Created account $parentPath/$name.")
+    _ <- IO.unlessA(dryRun)(child.insert)
+    _ <- info:
+      val verb = if dryRun then "Would create" else "Created"
+      s"$verb account $parentPath/$name."
   yield child
