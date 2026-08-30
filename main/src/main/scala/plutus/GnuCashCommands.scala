@@ -87,14 +87,11 @@ def archiveAccounts(
                   mirrorKind = "Archive",
                   dryRun
                 )
-                _ <-
-                  if dryRun then
-                    info(s"Would archive $hiddenAccountPath to $archivedPath.")
-                  else
-                    hiddenAccount
-                      .update(parent = archiveParent)
-                      .flatTap: _ =>
-                        info(s"Archived $hiddenAccountPath to $archivedPath.")
+                _ <- IO.unlessA(dryRun):
+                  hiddenAccount.update(parent = archiveParent).void
+                _ <- info:
+                  val verb = if dryRun then "Would archive" else "Archived"
+                  s"$verb $hiddenAccountPath to $archivedPath."
               yield ()
           yield ()
         _ <- info:
@@ -181,14 +178,11 @@ def restoreAccount(
               mirrorKind = "Non-archive",
               dryRun
             )
-            _ <-
-              if dryRun then
-                info(s"Would restore $archivedAccountPath to $restoredPath.")
-              else
-                archivedAccount
-                  .update(parent = nonArchiveParent)
-                  .flatTap: _ =>
-                    info(s"Restored $archivedAccountPath to $restoredPath.")
+            _ <- IO.unlessA(dryRun):
+              archivedAccount.update(parent = nonArchiveParent).void
+            _ <- info:
+              val verb = if dryRun then "Would restore" else "Restored"
+              s"$verb $archivedAccountPath to $restoredPath."
           yield ()
       yield ()
   yield ()
@@ -254,20 +248,13 @@ def cleanUpRedundantMirror(
           // the move: a dry run doesn't move it, and the path would otherwise
           // have to be queried twice to say the same thing.
           val movedChildPath = s"$originalPath/${child.name}"
-          if dryRun then warn(s"Would move $childPath to $movedChildPath.")
-          else
-            child
-              .update(parent = original)
-              .flatTap: _ =>
-                warn(s"Moved $childPath to $movedChildPath.")
-        _ <-
-          if dryRun then
-            warn:
-              s"Would delete existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
-          else
-            existingMirror.delete *>
-              warn:
-                s"Deleted existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
+          IO.unlessA(dryRun)(child.update(parent = original).void) *> warn:
+            val verb = if dryRun then "Would move" else "Moved"
+            s"$verb $childPath to $movedChildPath."
+        _ <- IO.unlessA(dryRun)(existingMirror.delete)
+        _ <- warn:
+          val verb = if dryRun then "Would delete" else "Deleted"
+          s"$verb existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
       yield ()
   yield ()
 
@@ -1187,7 +1174,8 @@ def createChild(
         hidden = false,
         placeholder = placeholder
       )
-    _ <-
-      if dryRun then info(s"Would create account $parentPath/$name.")
-      else child.insert *> info(s"Created account $parentPath/$name.")
+    _ <- IO.unlessA(dryRun)(child.insert)
+    _ <- info:
+      val verb = if dryRun then "Would create" else "Created"
+      s"$verb account $parentPath/$name."
   yield child
