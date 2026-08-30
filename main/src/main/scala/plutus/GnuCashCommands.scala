@@ -240,21 +240,26 @@ def cleanUpRedundantMirror(
       for
         _ <- warn:
           s"$mirrorKind mirror for $originalPath already exists."
+        // Read before anything moves, and read rather than spelled out: the
+        // mirror is always a real account here — a fabricated dry-run parent
+        // has no children to find one under — but where it sits is only known
+        // to the book.
+        existingMirrorPath <- existingMirror.pathString
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren
         ): child =>
+          val childPath = s"$existingMirrorPath/${child.name}"
           // Where the child ends up, spelled out rather than read back after
           // the move: a dry run doesn't move it, and the path would otherwise
           // have to be queried twice to say the same thing.
-          val childPath = s"$originalPath/${child.name}"
-          if dryRun then warn(s"Would move $childPath to $originalPath.")
+          val movedChildPath = s"$originalPath/${child.name}"
+          if dryRun then warn(s"Would move $childPath to $movedChildPath.")
           else
             child
               .update(parent = original)
               .flatTap: _ =>
-                warn(s"Moved $childPath to $originalPath.")
-        existingMirrorPath <- existingMirror.pathString
+                warn(s"Moved $childPath to $movedChildPath.")
         _ <-
           if dryRun then
             warn:
