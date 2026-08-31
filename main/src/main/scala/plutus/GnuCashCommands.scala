@@ -739,6 +739,13 @@ def promoteBackup(
       CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
     ) *> info(s"Moved $temporaryBackup to $backup.")
 
+// --input defaults to a bare Accounts.gnucash, so an input with no parent is
+// the ordinary case rather than a degenerate one: the name resolves in the
+// working directory, so that is where this book's backups are. Asking for it
+// by name rather than scanning "." keeps the logged path unambiguous.
+def bookDirectory(input: fs2.io.file.Path): IO[fs2.io.file.Path] =
+  input.parent.fold(fs2.io.file.Files[IO].currentWorkingDirectory)(IO.pure)
+
 // A leftover temporary backup is a copy taken by a run that died between
 // taking it and promoting it. That run may well have committed its writes
 // first — withBook commits inside `body`, then reads total_changes(), then
@@ -752,9 +759,9 @@ def promoteBackup(
 def promoteAbandonedBackups(
     input: fs2.io.file.Path
 )(using verbosity: Verbosity): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .list(input.parent.getOrElse(fs2.io.file.Path(".")))
+  fs2.Stream
+    .eval(bookDirectory(input))
+    .flatMap(fs2.io.file.Files[IO].list)
     .filter: path =>
       val fileName = path.fileName.toString
       fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
