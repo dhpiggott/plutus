@@ -6,10 +6,6 @@ import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
-// GnuCash GUIDs are 32-char hex with the UUID dashes stripped.
-val newGuid: IO[String] =
-  UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))
-
 object Account:
 
   // Resolve a path of names from the root ("Expenses" :: "Groceries" :: Nil),
@@ -206,34 +202,6 @@ final case class Account(
           archiveSubroot
   yield hiddenChildren.flatten
 
-  def path(using db: Database[IO]): IO[List[Account]] =
-    db.execute(
-      query = sql"""
-        with recursive ancestors as (
-          select guid, parent_guid, 0 as depth
-          from accounts
-          where guid = $text
-          union all
-          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
-          from accounts
-          join ancestors on accounts.guid = ancestors.parent_guid
-        )
-        ${Account.selectAccountsWithFlags}
-        join ancestors on ancestors.guid = accounts.guid
-        order by ancestors.depth desc
-      """.query:
-        Account.decoder
-      ,
-      args = guid
-    )
-
-  def pathString(using db: Database[IO]): IO[String] =
-    path.map(
-      _.map(_.name)
-        .mkString:
-          "/"
-    )
-
   // Moves and renames share one updater. hidden has its own (updateHidden)
   // because it also owns a KVP slot; placeholder is still set only at insert
   // time and never toggled.
@@ -313,6 +281,34 @@ final case class Account(
             Error(
               s"${children.size} accounts are named $name under $parentPath; resolve by hand — merge them or rename all but one, since nothing here can tell which of them was meant."
             )
+
+  def pathString(using db: Database[IO]): IO[String] =
+    path.map(
+      _.map(_.name)
+        .mkString:
+          "/"
+    )
+
+  def path(using db: Database[IO]): IO[List[Account]] =
+    db.execute(
+      query = sql"""
+        with recursive ancestors as (
+          select guid, parent_guid, 0 as depth
+          from accounts
+          where guid = $text
+          union all
+          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
+          from accounts
+          join ancestors on accounts.guid = ancestors.parent_guid
+        )
+        ${Account.selectAccountsWithFlags}
+        join ancestors on ancestors.guid = accounts.guid
+        order by ancestors.depth desc
+      """.query:
+        Account.decoder
+      ,
+      args = guid
+    )
 
   def insert(using db: Database[IO]): IO[Unit] =
     for
@@ -408,3 +404,7 @@ final case class Account(
       ,
       args = parentGuid
     )
+
+// GnuCash GUIDs are 32-char hex with the UUID dashes stripped.
+val newGuid: IO[String] =
+  UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))

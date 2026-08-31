@@ -6,16 +6,6 @@ import porcupine.Codec.*
 
 object Slot:
 
-  // The slot name behind both halves of the online-identity scheme: split
-  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
-  // OFX FITID convention) and account slots carrying a Monzo account ID (the
-  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
-  // export emits). One wrinkle: libofx builds the stored account value as
-  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
-  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
-  // lookups compare trimmed, honouring both shapes.
-  val OnlineId: String = "online_id"
-
   // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
   // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
   // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
@@ -53,6 +43,16 @@ object Slot:
       """.command,
       args = objGuid
     )
+
+  // The slot name behind both halves of the online-identity scheme: split
+  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
+  // OFX FITID convention) and account slots carrying a Monzo account ID (the
+  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
+  // export emits). One wrinkle: libofx builds the stored account value as
+  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
+  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
+  // lookups compare trimmed, honouring both shapes.
+  val OnlineId: String = "online_id"
 
   // Every online_id slot in the book as (trimmed value, obj_guid), in one
   // query: slots has no index on (name, string_val), so a lookup per value
