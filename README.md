@@ -11,9 +11,11 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ## Commands
 
 ```
-plutus gnucash archive-accounts    [--input PATH] [--dry-run] [verbosity]
-plutus gnucash restore-account     [--input PATH] [--dry-run] [verbosity]
-plutus gnucash import-transactions [--input PATH]
+plutus gnucash archive-accounts    [--input PATH] [--ignore-lock] [--dry-run]
+                                   [verbosity]
+plutus gnucash restore-account     [--input PATH] [--ignore-lock] [--dry-run]
+                                   [verbosity]
+plutus gnucash import-transactions [--input PATH] [--ignore-lock]
                                    [--since INSTANT] [--before INSTANT]
                                    [--dry-run] [verbosity]
 plutus monzo   export-transactions [--since INSTANT] [--before INSTANT]
@@ -30,7 +32,17 @@ Finds hidden accounts in the GnuCash file at `--input` (default `./Accounts.gnuc
 
 Lists archived accounts and prompts (via [cue4s](https://github.com/neandertech/cue4s)) for one to move back to its original parent.
 
-Both of these move — and, when they find a redundant mirror, delete — accounts, so both carry the same safety net as `import-transactions`: a missing `--input` fails before anything is opened, the whole run is one SQLite transaction, a non-dry run that changes something keeps a timestamped `.bak` of the book as it was beforehand, and `--dry-run` prints what would be archived, restored, created, moved or deleted without writing or backing up.
+Both of these move — and, when they find a redundant mirror, delete — accounts, so both carry the same safety net as `import-transactions`: a missing `--input` fails before anything is opened, a book GnuCash has open is refused, the whole run is one SQLite transaction, a non-dry run that changes something keeps a timestamped `.bak` of the book as it was beforehand, and `--dry-run` prints what would be archived, restored, created, moved or deleted without writing or backing up.
+
+### The GnuCash lock
+
+All three `gnucash` commands honour GnuCash's own `gnclock` table, the cooperative lock its SQL backends use: opening a book read/write, GnuCash records its hostname and PID there, and warns when it finds a row that isn't its own.
+
+A command that finds the book locked names the holder and stops — GnuCash holds the whole book in memory and writes it back on save, so anything written underneath a running GnuCash is lost when it saves, or interleaves with it into a tree that is neither. A real run takes the lock for its own duration and releases it at the end, including when it is interrupted, so a GnuCash started mid-run gets the same warning. A `--dry-run` reads the lock but never takes one: it writes nothing, and a plan computed against a book somebody else has open is worth saying so about.
+
+GnuCash deletes its row on close, so a GnuCash that crashed leaves one behind and every later run is refused. Only you can tell that from a live one, so `--ignore-lock` overrides it. Don't reach for it against a GnuCash that is actually open.
+
+A book with no `gnclock` table at all — one no GnuCash with a SQL backend has ever opened — is not refused: the run warns that it can't tell and proceeds.
 
 ### `export-transactions`
 
@@ -76,6 +88,7 @@ Re-runs are idempotent: the Monzo transaction ID is written into an `online_id` 
 - Unlike `export-transactions`, this command doesn't advance the state-store bookmarks — dedup is by `online_id`, not by bookmark — so `--since` defaults to each account's bookmark only for choosing the fetch window.
 - Both splits are written unreconciled; you reconcile them against a statement yourself, as with an OFX import.
 - A missing `--input` fails immediately, before the Monzo fetch: SQLite would otherwise create an empty book at a mistyped path and fail obscurely several queries later.
+- A book GnuCash has open is refused, and a real run holds the lock while it writes. See [The GnuCash lock](#the-gnucash-lock).
 - Each transaction is posted at GnuCash's own "neutral time", 10:59:00 UTC on the transaction's local calendar date, which is what `xaccTransSetDatePostedSecsNormalized` does to every date GnuCash itself records. That leaves enough slack either side for the row to render as the same day in any timezone, and puts imported rows in the same within-day position as hand-entered ones. The split's `enter_date` keeps the real instant.
 - Before any non-dry run the book is copied aside, and once the run has actually written something that copy is kept as `<input>.<yyyyMMddTHHmmssZ>.bak` — the state the book was in just before that run, so restoring it undoes exactly that run and no other. A run that turns out to change nothing (nothing new to file, no account to create, move, rename, un-hide or tag) leaves no backup behind, so a scheduled import that finds nothing doesn't age out the backup that could undo the last one that did. The whole write runs in a single SQLite transaction, so a mid-run failure rolls back to the pre-run state (and the backup, kept in that case too, is the belt-and-braces restore). **Nothing ever deletes these** — an import won't remove a file you might need — so prune them yourself: they're the size of the book, one per run that changed it, and the names sort chronologically. If a run is killed between the copy and that decision, the copy is left behind as a `.bak.tmp`; the next run keeps it (under the dead run's own timestamp, since that's the run it would undo) rather than overwriting it, because there's no way to tell from the outside whether that run had already committed.
 - Every transaction filed is printed as it goes — post date, signed amount, the asset and category accounts it lands in, and the payee — followed by the run's totals, so what a run did (or would do) can be read row by row rather than trusted as a count.
