@@ -319,18 +319,6 @@ def cleanUpRedundantMirror(
       yield ()
   yield ()
 
-// Refuse a book that isn't there rather than letting SQLite create an empty
-// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
-// otherwise leave a stray zero-table file beside the real book and fail
-// several queries later with a bare NoSuchElementException from Account.root.
-def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .exists(input)
-    .flatMap: exists =>
-      IO.raiseUnless(exists):
-        Error(s"No GnuCash book at $input.")
-
 // The file-level safety net around every command that opens the book: refuse a
 // path that isn't there, copy the book aside before a real run, and afterwards
 // keep that copy as <input>.<yyyyMMddTHHmmssZ>.bak if the run changed anything
@@ -344,6 +332,11 @@ def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
 // no run's backup overwrites another's: the name carries the run's own
 // timestamp, so every backup is kept and each undoes exactly the run it
 // precedes. Nothing prunes them — see the README.
+//
+// The temporary name carries that timestamp too, so promoting is only dropping
+// the .tmp. That is what lets a run that died before promoting be finished off
+// rather than overwritten (promoteAbandonedBackups), and under the dead run's
+// own stamp rather than this one's.
 //
 // `body` picks its own transaction boundary (db.transactOrRollBack) rather
 // than being wrapped here, because restore-account has to keep its interactive
@@ -359,22 +352,12 @@ def withBook[A](
     body: Database[IO] => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
   _ <- requireExistingBook(input)
-  temporaryBackup = fs2.io.file.Path(s"$input.bak.tmp")
   backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
+  temporaryBackup = fs2.io.file.Path(s"$backup.tmp")
   _ <- IO.unlessA(dryRun):
     for
-      // A leftover means a previous run died between the copy and the
-      // promotion, so the file about to be overwritten is that run's only
-      // backup. It is still overwritten — the copy has to happen, and the
-      // fixed name is what makes the promotion a rename within one directory
-      // — but not silently.
-      leftover <- fs2.io.file.Files[IO].exists(temporaryBackup)
-      _ <- IO.whenA(leftover):
-        warn:
-          s"$temporaryBackup already exists, so a previous run didn't finish; overwriting it."
-      _ <- fs2.io.file
-        .Files[IO]
-        .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting))
+      _ <- promoteAbandonedBackups(input)
+      _ <- fs2.io.file.Files[IO].copy(input, temporaryBackup)
       _ <- info(s"Copied $input to $temporaryBackup.")
     yield ()
   resultAndChanged <- Database
@@ -408,6 +391,18 @@ def withBook[A](
       fs2.io.file.Files[IO].delete(temporaryBackup) *>
         info(s"Nothing changed, so deleted $temporaryBackup.")
 yield resultAndChanged.result
+
+// Refuse a book that isn't there rather than letting SQLite create an empty
+// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
+// otherwise leave a stray zero-table file beside the real book and fail
+// several queries later with a bare NoSuchElementException from Account.root.
+def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .exists(input)
+    .flatMap: exists =>
+      IO.raiseUnless(exists):
+        Error(s"No GnuCash book at $input.")
 
 // Lives here rather than under `monzo` because it's conceptually a GnuCash
 // import — a future variant could read the CSVs the Monzo app exports instead
@@ -688,7 +683,12 @@ def importTransactions(
                 parent,
                 canonicalPathString(parentPath, retired = false),
                 path.last,
-                dryRun
+                dryRun,
+                // A category leaf takes postings, is never retired on its
+                // own, and is born from its parent.
+                placeholder = false,
+                hidden = false,
+                template = None
               ).map(path -> _)
         .map(_.toMap)
       // Every account a posting touches is denominated in the book's
@@ -791,6 +791,46 @@ def importTransactions(
     db.transactOrRollBack(dryRun)(run)
 yield ()
 
+// A leftover temporary backup is a copy taken by a run that died between
+// taking it and promoting it. That run may well have committed its writes
+// first — withBook commits inside `body`, then reads total_changes(), then
+// closes the book, then promotes — and from the outside the two cases are
+// indistinguishable, so the copy is treated as the one thing that could undo
+// it and is kept rather than discarded. Nothing is lost by keeping a redundant
+// one: it is a valid snapshot either way, just of a book that didn't change.
+//
+// Matching is by name, on this book only, so a temporary backup of another
+// book in the same directory is left alone.
+def promoteAbandonedBackups(
+    input: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.Stream
+    .eval(bookDirectory(input))
+    .flatMap(fs2.io.file.Files[IO].list)
+    .filter: path =>
+      val fileName = path.fileName.toString
+      fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
+        ".bak.tmp"
+      )
+    .evalMap: abandoned =>
+      warn(
+        s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
+      ) *> promoteBackup(
+        abandoned,
+        // The filter guarantees the suffix, and the rest of the name is the
+        // dead run's own timestamped backup name.
+        fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
+      )
+    .compile
+    .drain
+
+// --input defaults to a bare Accounts.gnucash, so an input with no parent is
+// the ordinary case rather than a degenerate one: the name resolves in the
+// working directory, so that is where this book's backups are. Asking for it
+// by name rather than scanning "." keeps the logged path unambiguous.
+def bookDirectory(input: fs2.io.file.Path): IO[fs2.io.file.Path] =
+  input.parent.fold(fs2.io.file.Files[IO].currentWorkingDirectory)(IO.pure)
+
 // AtomicMove, so the promotion either happens or doesn't: the backup never
 // appears under its final name half-formed, and never vanishes without
 // arriving. Both paths sit beside the book, so the rename stays within one
@@ -879,35 +919,6 @@ def titleCased(category: String): String =
     .map(_.capitalize)
     .mkString(" ")
 
-// The canonical path of the asset account a Monzo account posts into: the
-// code-defined path with that account's Monzo ID in the leaf name. Several
-// Monzo accounts can share a code-defined path — the map is keyed by type, so
-// a closed account and the one that replaced it land on the same one, and two
-// pots may share a name — and each gets an account of its own regardless
-// (resolveAssetAccount never adopts by location). The ID in the name is what
-// tells those siblings apart in GnuCash's account tree, and it puts the
-// identity the resolver actually matches on, the online_id tag, in plain
-// sight beside them.
-def assetAccountPath(
-    livePath: List[String],
-    monzoAccountId: monzo.AccountId
-): List[String] =
-  livePath.init :+ s"${livePath.last} (${monzoAccountIdLabel(monzoAccountId)})"
-
-// The Monzo account ID as it reads in an account name: acc_ dropped, since
-// every account named this way is a Monzo account and the prefix tells a
-// reader nothing, and the rest upper-cased, so it sits among account names
-// the way a sort code or an account number does rather than as a stretch of
-// mixed-case noise. Purely cosmetic: the identity the resolver matches on is
-// the raw ID in the online_id tag, so nothing needs the ID back out of a
-// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but only for the
-// name: two IDs differing only in case still get an account each, because
-// resolution matches on the tag, not on the name. Locale.ROOT because a
-// Turkish-locale machine upper-cases i to İ, which would give one account two
-// different canonical names on two machines.
-def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
-  monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
-
 // One resolver for every Monzo-backed asset account. The online_id tag is the
 // only thing it matches on, and identity therefore survives moves and
 // renames. An account a past GUI import of export-transactions' OFX
@@ -949,11 +960,13 @@ def resolveAssetAccount(
             canonicalPathString(canonicalPath.init, retired),
             canonicalPath.last,
             dryRun,
+            placeholder = false,
             // Born hidden if the Monzo side is already retired, rather than
             // created visible and hidden a line later: hidden tracks
             // retirement (see alignHidden), and an account this run is
             // bringing into being has nothing to align against.
-            hidden = retired
+            hidden = retired,
+            template = None
           )
         yield child
     _ <- IO.unlessA(dryRun || tagged.isDefined):
@@ -963,8 +976,44 @@ def resolveAssetAccount(
       account.tagOnlineId(monzoAccountId.value)
   yield account
 
+// The canonical path of the asset account a Monzo account posts into: the
+// code-defined path with that account's Monzo ID in the leaf name. Several
+// Monzo accounts can share a code-defined path — the map is keyed by type, so
+// a closed account and the one that replaced it land on the same one, and two
+// pots may share a name — and each gets an account of its own regardless
+// (resolveAssetAccount never adopts by location). The ID in the name is what
+// tells those siblings apart in GnuCash's account tree, and it puts the
+// identity the resolver actually matches on, the online_id tag, in plain
+// sight beside them.
+def assetAccountPath(
+    livePath: List[String],
+    monzoAccountId: monzo.AccountId
+): List[String] =
+  livePath.init :+ s"${livePath.last} (${monzoAccountIdLabel(monzoAccountId)})"
+
+// The Monzo account ID as it reads in an account name: acc_ dropped, since
+// every account named this way is a Monzo account and the prefix tells a
+// reader nothing, and the rest upper-cased, so it sits among account names
+// the way a sort code or an account number does rather than as a stretch of
+// mixed-case noise. Purely cosmetic: the identity the resolver matches on is
+// the raw ID in the online_id tag, so nothing needs the ID back out of a
+// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but only for the
+// name: two IDs differing only in case still get an account each, because
+// resolution matches on the tag, not on the name. Locale.ROOT because a
+// Turkish-locale machine upper-cases i to İ, which would give one account two
+// different canonical names on two machines.
+def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
+  monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
+
 // A canonical path's parent chain: the live one while the Monzo side is
 // live, its Archive-nested twin once retired.
+//
+// Not boundaryParentFor on both sides, despite its `retired = false` also
+// naming a chain under the root: that one *mirrors an archived chain back out*,
+// and the paths here are code-defined (AssetAccounts.default) with no archived
+// counterpart to mirror. Routing them through it would also force the Archive
+// subroot — creating one in a run whose accounts are all live, which is the
+// laziness BookRoots exists for.
 def parentFor(
     pathInit: List[String],
     retired: Boolean,
@@ -973,27 +1022,6 @@ def parentFor(
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
   else liveParentFor(pathInit, roots, dryRun)
-
-// The parent chain on the far side of the live/archive boundary: going in, the
-// live chain mirrored under the Archive subroot; coming back out, the archived
-// chain mirrored under the root. All three commands cross that boundary —
-// import retiring a closed account or a deleted pot, archive-accounts,
-// restore-account — so each names a direction here rather than pairing `from`
-// and `to` for itself and risking a mismatched pair.
-def boundaryParentFor(
-    pathInit: List[String],
-    retired: Boolean,
-    roots: BookRoots,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  roots.archiveSubroot.flatMap: archiveSubroot =>
-    mirrorParentFor(
-      pathInit,
-      from = if retired then roots.root else archiveSubroot,
-      to = if retired then archiveSubroot else roots.root,
-      retired = retired,
-      dryRun
-    )
 
 // Hidden tracks retirement, aligned in both directions. Takes its arguments in
 // the same order as alignDescription, which runs beside it on every enforced
@@ -1013,28 +1041,6 @@ def alignHidden(
       .updateHidden(retired)
       .flatTap: _ =>
         info(s"${if retired then "Hid" else "Unhid"} $label.")
-
-// The canonical description of a Monzo-backed asset account is none at all:
-// the name already says which Monzo account or pot posts into it, down to the
-// ID that keeps two of a kind apart (see assetAccountPath), so anything here
-// could only restate it. Aligned like hidden, so a description added by hand
-// or carried in by a GUI OFX import doesn't outlive the next run. No
-// description and an empty one both count as aligned, so whichever of the two
-// the book holds is left alone.
-def alignDescription(
-    account: Account,
-    livePath: List[String],
-    retired: Boolean,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired)
-  if account.description.forall(_.isEmpty) then IO.pure(account)
-  else if dryRun then
-    info(s"Would clear the description of $label.").as(account)
-  else
-    account.clearDescription
-      .flatTap: _ =>
-        info(s"Cleared the description of $label.")
 
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
@@ -1088,6 +1094,49 @@ def enforcePlacement(
     described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
 
+// The canonical description of a Monzo-backed asset account is none at all:
+// the name already says which Monzo account or pot posts into it, down to the
+// ID that keeps two of a kind apart (see assetAccountPath), so anything here
+// could only restate it. Aligned like hidden, so a description added by hand
+// or carried in by a GUI OFX import doesn't outlive the next run. No
+// description and an empty one both count as aligned, so whichever of the two
+// the book holds is left alone.
+def alignDescription(
+    account: Account,
+    livePath: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  if account.description.forall(_.isEmpty) then IO.pure(account)
+  else if dryRun then
+    info(s"Would clear the description of $label.").as(account)
+  else
+    account.clearDescription
+      .flatTap: _ =>
+        info(s"Cleared the description of $label.")
+
+// The parent chain on the far side of the live/archive boundary: going in, the
+// live chain mirrored under the Archive subroot; coming back out, the archived
+// chain mirrored under the root. All three commands cross that boundary —
+// import retiring a closed account or a deleted pot, archive-accounts,
+// restore-account — so each names a direction here rather than pairing `from`
+// and `to` for itself and risking a mismatched pair.
+def boundaryParentFor(
+    pathInit: List[String],
+    retired: Boolean,
+    roots: BookRoots,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  roots.archiveSubroot.flatMap: archiveSubroot =>
+    mirrorParentFor(
+      pathInit,
+      from = if retired then roots.root else archiveSubroot,
+      to = if retired then archiveSubroot else roots.root,
+      retired = retired,
+      dryRun
+    )
+
 // One parent chain mirrored across the live/archive boundary: (from = root,
 // to = the Archive subroot) going in, the reverse coming out. The direction
 // is boundaryParentFor's to choose — all three commands reach a mirror
@@ -1130,6 +1179,7 @@ def mirrorParentFor(
           segment,
           dryRun,
           placeholder = true,
+          hidden = false,
           template = nextCounterpart
         )
       yield (
@@ -1166,7 +1216,9 @@ def liveParentFor(
           cursor.path,
           segment,
           dryRun,
-          placeholder = true
+          placeholder = true,
+          hidden = false,
+          template = None
         ).map: child =>
           (account = child, path = s"${cursor.path}/$segment")
       .map(_.account)
@@ -1180,9 +1232,9 @@ def createOrRetrieveChild(
     parentPath: String,
     name: String,
     dryRun: Boolean,
-    placeholder: Boolean = false,
-    hidden: Boolean = false,
-    template: Option[Account] = None
+    placeholder: Boolean,
+    hidden: Boolean,
+    template: Option[Account]
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   parent
     .child(name)
@@ -1216,7 +1268,9 @@ def createOrRetrieveChild(
 // leaves that take postings are not; `hidden` is likewise the child's own —
 // never the template's — so a mirror created under the Archive subroot is
 // visible within it, and only an account whose Monzo side is already retired
-// (or the subroot itself) is born hidden. A dry run inserts nothing but still
+// (or the subroot itself) is born hidden. None of the three defaults, so that
+// adding a flag here can't leave a call site silently taking the old one. A
+// dry run inserts nothing but still
 // yields the would-be account, so the rest of the plan can proceed against
 // it — which is why `parentPath` is passed in rather than read back out of
 // the book: in a dry run the parent may itself be a would-be account that was
@@ -1227,9 +1281,9 @@ def createChild(
     parentPath: String,
     name: String,
     dryRun: Boolean,
-    placeholder: Boolean = false,
-    hidden: Boolean = false,
-    template: Option[Account] = None
+    placeholder: Boolean,
+    hidden: Boolean,
+    template: Option[Account]
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
     guid <- newGuid
