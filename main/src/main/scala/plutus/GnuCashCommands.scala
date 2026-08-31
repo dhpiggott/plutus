@@ -284,6 +284,11 @@ def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
 // timestamp, so every backup is kept and each undoes exactly the run it
 // precedes. Nothing prunes them — see the README.
 //
+// The temporary name carries that timestamp too, so promoting is only dropping
+// the .tmp. That is what lets a run that died before promoting be finished off
+// rather than overwritten (promoteAbandonedBackups), and under the dead run's
+// own stamp rather than this one's.
+//
 // `body` picks its own transaction boundary (db.transactOrRollBack) rather
 // than being wrapped here, because restore-account has to keep its interactive
 // prompt outside the write lock. What is enforced here either way is that a
@@ -298,22 +303,12 @@ def withBook[A](
     body: Database[IO] => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
   _ <- requireExistingBook(input)
-  temporaryBackup = fs2.io.file.Path(s"$input.bak.tmp")
   backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
+  temporaryBackup = fs2.io.file.Path(s"$backup.tmp")
   _ <- IO.unlessA(dryRun):
     for
-      // A leftover means a previous run died between the copy and the
-      // promotion, so the file about to be overwritten is that run's only
-      // backup. It is still overwritten — the copy has to happen, and the
-      // fixed name is what makes the promotion a rename within one directory
-      // — but not silently.
-      leftover <- fs2.io.file.Files[IO].exists(temporaryBackup)
-      _ <- IO.whenA(leftover):
-        warn:
-          s"$temporaryBackup already exists, so a previous run didn't finish; overwriting it."
-      _ <- fs2.io.file
-        .Files[IO]
-        .copy(input, temporaryBackup, CopyFlags(CopyFlag.ReplaceExisting))
+      _ <- promoteAbandonedBackups(input)
+      _ <- fs2.io.file.Files[IO].copy(input, temporaryBackup)
       _ <- info(s"Copied $input to $temporaryBackup.")
     yield ()
   resultAndChanged <- Database
@@ -743,6 +738,39 @@ def promoteBackup(
       backup,
       CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
     ) *> info(s"Moved $temporaryBackup to $backup.")
+
+// A leftover temporary backup is a copy taken by a run that died between
+// taking it and promoting it. That run may well have committed its writes
+// first — withBook commits inside `body`, then reads total_changes(), then
+// closes the book, then promotes — and from the outside the two cases are
+// indistinguishable, so the copy is treated as the one thing that could undo
+// it and is kept rather than discarded. Nothing is lost by keeping a redundant
+// one: it is a valid snapshot either way, just of a book that didn't change.
+//
+// Matching is by name, on this book only, so a temporary backup of another
+// book in the same directory is left alone.
+def promoteAbandonedBackups(
+    input: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .list(input.parent.getOrElse(fs2.io.file.Path(".")))
+    .filter: path =>
+      val fileName = path.fileName.toString
+      fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
+        ".bak.tmp"
+      )
+    .evalMap: abandoned =>
+      warn(
+        s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
+      ) *> promoteBackup(
+        abandoned,
+        // The filter guarantees the suffix, and the rest of the name is the
+        // dead run's own timestamped backup name.
+        fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
+      )
+    .compile
+    .drain
 
 // Compact UTC, so backups sort chronologically by name, and no colons, which
 // Finder renders as slashes. The instant is the Monzo session's own, so every
