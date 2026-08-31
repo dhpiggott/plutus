@@ -719,26 +719,6 @@ def importTransactions(
     db.transactOrRollBack(dryRun)(run)
 yield ()
 
-// AtomicMove, so the promotion either happens or doesn't: the backup never
-// appears under its final name half-formed, and never vanishes without
-// arriving. Both paths sit beside the book, so the rename stays within one
-// filesystem, which is what lets it be atomic. ReplaceExisting rides along so
-// a second run inside the same second can't fail here, after its writes have
-// already been committed — the JVM ignores it in favour of ATOMIC_MOVE, whose
-// rename(2) replaces the target regardless, while Scala Native's Files.move
-// reads it and ignores ATOMIC_MOVE (it renames either way).
-def promoteBackup(
-    temporaryBackup: fs2.io.file.Path,
-    backup: fs2.io.file.Path
-)(using verbosity: Verbosity): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .move(
-      temporaryBackup,
-      backup,
-      CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
-    ) *> info(s"Moved $temporaryBackup to $backup.")
-
 // A leftover temporary backup is a copy taken by a run that died between
 // taking it and promoting it. That run may well have committed its writes
 // first — withBook commits inside `body`, then reads total_changes(), then
@@ -778,6 +758,26 @@ def promoteAbandonedBackups(
         )
       .compile
       .drain
+
+// AtomicMove, so the promotion either happens or doesn't: the backup never
+// appears under its final name half-formed, and never vanishes without
+// arriving. Both paths sit beside the book, so the rename stays within one
+// filesystem, which is what lets it be atomic. ReplaceExisting rides along so
+// a second run inside the same second can't fail here, after its writes have
+// already been committed — the JVM ignores it in favour of ATOMIC_MOVE, whose
+// rename(2) replaces the target regardless, while Scala Native's Files.move
+// reads it and ignores ATOMIC_MOVE (it renames either way).
+def promoteBackup(
+    temporaryBackup: fs2.io.file.Path,
+    backup: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .move(
+      temporaryBackup,
+      backup,
+      CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
+    ) *> info(s"Moved $temporaryBackup to $backup.")
 
 // Compact UTC, so backups sort chronologically by name, and no colons, which
 // Finder renders as slashes. The instant is the Monzo session's own, so every
