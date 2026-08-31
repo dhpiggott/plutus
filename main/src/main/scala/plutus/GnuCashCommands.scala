@@ -258,18 +258,6 @@ def cleanUpRedundantMirror(
       yield ()
   yield ()
 
-// Refuse a book that isn't there rather than letting SQLite create an empty
-// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
-// otherwise leave a stray zero-table file beside the real book and fail
-// several queries later with a bare NoSuchElementException from Account.root.
-def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .exists(input)
-    .flatMap: exists =>
-      IO.raiseUnless(exists):
-        Error(s"No GnuCash book at $input.")
-
 // The file-level safety net around every command that opens the book: refuse a
 // path that isn't there, copy the book aside before a real run, and afterwards
 // keep that copy as <input>.<yyyyMMddTHHmmssZ>.bak if the run changed anything
@@ -342,6 +330,18 @@ def withBook[A](
       fs2.io.file.Files[IO].delete(temporaryBackup) *>
         info(s"Nothing changed, so deleted $temporaryBackup.")
 yield resultAndChanged.result
+
+// Refuse a book that isn't there rather than letting SQLite create an empty
+// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
+// otherwise leave a stray zero-table file beside the real book and fail
+// several queries later with a bare NoSuchElementException from Account.root.
+def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .exists(input)
+    .flatMap: exists =>
+      IO.raiseUnless(exists):
+        Error(s"No GnuCash book at $input.")
 
 // Lives here rather than under `monzo` because it's conceptually a GnuCash
 // import — a future variant could read the CSVs the Monzo app exports instead
@@ -847,35 +847,6 @@ def titleCased(category: String): String =
     .map(_.capitalize)
     .mkString(" ")
 
-// The canonical path of the asset account a Monzo account posts into: the
-// code-defined path with that account's Monzo ID in the leaf name. Several
-// Monzo accounts can share a code-defined path — the map is keyed by type, so
-// a closed account and the one that replaced it land on the same one, and two
-// pots may share a name — and each gets an account of its own regardless
-// (resolveAssetAccount never adopts by location). The ID in the name is what
-// tells those siblings apart in GnuCash's account tree, and it puts the
-// identity the resolver actually matches on, the online_id tag, in plain
-// sight beside them.
-def assetAccountPath(
-    livePath: List[String],
-    monzoAccountId: monzo.AccountId
-): List[String] =
-  livePath.init :+ s"${livePath.last} (${monzoAccountIdLabel(monzoAccountId)})"
-
-// The Monzo account ID as it reads in an account name: acc_ dropped, since
-// every account named this way is a Monzo account and the prefix tells a
-// reader nothing, and the rest upper-cased, so it sits among account names
-// the way a sort code or an account number does rather than as a stretch of
-// mixed-case noise. Purely cosmetic: the identity the resolver matches on is
-// the raw ID in the online_id tag, so nothing needs the ID back out of a
-// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but only for the
-// name: two IDs differing only in case still get an account each, because
-// resolution matches on the tag, not on the name. Locale.ROOT because a
-// Turkish-locale machine upper-cases i to İ, which would give one account two
-// different canonical names on two machines.
-def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
-  monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
-
 // One resolver for every Monzo-backed asset account. The online_id tag is the
 // only thing it matches on, and identity therefore survives moves and
 // renames. An account a past GUI import of export-transactions' OFX
@@ -922,6 +893,35 @@ def resolveAssetAccount(
       tagOnlineId(account.guid, monzoAccountId)
   yield account
 
+// The canonical path of the asset account a Monzo account posts into: the
+// code-defined path with that account's Monzo ID in the leaf name. Several
+// Monzo accounts can share a code-defined path — the map is keyed by type, so
+// a closed account and the one that replaced it land on the same one, and two
+// pots may share a name — and each gets an account of its own regardless
+// (resolveAssetAccount never adopts by location). The ID in the name is what
+// tells those siblings apart in GnuCash's account tree, and it puts the
+// identity the resolver actually matches on, the online_id tag, in plain
+// sight beside them.
+def assetAccountPath(
+    livePath: List[String],
+    monzoAccountId: monzo.AccountId
+): List[String] =
+  livePath.init :+ s"${livePath.last} (${monzoAccountIdLabel(monzoAccountId)})"
+
+// The Monzo account ID as it reads in an account name: acc_ dropped, since
+// every account named this way is a Monzo account and the prefix tells a
+// reader nothing, and the rest upper-cased, so it sits among account names
+// the way a sort code or an account number does rather than as a stretch of
+// mixed-case noise. Purely cosmetic: the identity the resolver matches on is
+// the raw ID in the online_id tag, so nothing needs the ID back out of a
+// name. Upper-casing is lossy — Monzo's IDs are mixed-case — but only for the
+// name: two IDs differing only in case still get an account each, because
+// resolution matches on the tag, not on the name. Locale.ROOT because a
+// Turkish-locale machine upper-cases i to İ, which would give one account two
+// different canonical names on two machines.
+def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
+  monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
+
 def tagOnlineId(guid: String, monzoAccountId: monzo.AccountId)(using
     db: Database[IO]
 ): IO[Unit] =
@@ -959,28 +959,6 @@ def alignHidden(
       .updateHidden(hidden)
       .flatTap: _ =>
         info(s"${if hidden then "Hid" else "Unhid"} $label.")
-
-// The canonical description of a Monzo-backed asset account is none at all:
-// the name already says which Monzo account or pot posts into it, down to the
-// ID that keeps two of a kind apart (see assetAccountPath), so anything here
-// could only restate it. Aligned like hidden, so a description added by hand
-// or carried in by a GUI OFX import doesn't outlive the next run. No
-// description and an empty one both count as aligned, so whichever of the two
-// the book holds is left alone.
-def alignDescription(
-    account: Account,
-    livePath: List[String],
-    retired: Boolean,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired)
-  if account.description.forall(_.isEmpty) then IO.pure(account)
-  else if dryRun then
-    info(s"Would clear the description of $label.").as(account)
-  else
-    account.clearDescription
-      .flatTap: _ =>
-        info(s"Cleared the description of $label.")
 
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
@@ -1032,6 +1010,28 @@ def enforcePlacement(
     aligned <- alignHidden(placed, retired, livePath, dryRun)
     described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
+
+// The canonical description of a Monzo-backed asset account is none at all:
+// the name already says which Monzo account or pot posts into it, down to the
+// ID that keeps two of a kind apart (see assetAccountPath), so anything here
+// could only restate it. Aligned like hidden, so a description added by hand
+// or carried in by a GUI OFX import doesn't outlive the next run. No
+// description and an empty one both count as aligned, so whichever of the two
+// the book holds is left alone.
+def alignDescription(
+    account: Account,
+    livePath: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  if account.description.forall(_.isEmpty) then IO.pure(account)
+  else if dryRun then
+    info(s"Would clear the description of $label.").as(account)
+  else
+    account.clearDescription
+      .flatTap: _ =>
+        info(s"Cleared the description of $label.")
 
 // The canonical parent for a retired account: the live parent chain mirrored
 // under the Archive subroot. In a dry run nothing is written; the subroot
