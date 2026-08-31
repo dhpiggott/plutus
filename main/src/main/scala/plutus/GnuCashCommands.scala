@@ -719,6 +719,13 @@ def importTransactions(
     db.transactOrRollBack(dryRun)(run)
 yield ()
 
+// --input defaults to a bare Accounts.gnucash, so an input with no parent is
+// the ordinary case rather than a degenerate one: the name resolves in the
+// working directory, so that is where this book's backups are. Asking for it
+// by name rather than scanning "." keeps the logged path unambiguous.
+def bookDirectory(input: fs2.io.file.Path): IO[fs2.io.file.Path] =
+  input.parent.fold(fs2.io.file.Files[IO].currentWorkingDirectory)(IO.pure)
+
 // A leftover temporary backup is a copy taken by a run that died between
 // taking it and promoting it. That run may well have committed its writes
 // first — withBook commits inside `body`, then reads total_changes(), then
@@ -729,35 +736,28 @@ yield ()
 //
 // Matching is by name, on this book only, so a temporary backup of another
 // book in the same directory is left alone.
-//
-// A bare `--input book.gnucash` has no parent, and there is nothing to list
-// there without inventing one: the leftover is then simply left where it is.
-// Keeping it is the whole point of this function, so skipping the tidy-up
-// loses nothing but the promotion — a leftover under a fixed name would have
-// been in the way of the next copy, but a timestamped one never is.
 def promoteAbandonedBackups(
     input: fs2.io.file.Path
 )(using verbosity: Verbosity): IO[Unit] =
-  input.parent.fold(IO.unit): directory =>
-    fs2.io.file
-      .Files[IO]
-      .list(directory)
-      .filter: path =>
-        val fileName = path.fileName.toString
-        fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
-          ".bak.tmp"
-        )
-      .evalMap: abandoned =>
-        warn(
-          s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
-        ) *> promoteBackup(
-          abandoned,
-          // The filter guarantees the suffix, and the rest of the name is the
-          // dead run's own timestamped backup name.
-          fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
-        )
-      .compile
-      .drain
+  fs2.Stream
+    .eval(bookDirectory(input))
+    .flatMap(fs2.io.file.Files[IO].list)
+    .filter: path =>
+      val fileName = path.fileName.toString
+      fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
+        ".bak.tmp"
+      )
+    .evalMap: abandoned =>
+      warn(
+        s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
+      ) *> promoteBackup(
+        abandoned,
+        // The filter guarantees the suffix, and the rest of the name is the
+        // dead run's own timestamped backup name.
+        fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
+      )
+    .compile
+    .drain
 
 // AtomicMove, so the promotion either happens or doesn't: the backup never
 // appears under its final name half-formed, and never vanishes without
