@@ -47,7 +47,6 @@ def archiveAccounts(
     _ <- withBook(input, now, dryRun): db =>
       given Database[IO] = db
       for
-        root <- Account.root
         // TODO: Change this to accept a single account to archive, like
         // restore-account does?
         _ <- info:
@@ -59,27 +58,31 @@ def archiveAccounts(
         // leaving some archived and others not.
         _ <- db.transactOrRollBack(dryRun):
           for
-            archiveSubroot <- archiveSubrootFor(dryRun)
-            hiddenAccounts <- root.hiddenChildren:
+            roots <- BookRoots.creating(dryRun)
+            archiveSubroot <- roots.archiveSubroot
+            hiddenAccounts <- hiddenAccountsToArchive(
+              roots.root,
               archiveSubroot
+            )
             _ <- (IO.traverse:
               hiddenAccounts
             ): hiddenAccount =>
               for
                 hiddenAccountPath <- hiddenAccount.pathString
-                livePathInit <- pathInitBelow(hiddenAccount, root)
-                archiveParent <- mirrorParentFor(
+                livePathInit <- hiddenAccount.pathInitBelow(roots.root)
+                archiveParent <- boundaryParentFor(
                   livePathInit,
-                  from = root,
-                  to = archiveSubroot,
-                  toPath = canonicalPathString(Nil, retired = true),
+                  retired = true,
+                  roots,
                   dryRun
                 )
                 // Where the account will sit, spelled out rather than read
                 // back: in a dry run its parents are would-be accounts that
                 // were never inserted, so pathString would come back empty.
-                archivedPath =
-                  s"${canonicalPathString(livePathInit, retired = true)}/${hiddenAccount.name}"
+                archivedPath = canonicalPathString(
+                  livePathInit :+ hiddenAccount.name,
+                  retired = true
+                )
                 _ <- cleanUpRedundantMirror(
                   original = hiddenAccount,
                   originalPath = hiddenAccountPath,
@@ -129,10 +132,15 @@ def restoreAccount(
         // Retrieved, never created: a book that has never archived anything
         // has no Archive subroot and nothing to restore, and creating one
         // here would be a write outside the transaction below, on behalf of a
-        // command that is about to do nothing.
-        archiveSubroot <- Account.retrieveArchiveSubroot.flatMap:
-          IO.fromOption(_):
-            nothingToRestore
+        // command that is about to do nothing. Which is also why the roots
+        // this command hands the mirror below are both already resolved —
+        // there is nothing left for them to bring into being.
+        archiveSubroot <- root
+          .child(ArchiveName)
+          .flatMap:
+            IO.fromOption(_):
+              nothingToRestore
+        roots = BookRoots(root, IO.pure(archiveSubroot))
         archivedAccounts <- archiveSubroot.allChildren
         _ <- IO.raiseWhen(archivedAccounts.isEmpty):
           nothingToRestore
@@ -161,16 +169,17 @@ def restoreAccount(
         // long as the prompt sits unanswered.
         _ <- db.transactOrRollBack(dryRun):
           for
-            archivePathInit <- pathInitBelow(archivedAccount, archiveSubroot)
-            nonArchiveParent <- mirrorParentFor(
+            archivePathInit <- archivedAccount.pathInitBelow(archiveSubroot)
+            nonArchiveParent <- boundaryParentFor(
               archivePathInit,
-              from = archiveSubroot,
-              to = root,
-              toPath = canonicalPathString(Nil, retired = false),
+              retired = false,
+              roots,
               dryRun
             )
-            restoredPath =
-              s"${canonicalPathString(archivePathInit, retired = false)}/${archivedAccount.name}"
+            restoredPath = canonicalPathString(
+              archivePathInit :+ archivedAccount.name,
+              retired = false
+            )
             _ <- cleanUpRedundantMirror(
               original = archivedAccount,
               originalPath = archivedAccountPath,
@@ -187,28 +196,80 @@ def restoreAccount(
       yield ()
   yield ()
 
+// The two accounts every placement decision hangs off, resolved once per run
+// rather than once per account that asks. The subroot is an IO because the
+// first retired account is what brings it into being: resolving it eagerly
+// would create one in a run that turns out to have nothing to retire. Memoised,
+// so however many accounts ask, the book is read once, the subroot is created
+// once, and a dry run fabricates one guid and prints one "would create" line
+// instead of one per account.
+final case class BookRoots(root: Account, archiveSubroot: IO[Account])
+
+object BookRoots:
+
+  // For the commands that may have to bring the Archive subroot into being:
+  // import-transactions retiring a closed account, and archive-accounts.
+  // restore-account builds its own from a subroot that must already exist.
+  def creating(dryRun: Boolean)(using
+      db: Database[IO],
+      verbosity: Verbosity
+  ): IO[BookRoots] =
+    for
+      root <- Account.root
+      archiveSubroot <- archiveSubrootFor(root, dryRun).memoize
+    yield BookRoots(root, archiveSubroot)
+
+// The Archive subroot's name. Placement, not schema, so it lives here with the
+// rest of what decides where an account belongs rather than on Account.
+val ArchiveName: String = "Archive"
+
 // The Archive subroot, created on demand — or, in a dry run of a book that has
-// never archived anything, fabricated so the rest of the plan can name paths
-// under it without the run writing one.
-def archiveSubrootFor(
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  Account.retrieveArchiveSubroot.flatMap:
-    case Some(archiveSubroot) => IO.pure(archiveSubroot)
-    case None if dryRun       =>
-      Account.root.flatMap: root =>
-        newGuid
-          .map: guid =>
-            root.copy(
-              guid = guid,
-              name = Account.ArchiveName,
-              parentGuid = Some(root.guid),
-              hidden = true,
-              placeholder = true
-            )
-          .flatTap: _ =>
-            info(s"Would create account Root Account/${Account.ArchiveName}.")
-    case None => Account.createOrRetrieveArchiveSubroot
+// never archived anything, the would-be account createOrRetrieveChild yields
+// without inserting, so the rest of the plan can name paths under it. It goes
+// through the same creator as every other structural account precisely so the
+// two runs agree: the subroot used to be created silently by a real run and
+// announced by a dry one.
+def archiveSubrootFor(root: Account, dryRun: Boolean)(using
+    db: Database[IO],
+    verbosity: Verbosity
+): IO[Account] =
+  createOrRetrieveChild(
+    root,
+    canonicalPathString(Nil, retired = false),
+    ArchiveName,
+    dryRun,
+    placeholder = true,
+    // Hidden by definition: everything under it is retired.
+    hidden = true,
+    // A copy of the root account down to its code and description, as every
+    // mirror is a copy of its counterpart.
+    template = Some(root)
+  )
+
+// The hidden accounts archive-accounts will move: the frontier of hidden
+// accounts below `root`, stopping at the first hidden account on each branch
+// (its children are implicitly hidden, so listing them too would archive a
+// subtree a node at a time) and skipping the Archive subroot, since the point
+// of the scan is to find what still needs moving into it.
+//
+// One recursive query and an in-memory walk, rather than a directChildren query
+// per account: the walk visits exactly the nodes that query returned, and a
+// book whose tree is mostly not hidden used to pay a round trip for each.
+def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
+    db: Database[IO]
+): IO[List[Account]] =
+  root.allChildren.map: descendants =>
+    val byParentGuid = descendants.groupBy(_.parentGuid)
+    // By name, as the directChildren query this replaces ordered them.
+    def frontier(account: Account): List[Account] =
+      byParentGuid
+        .getOrElse(Some(account.guid), Nil)
+        .sortBy(_.name)
+        .flatMap: child =>
+          if child.guid == archiveSubroot.guid then Nil
+          else if child.hidden then List(child)
+          else frontier(child)
+    frontier(root)
 
 // Handles the case where a mirror already exists at `mirrorParent` with the
 // same name as `original`. This happens when a child was already
@@ -528,6 +589,10 @@ def importTransactions(
         Error(
           s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
         )
+      // The root and the Archive subroot every placement below hangs off,
+      // resolved once for the run. The subroot stays lazy inside: a run with
+      // nothing retired must not create one.
+      roots <- BookRoots.creating(dryRun)
       // Typed asset accounts and pot accounts resolve through the same
       // path: resolveAssetAccount finds by online_id tag, creates the
       // account otherwise, enforces placement, and tags one it created.
@@ -541,6 +606,7 @@ def importTransactions(
             retired = account.closed.exists(_.value),
             monzoAccountId = account.id,
             tagged = taggedByMonzoAccountId(account.id),
+            roots = roots,
             dryRun = dryRun
           ).map(account.id -> _)
         .map(_.toMap)
@@ -565,6 +631,7 @@ def importTransactions(
                 retired = pot.deleted.value,
                 monzoAccountId = monzoAccountId,
                 tagged = taggedByMonzoAccountId(monzoAccountId),
+                roots = roots,
                 dryRun = dryRun
               ).map(account => monzoAccountId -> Some(account))
             case _ =>
@@ -610,13 +677,18 @@ def importTransactions(
         .groupBy(_.init)
         .toList
         .flatTraverse: (parentPath, paths) =>
-          liveParentFor(parentPath, dryRun).flatMap: parent =>
+          liveParentFor(parentPath, roots, dryRun).flatMap: parent =>
             paths.traverse: path =>
               createOrRetrieveChild(
                 parent,
                 canonicalPathString(parentPath, retired = false),
                 path.last,
-                dryRun
+                dryRun,
+                // A category leaf takes postings, is never retired on its
+                // own, and is born from its parent.
+                placeholder = false,
+                hidden = false,
+                template = None
               ).map(path -> _)
         .map(_.toMap)
       // Every account a posting touches is denominated in the book's
@@ -864,33 +936,44 @@ def titleCased(category: String): String =
 // them, so they could never be re-filed. Two same-named siblings are the
 // visible, fixable outcome instead — the tagged one is what later runs post
 // to, so move the other's transactions into it and delete the empty one.
-// Placement is enforced either way — for a fresh child only the hidden flag
-// can be out of line.
+// A fresh child needs no placement enforcing afterwards: it is created at the
+// canonical spot, under the canonical name, hidden iff the Monzo side is
+// retired, and with no description to clear.
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
     monzoAccountId: monzo.AccountId,
     tagged: Option[Account],
+    roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val canonicalPath = assetAccountPath(livePath, monzoAccountId)
   for
     account <- tagged match
       case Some(account) =>
-        enforcePlacement(account, canonicalPath, retired, dryRun)
+        enforcePlacement(account, canonicalPath, retired, roots, dryRun)
       case None =>
         for
-          parent <- parentFor(canonicalPath.init, retired, dryRun)
+          parent <- parentFor(canonicalPath.init, retired, roots, dryRun)
           child <- createChild(
             parent,
             canonicalPathString(canonicalPath.init, retired),
             canonicalPath.last,
-            dryRun
+            dryRun,
+            placeholder = false,
+            // Born hidden if the Monzo side is already retired, rather than
+            // created visible and hidden a line later: hidden tracks
+            // retirement (see alignHidden), and an account this run is
+            // bringing into being has nothing to align against.
+            hidden = retired,
+            template = None
           )
-          placed <- alignHidden(child, retired, canonicalPath, dryRun)
-        yield placed
+        yield child
     _ <- IO.unlessA(dryRun || tagged.isDefined):
-      tagOnlineId(account.guid, monzoAccountId)
+      // The tag, and nothing but the tag, is what every later run finds this
+      // account by; Account.tagOnlineId writes the slot, the Monzo ID it
+      // carries is this call site's business.
+      account.tagOnlineId(monzoAccountId.value)
   yield account
 
 // The canonical path of the asset account a Monzo account posts into: the
@@ -922,48 +1005,47 @@ def assetAccountPath(
 def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
   monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
 
-def tagOnlineId(guid: String, monzoAccountId: monzo.AccountId)(using
-    db: Database[IO]
-): IO[Unit] =
-  Slot
-    .stringSlot(
-      objGuid = guid,
-      name = Slot.OnlineId,
-      value = monzoAccountId.value
-    )
-    .insert
-
 // A canonical path's parent chain: the live one while the Monzo side is
 // live, its Archive-nested twin once retired.
+//
+// Not boundaryParentFor on both sides, despite its `retired = false` also
+// naming a chain under the root: that one *mirrors an archived chain back out*,
+// and the paths here are code-defined (AssetAccounts.default) with no archived
+// counterpart to mirror. Routing them through it would also force the Archive
+// subroot — creating one in a run whose accounts are all live, which is the
+// laziness BookRoots exists for.
 def parentFor(
     pathInit: List[String],
     retired: Boolean,
+    roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  if retired then archiveParentFor(pathInit, dryRun)
-  else liveParentFor(pathInit, dryRun)
+  if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
+  else liveParentFor(pathInit, roots, dryRun)
 
-// Hidden tracks retirement, aligned in both directions.
+// Hidden tracks retirement, aligned in both directions. Takes its arguments in
+// the same order as alignDescription, which runs beside it on every enforced
+// account.
 def alignHidden(
     account: Account,
-    hidden: Boolean,
     livePath: List[String],
+    retired: Boolean,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired = hidden)
-  if account.hidden == hidden then IO.pure(account)
+  val label = canonicalPathString(livePath, retired)
+  if account.hidden == retired then IO.pure(account)
   else if dryRun then
-    info(s"Would ${if hidden then "hide" else "unhide"} $label.").as(account)
+    info(s"Would ${if retired then "hide" else "unhide"} $label.").as(account)
   else
     account
-      .updateHidden(hidden)
+      .updateHidden(retired)
       .flatTap: _ =>
-        info(s"${if hidden then "Hid" else "Unhid"} $label.")
+        info(s"${if retired then "Hid" else "Unhid"} $label.")
 
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
   val canonical =
-    if retired then Account.ArchiveName :: livePath else livePath
+    if retired then ArchiveName :: livePath else livePath
   ("Root Account" :: canonical).mkString("/")
 
 // Monzo is authoritative for a Monzo-backed asset account's whole placement.
@@ -981,12 +1063,13 @@ def enforcePlacement(
     account: Account,
     livePath: List[String],
     retired: Boolean,
+    roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val name = livePath.last
   val targetPath = canonicalPathString(livePath, retired)
   for
-    parent <- parentFor(livePath.init, retired, dryRun)
+    parent <- parentFor(livePath.init, retired, roots, dryRun)
     inPlace = account.parentGuid.contains(parent.guid) && account.name == name
     placed <-
       if inPlace then IO.pure(account)
@@ -1007,7 +1090,7 @@ def enforcePlacement(
                 .flatTap: _ =>
                   info(s"Moved $accountPath to $targetPath.")
         yield moved
-    aligned <- alignHidden(placed, retired, livePath, dryRun)
+    aligned <- alignHidden(placed, livePath, retired, dryRun)
     described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
 
@@ -1033,34 +1116,38 @@ def alignDescription(
       .flatTap: _ =>
         info(s"Cleared the description of $label.")
 
-// The canonical parent for a retired account: the live parent chain mirrored
-// under the Archive subroot. In a dry run nothing is written; the subroot
-// itself is fabricated when missing so the rest of the plan can proceed.
-def archiveParentFor(
-    livePathInit: List[String],
+// The parent chain on the far side of the live/archive boundary: going in, the
+// live chain mirrored under the Archive subroot; coming back out, the archived
+// chain mirrored under the root. All three commands cross that boundary —
+// import retiring a closed account or a deleted pot, archive-accounts,
+// restore-account — so each names a direction here rather than pairing `from`
+// and `to` for itself and risking a mismatched pair.
+def boundaryParentFor(
+    pathInit: List[String],
+    retired: Boolean,
+    roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  for
-    root <- Account.root
-    archiveSubroot <- archiveSubrootFor(dryRun)
-    archiveParent <- mirrorParentFor(
-      livePathInit,
-      from = root,
-      to = archiveSubroot,
-      toPath = canonicalPathString(Nil, retired = true),
+  roots.archiveSubroot.flatMap: archiveSubroot =>
+    mirrorParentFor(
+      pathInit,
+      from = if retired then roots.root else archiveSubroot,
+      to = if retired then archiveSubroot else roots.root,
+      retired = retired,
       dryRun
     )
-  yield archiveParent
 
-// One parent chain mirrored across the live/archive boundary, for every way
-// an account crosses it: (from = root, to = the Archive subroot) going in,
-// the reverse coming out, so import, archive-accounts and restore-account
-// share one notion of what a mirror is rather than each carrying its own.
+// One parent chain mirrored across the live/archive boundary: (from = root,
+// to = the Archive subroot) going in, the reverse coming out. The direction
+// is boundaryParentFor's to choose — all three commands reach a mirror
+// through it, so they share one notion of what a mirror is rather than each
+// carrying its own.
 // Missing segments are created on demand, each a placeholder copy of its
 // counterpart under `from` — or of the parent it's created under when there
-// is no counterpart. `toPath` names where `to` sits, for the same reason
-// createChild takes a parent path: a dry run's Archive subroot may be one
-// this run only pretended to create. That last case is import's alone: archive-accounts and
+// is no counterpart. `retired` says which side `to` is, which is where the fold
+// starts naming paths from, for the same reason createChild takes a parent
+// path: a dry run's Archive subroot may be one this run only pretended to
+// create. That last case is import's alone: archive-accounts and
 // restore-account read their paths out of the book, so every segment has a
 // counterpart by construction, while import's are code-defined
 // (AssetAccounts.default) and only each path's top-level account is
@@ -1071,14 +1158,14 @@ def mirrorParentFor(
     pathInit: List[String],
     from: Account,
     to: Account,
-    toPath: String,
+    retired: Boolean,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   pathInit
     .foldLeftM(
       (
         mirror = to,
-        mirrorPath = toPath,
+        mirrorPath = canonicalPathString(Nil, retired),
         counterpart = Some(from): Option[Account]
       )
     ): (cursors, segment) =>
@@ -1092,6 +1179,7 @@ def mirrorParentFor(
           segment,
           dryRun,
           placeholder = true,
+          hidden = false,
           template = nextCounterpart
         )
       yield (
@@ -1101,34 +1189,18 @@ def mirrorParentFor(
       )
     .map(_.mirror)
 
-// The names between `ancestor` and `account`, exclusive: the path a mirror of
-// `account` on the other side of the boundary has to reproduce. The import
-// path knows its paths up front (they are code-defined); archive-accounts and
-// restore-account start from an account instead and read theirs out of the
-// book.
-def pathInitBelow(account: Account, ancestor: Account)(using
-    db: Database[IO]
-): IO[List[String]] =
-  account.path.flatMap: accounts =>
-    accounts.indexWhere(_.guid == ancestor.guid) match
-      case -1 =>
-        IO.raiseError:
-          Error(
-            s"${ancestor.name} is not an ancestor of ${account.name}."
-          )
-      case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
-
 // The live parent chain for a code-defined path, created on demand below its
 // top-level account — which must already exist, and does in any freshly
 // created book (GnuCash makes Assets, Expenses, Income and Liabilities).
 // Intermediate segments are placeholders: only leaves take postings.
 def liveParentFor(
     pathInit: List[String],
+    roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
-    top <- Account
-      .atPath(List(pathInit.head))
+    top <- roots.root
+      .child(pathInit.head)
       .flatMap:
         IO.fromOption(_):
           Error(s"No account at ${pathInit.head}")
@@ -1144,7 +1216,9 @@ def liveParentFor(
           cursor.path,
           segment,
           dryRun,
-          placeholder = true
+          placeholder = true,
+          hidden = false,
+          template = None
         ).map: child =>
           (account = child, path = s"${cursor.path}/$segment")
       .map(_.account)
@@ -1158,15 +1232,24 @@ def createOrRetrieveChild(
     parentPath: String,
     name: String,
     dryRun: Boolean,
-    placeholder: Boolean = false,
-    template: Option[Account] = None
+    placeholder: Boolean,
+    hidden: Boolean,
+    template: Option[Account]
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   parent
     .child(name)
     .flatMap:
       case Some(child) => IO.pure(child)
       case None        =>
-        createChild(parent, parentPath, name, dryRun, placeholder, template)
+        createChild(
+          parent,
+          parentPath,
+          name,
+          dryRun,
+          placeholder,
+          hidden,
+          template
+        )
 
 // Create one child, whether or not a sibling of that name already exists —
 // GnuCash identifies an account by guid and permits the duplicate name, and
@@ -1182,7 +1265,12 @@ def createOrRetrieveChild(
 // counterpart down to those fields, while a fresh asset or category account
 // is born carrying neither, so nothing inherits a description enforcePlacement
 // would then clear. Structural path segments are created as placeholders,
-// leaves that take postings are not. A dry run inserts nothing but still
+// leaves that take postings are not; `hidden` is likewise the child's own —
+// never the template's — so a mirror created under the Archive subroot is
+// visible within it, and only an account whose Monzo side is already retired
+// (or the subroot itself) is born hidden. None of the three defaults, so that
+// adding a flag here can't leave a call site silently taking the old one. A
+// dry run inserts nothing but still
 // yields the would-be account, so the rest of the plan can proceed against
 // it — which is why `parentPath` is passed in rather than read back out of
 // the book: in a dry run the parent may itself be a would-be account that was
@@ -1193,8 +1281,9 @@ def createChild(
     parentPath: String,
     name: String,
     dryRun: Boolean,
-    placeholder: Boolean = false,
-    template: Option[Account] = None
+    placeholder: Boolean,
+    hidden: Boolean,
+    template: Option[Account]
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
     guid <- newGuid
@@ -1206,7 +1295,7 @@ def createChild(
         parentGuid = Some(parent.guid),
         code = template.flatMap(_.code),
         description = template.flatMap(_.description),
-        hidden = false,
+        hidden = hidden,
         placeholder = placeholder
       )
     _ <- IO.unlessA(dryRun)(child.insert)
