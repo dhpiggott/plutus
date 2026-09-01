@@ -1023,25 +1023,6 @@ def parentFor(
   if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
   else liveParentFor(pathInit, roots, dryRun)
 
-// Hidden tracks retirement, aligned in both directions. Takes its arguments in
-// the same order as alignDescription, which runs beside it on every enforced
-// account.
-def alignHidden(
-    account: Account,
-    livePath: List[String],
-    retired: Boolean,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired)
-  if account.hidden == retired then IO.pure(account)
-  else if dryRun then
-    info(s"Would ${if retired then "hide" else "unhide"} $label.").as(account)
-  else
-    account
-      .updateHidden(retired)
-      .flatTap: _ =>
-        info(s"${if retired then "Hid" else "Unhid"} $label.")
-
 // Textual, so a dry run can name targets whose parents don't exist yet.
 def canonicalPathString(livePath: List[String], retired: Boolean): String =
   val canonical =
@@ -1093,6 +1074,25 @@ def enforcePlacement(
     aligned <- alignHidden(placed, livePath, retired, dryRun)
     described <- alignDescription(aligned, livePath, retired, dryRun)
   yield described
+
+// Hidden tracks retirement, aligned in both directions. Takes its arguments in
+// the same order as alignDescription, which runs beside it on every enforced
+// account.
+def alignHidden(
+    account: Account,
+    livePath: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  if account.hidden == retired then IO.pure(account)
+  else if dryRun then
+    info(s"Would ${if retired then "hide" else "unhide"} $label.").as(account)
+  else
+    account
+      .updateHidden(retired)
+      .flatTap: _ =>
+        info(s"${if retired then "Hid" else "Unhid"} $label.")
 
 // The canonical description of a Monzo-backed asset account is none at all:
 // the name already says which Monzo account or pot posts into it, down to the
