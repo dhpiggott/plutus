@@ -25,9 +25,9 @@ lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
 ):
-  (verbosityOpts, inputOpts, archiveDryRunOpts).tupled.map:
-    (verbosity, input, dryRun) =>
-      archiveAccounts(input, dryRun)(using verbosity)
+  (verbosityOpts, inputOpts, archiveDryRunOpts, ignoreLockOpts).tupled.map:
+    (verbosity, input, dryRun, ignoreLock) =>
+      archiveAccounts(input, dryRun, ignoreLock)(using verbosity)
 
 lazy val archiveDryRunOpts: Opts[Boolean] =
   Opts
@@ -38,13 +38,26 @@ lazy val archiveDryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
+// Shared by all three commands rather than spelled out per command like
+// --dry-run above, whose help text differs by what each one would print: this
+// one says the same thing whichever command carries it.
+lazy val ignoreLockOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "ignore-lock",
+      help =
+        "Open the book even though GnuCash's gnclock table says another process has it open. Only for a lock left behind by a GnuCash that crashed — a live one will overwrite whatever this run writes."
+    )
+    .orFalse
+
 def archiveAccounts(
     input: fs2.io.file.Path,
-    dryRun: Boolean
+    dryRun: Boolean,
+    ignoreLock: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
   for
     now <- IO.realTimeInstant
-    _ <- withBook(input, now, dryRun): db =>
+    _ <- withBook(input, now, dryRun, ignoreLock): db =>
       given Database[IO] = db
       for
         // TODO: Change this to accept a single account to archive, like
@@ -106,8 +119,9 @@ lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
   help = "Restore archived account."
 ):
-  (verbosityOpts, inputOpts, restoreDryRunOpts).tupled.map:
-    (verbosity, input, dryRun) => restoreAccount(input, dryRun)(using verbosity)
+  (verbosityOpts, inputOpts, restoreDryRunOpts, ignoreLockOpts).tupled.map:
+    (verbosity, input, dryRun, ignoreLock) =>
+      restoreAccount(input, dryRun, ignoreLock)(using verbosity)
 
 lazy val restoreDryRunOpts: Opts[Boolean] =
   Opts
@@ -120,11 +134,12 @@ lazy val restoreDryRunOpts: Opts[Boolean] =
 
 def restoreAccount(
     input: fs2.io.file.Path,
-    dryRun: Boolean
+    dryRun: Boolean,
+    ignoreLock: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
   for
     now <- IO.realTimeInstant
-    _ <- withBook(input, now, dryRun): db =>
+    _ <- withBook(input, now, dryRun, ignoreLock): db =>
       given Database[IO] = db
       for
         root <- Account.root
@@ -344,10 +359,17 @@ def cleanUpRedundantMirror(
 // dry run leaves the book untouched: total_changes() counts rolled-back rows
 // too, so a write that slipped past a dryRun guard is caught and reported
 // rather than passing the plan off as complete.
+//
+// The copy is taken before the book is opened and so before GncLock has had a
+// chance to refuse the run, which costs a wasted copy on a book somebody else
+// has open. The alternative — look at the lock first, then copy, then take it
+// — would put the whole duration of that copy between the look and the take,
+// which is exactly the window the lock exists to close.
 def withBook[A](
     input: fs2.io.file.Path,
     now: Instant,
-    dryRun: Boolean
+    dryRun: Boolean,
+    ignoreLock: Boolean
 )(
     body: Database[IO] => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
@@ -363,11 +385,29 @@ def withBook[A](
   resultAndChanged <- Database
     .open[IO](input.toString)
     .use: db =>
-      for
-        result <- body(db)
-        changed <- db.rowsChanged
-      yield (result = result, changed = changed)
+      given Database[IO] = db
+      GncLock
+        .hold(input, dryRun, ignoreLock)
+        .surround:
+          for
+            // Counted from after the lock was taken rather than from the
+            // connection's own zero: our gnclock row is a row change like any
+            // other, and a run that inserted one and changed nothing else would
+            // otherwise look like a run that changed the book — and keep a
+            // backup identical to it, aging out the one that could undo the
+            // last run that did write.
+            before <- db.rowsChanged
+            result <- body(db)
+            after <- db.rowsChanged
+          yield (result = result, changed = after - before)
     .onError:
+      // Nothing ran, so the copy is of a book this run never touched — and
+      // keeping it would age out the backup that could undo the last run that
+      // did write, the same way an unchanged run's copy would.
+      case _: BookInUse =>
+        IO.unlessA(dryRun):
+          fs2.io.file.Files[IO].delete(temporaryBackup) *>
+            info(s"Nothing ran, so deleted $temporaryBackup.")
       // Keep the snapshot: the transaction rolls the book back, but a run that
       // failed is exactly when you want the copy that predates it.
       case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
@@ -417,9 +457,12 @@ lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     inputOpts,
     sinceOpts,
     beforeOpts,
-    importDryRunOpts
-  ).tupled.map: (verbosity, input, since, before, dryRun) =>
-    importTransactions(input, since, before, dryRun)(using verbosity)
+    importDryRunOpts,
+    ignoreLockOpts
+  ).tupled.map: (verbosity, input, since, before, dryRun, ignoreLock) =>
+    importTransactions(input, since, before, dryRun, ignoreLock)(using
+      verbosity
+    )
 
 lazy val importDryRunOpts: Opts[Boolean] =
   Opts
@@ -434,7 +477,8 @@ def importTransactions(
     input: fs2.io.file.Path,
     since: Option[Instant],
     before: Option[Instant],
-    dryRun: Boolean
+    dryRun: Boolean,
+    ignoreLock: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   // Checked here as well as in withBook below, so a mistyped --input costs a
   // message rather than the whole OAuth-and-fetch round trip that would
@@ -444,7 +488,7 @@ def importTransactions(
   // neutralPostDate), read once so every row of a run agrees.
   zone <- IO.delay(ZoneId.systemDefault)
   (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
-  _ <- withBook(input, now, dryRun): db =>
+  _ <- withBook(input, now, dryRun, ignoreLock): db =>
     given Database[IO] = db
     val assetAccounts = AssetAccounts.default
     // Only material transactions get posted; an account with none needs no
