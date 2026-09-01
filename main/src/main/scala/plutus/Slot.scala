@@ -4,6 +4,57 @@ import cats.effect.*
 import porcupine.*
 import porcupine.Codec.*
 
+/** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
+  * AUTOINCREMENT NOT NULL, obj_guid text(32) NOT NULL, name text(4096) NOT
+  * NULL, slot_type integer NOT NULL, int64_val integer, string_val text(4096),
+  * double_val real, timespec_val text(14), guid_val text(32), numeric_val_num
+  * integer, numeric_val_denom integer, gdate_val text(8) );
+  */
+// We model only string_val and int64_val of the table's nine value columns:
+// those are the two GnuCash's boolean-slot read path consults, and STRING is
+// the only type Plutus writes. The other seven value columns are written NULL
+// and ignored on read. See Account.scala for the read derivation.
+final case class Slot(
+    objGuid: String,
+    name: String,
+    slotType: Long,
+    stringVal: Option[String],
+    int64Val: Option[Long]
+):
+
+  def insert(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        insert into slots (
+          obj_guid,
+          name,
+          slot_type,
+          string_val,
+          int64_val,
+          double_val,
+          timespec_val,
+          guid_val,
+          numeric_val_num,
+          numeric_val_denom,
+          gdate_val
+        )
+        values (
+          $text,
+          $text,
+          $integer,
+          ${text.opt},
+          ${integer.opt},
+          null,
+          null,
+          null,
+          null,
+          null,
+          null
+        )
+      """.command,
+      args = (objGuid, name, slotType, stringVal, int64Val)
+    )
+
 object Slot:
 
   // The slot name behind both halves of the online-identity scheme: split
@@ -69,55 +120,4 @@ object Slot:
         where name = $text and string_val is not null
       """.query(text *: text *: nil),
       args = OnlineId
-    )
-
-/** sqlite> .schema slots CREATE TABLE slots( id integer PRIMARY KEY
-  * AUTOINCREMENT NOT NULL, obj_guid text(32) NOT NULL, name text(4096) NOT
-  * NULL, slot_type integer NOT NULL, int64_val integer, string_val text(4096),
-  * double_val real, timespec_val text(14), guid_val text(32), numeric_val_num
-  * integer, numeric_val_denom integer, gdate_val text(8) );
-  */
-// We model only string_val and int64_val of the table's nine value columns:
-// those are the two GnuCash's boolean-slot read path consults, and STRING is
-// the only type Plutus writes. The other seven value columns are written NULL
-// and ignored on read. See Account.scala for the read derivation.
-final case class Slot(
-    objGuid: String,
-    name: String,
-    slotType: Long,
-    stringVal: Option[String],
-    int64Val: Option[Long]
-):
-
-  def insert(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        insert into slots (
-          obj_guid,
-          name,
-          slot_type,
-          string_val,
-          int64_val,
-          double_val,
-          timespec_val,
-          guid_val,
-          numeric_val_num,
-          numeric_val_denom,
-          gdate_val
-        )
-        values (
-          $text,
-          $text,
-          $integer,
-          ${text.opt},
-          ${integer.opt},
-          null,
-          null,
-          null,
-          null,
-          null,
-          null
-        )
-      """.command,
-      args = (objGuid, name, slotType, stringVal, int64Val)
     )

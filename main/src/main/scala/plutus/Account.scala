@@ -9,84 +9,6 @@ import porcupine.Codec.*
 // subroot, the canonical path a Monzo-backed asset account belongs at, what a
 // run would have written — is GnuCashCommands' business, which is why nothing
 // here mentions dryRun or Verbosity. See CLAUDE.md.
-object Account:
-
-  // The account a guid names, if it names one at all — the importer resolves
-  // an online_id tag this way, by the primary key, having read every tag in
-  // one scan (see Slot.onlineIds). None covers the ordinary case of a tag
-  // hanging off something that isn't an account: every imported split carries
-  // one too.
-  def byGuid(guid: String)(using db: Database[IO]): IO[Option[Account]] =
-    db.option(
-      query = sql"""
-        ${Account.selectAccountsWithFlags}
-        where accounts.guid = $text
-      """.query:
-        decoder
-      ,
-      args = guid
-    )
-
-  def root(using db: Database[IO]): IO[Account] =
-    db.unique:
-      sql"""
-        ${Account.selectAccountsWithFlags}
-        where accounts.parent_guid is null
-          and accounts.name = 'Root Account'
-      """.query:
-        decoder
-
-  val decoder: Decoder[Account] =
-    (text *:
-      text *:
-      text *:
-      text.opt *:
-      integer *:
-      integer *:
-      text.opt *:
-      text.opt *:
-      text.opt *:
-      boolean *:
-      boolean *:
-      nil).pmap[Account]
-
-  // hidden and placeholder live in KVP slots, not the eponymous accounts
-  // columns — GnuCash reads the flags only from the slot and keeps the column
-  // as a denormalised cache. Every read derives both flags from the slot,
-  // matching GnuCash's read semantics: the flag is true iff a slot exists and
-  // is truthy (string_val = 'true' or a non-zero int64_val). Interpolated as a
-  // plain String (literal SQL, no bind parameter), so every read site shares
-  // the projection + joins and supplies only its own `where`. See Slot.scala.
-  private val selectAccountsWithFlags: String =
-    """
-      select
-        accounts.guid,
-        accounts.name,
-        accounts.account_type,
-        accounts.commodity_guid,
-        accounts.commodity_scu,
-        accounts.non_std_scu,
-        accounts.parent_guid,
-        accounts.code,
-        accounts.description,
-        coalesce(
-          hidden_slot.string_val = 'true',
-          hidden_slot.int64_val != 0,
-          0
-        ) as hidden,
-        coalesce(
-          placeholder_slot.string_val = 'true',
-          placeholder_slot.int64_val != 0,
-          0
-        ) as placeholder
-      from accounts
-      left join slots hidden_slot
-        on hidden_slot.obj_guid = accounts.guid
-        and hidden_slot.name = 'hidden'
-      left join slots placeholder_slot
-        on placeholder_slot.obj_guid = accounts.guid
-        and placeholder_slot.name = 'placeholder'
-    """
 
 /** sqlite> .schema accounts CREATE TABLE accounts( guid text(32) PRIMARY KEY
   * NOT NULL, name text(2048) NOT NULL, account_type text(2048) NOT NULL,
@@ -349,3 +271,82 @@ final case class Account(
       ,
       args = guid
     )
+
+object Account:
+
+  // The account a guid names, if it names one at all — the importer resolves
+  // an online_id tag this way, by the primary key, having read every tag in
+  // one scan (see Slot.onlineIds). None covers the ordinary case of a tag
+  // hanging off something that isn't an account: every imported split carries
+  // one too.
+  def byGuid(guid: String)(using db: Database[IO]): IO[Option[Account]] =
+    db.option(
+      query = sql"""
+        ${Account.selectAccountsWithFlags}
+        where accounts.guid = $text
+      """.query:
+        decoder
+      ,
+      args = guid
+    )
+
+  def root(using db: Database[IO]): IO[Account] =
+    db.unique:
+      sql"""
+        ${Account.selectAccountsWithFlags}
+        where accounts.parent_guid is null
+          and accounts.name = 'Root Account'
+      """.query:
+        decoder
+
+  val decoder: Decoder[Account] =
+    (text *:
+      text *:
+      text *:
+      text.opt *:
+      integer *:
+      integer *:
+      text.opt *:
+      text.opt *:
+      text.opt *:
+      boolean *:
+      boolean *:
+      nil).pmap[Account]
+
+  // hidden and placeholder live in KVP slots, not the eponymous accounts
+  // columns — GnuCash reads the flags only from the slot and keeps the column
+  // as a denormalised cache. Every read derives both flags from the slot,
+  // matching GnuCash's read semantics: the flag is true iff a slot exists and
+  // is truthy (string_val = 'true' or a non-zero int64_val). Interpolated as a
+  // plain String (literal SQL, no bind parameter), so every read site shares
+  // the projection + joins and supplies only its own `where`. See Slot.scala.
+  private val selectAccountsWithFlags: String =
+    """
+      select
+        accounts.guid,
+        accounts.name,
+        accounts.account_type,
+        accounts.commodity_guid,
+        accounts.commodity_scu,
+        accounts.non_std_scu,
+        accounts.parent_guid,
+        accounts.code,
+        accounts.description,
+        coalesce(
+          hidden_slot.string_val = 'true',
+          hidden_slot.int64_val != 0,
+          0
+        ) as hidden,
+        coalesce(
+          placeholder_slot.string_val = 'true',
+          placeholder_slot.int64_val != 0,
+          0
+        ) as placeholder
+      from accounts
+      left join slots hidden_slot
+        on hidden_slot.obj_guid = accounts.guid
+        and hidden_slot.name = 'hidden'
+      left join slots placeholder_slot
+        on placeholder_slot.obj_guid = accounts.guid
+        and placeholder_slot.name = 'placeholder'
+    """
