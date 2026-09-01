@@ -51,51 +51,6 @@ final case class Account(
       args = guid
     )
 
-  def path(using db: Database[IO]): IO[List[Account]] =
-    db.execute(
-      query = sql"""
-        with recursive ancestors as (
-          select guid, parent_guid, 0 as depth
-          from accounts
-          where guid = $text
-          union all
-          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
-          from accounts
-          join ancestors on accounts.guid = ancestors.parent_guid
-        )
-        ${Account.selectAccountsWithFlags}
-        join ancestors on ancestors.guid = accounts.guid
-        order by ancestors.depth desc
-      """.query:
-        Account.decoder
-      ,
-      args = guid
-    )
-
-  def pathString(using db: Database[IO]): IO[String] =
-    path.map(
-      _.map(_.name)
-        .mkString:
-          "/"
-    )
-
-  // The names between `ancestor` and this account, exclusive: the path a mirror
-  // of this account on the other side of the live/archive boundary has to
-  // reproduce. The import path knows its paths up front (they are code-defined);
-  // archive-accounts and restore-account start from an account instead and read
-  // theirs out of the book.
-  def pathInitBelow(ancestor: Account)(using
-      db: Database[IO]
-  ): IO[List[String]] =
-    path.flatMap: accounts =>
-      accounts.indexWhere(_.guid == ancestor.guid) match
-        case -1 =>
-          IO.raiseError:
-            Error(
-              s"${ancestor.name} is not an ancestor of $name."
-            )
-        case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
-
   // Moves and renames share one updater. hidden has its own (updateHidden)
   // because it also owns a KVP slot; placeholder is still set only at insert
   // time and never toggled.
@@ -187,6 +142,51 @@ final case class Account(
             Error(
               s"${children.size} accounts are named $name under $parentPath; resolve by hand — merge them or rename all but one, since nothing here can tell which of them was meant."
             )
+
+  def pathString(using db: Database[IO]): IO[String] =
+    path.map(
+      _.map(_.name)
+        .mkString:
+          "/"
+    )
+
+  // The names between `ancestor` and this account, exclusive: the path a mirror
+  // of this account on the other side of the live/archive boundary has to
+  // reproduce. The import path knows its paths up front (they are code-defined);
+  // archive-accounts and restore-account start from an account instead and read
+  // theirs out of the book.
+  def pathInitBelow(ancestor: Account)(using
+      db: Database[IO]
+  ): IO[List[String]] =
+    path.flatMap: accounts =>
+      accounts.indexWhere(_.guid == ancestor.guid) match
+        case -1 =>
+          IO.raiseError:
+            Error(
+              s"${ancestor.name} is not an ancestor of $name."
+            )
+        case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
+
+  def path(using db: Database[IO]): IO[List[Account]] =
+    db.execute(
+      query = sql"""
+        with recursive ancestors as (
+          select guid, parent_guid, 0 as depth
+          from accounts
+          where guid = $text
+          union all
+          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
+          from accounts
+          join ancestors on accounts.guid = ancestors.parent_guid
+        )
+        ${Account.selectAccountsWithFlags}
+        join ancestors on ancestors.guid = accounts.guid
+        order by ancestors.depth desc
+      """.query:
+        Account.decoder
+      ,
+      args = guid
+    )
 
   def insert(using db: Database[IO]): IO[Unit] =
     for

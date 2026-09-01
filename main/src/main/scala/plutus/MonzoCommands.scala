@@ -35,15 +35,6 @@ lazy val monzoOpts: Opts[IO[Unit]] = Opts.subcommand(
 ):
   exportTransactionsOpts
 
-lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
-
-lazy val callbackPort: Port = port"8080"
-
-lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
-  s"http://localhost:$callbackPort/oauth/callback"
-
-lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
-
 lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "export-transactions",
   help = "Export Monzo transactions to OFX format."
@@ -118,6 +109,8 @@ def exportTransactions(
       dryRun
     ).map: updatedState =>
       (state = updatedState, result = ())
+
+lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
 // Shared Monzo session scaffolding for every command that talks to the API:
 // load state, decide whether Strong Customer Authentication is required for
@@ -457,6 +450,11 @@ val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
 val monzoRefreshPermissionsPath: String =
   "Settings > Security > Manage apps > Refresh permissions"
 
+lazy val callbackPort: Port = port"8080"
+
+lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
+  s"http://localhost:$callbackPort/oauth/callback"
+
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
     clientId: monzo.ClientId,
@@ -556,6 +554,8 @@ object AuthorizationCodeQueryParamMatcher
 
 object StateQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.State]("state")
+
+lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
 
 def requestAuthorization(
     clientId: monzo.ClientId
@@ -663,17 +663,6 @@ def materialTransactions(
 ): List[monzo.Transaction] =
   transactions.filterNot: transaction =>
     transaction.amount.value == 0 || transaction.declineReason.isDefined
-
-// The human-readable payee, preferring the merchant (card spend), then the
-// counterparty (transfers), then Monzo's own description as a last resort.
-// Export uses it for the OFX NAME and import for the GnuCash transaction
-// description, so both outputs read identically.
-def payee(transaction: monzo.Transaction): String =
-  transaction.merchant
-    .map(_.name)
-    .orElse(transaction.counterparty.name)
-    .map(_.value)
-    .getOrElse(transaction.description.value)
 
 // List every main account's transactions, then the pot accounts discovered
 // from their metadata (plus any already bookmarked in state), combined into a
@@ -807,12 +796,6 @@ def fetchTransactionsByAccount(
       result = (now = now, byAccount = byAccount, pots = pots)
     )
 
-// A pot backing account is constructed from transfer metadata rather than
-// decoded from /accounts, so it never carries a type — this absence *is* the
-// definition of "pot backing account" (see AccountType in the smithy spec).
-def isPotBacking(account: monzo.Account): Boolean =
-  account.accountType.isEmpty
-
 // Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
 // account's side carries pot_account_id alongside pot_id, and on the pot's own
 // side the account the leg was fetched from *is* the backing account. Both
@@ -871,6 +854,12 @@ def potsByAccountId(
           .flatMap(potsById.get)
           .map(accountId -> _)
       .toMap
+
+// A pot backing account is constructed from transfer metadata rather than
+// decoded from /accounts, so it never carries a type — this absence *is* the
+// definition of "pot backing account" (see AccountType in the smithy spec).
+def isPotBacking(account: monzo.Account): Boolean =
+  account.accountType.isEmpty
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
@@ -1025,16 +1014,6 @@ def listTransactions(
         )
   yield thisPage ++ otherPages
 
-// Monzo reports an amount in the minor unit of the account's own currency, and
-// OFX wants major units. Export has no book to read a fraction from — the
-// import path divides by the book currency's own `fraction` — so the 100 here
-// is GBP's, which is the only currency either path handles today, named rather
-// than inlined so the two at least spell the same idea the same way.
-val gbpMinorUnitsPerMajorUnit = 100
-
-def majorUnits(minorUnits: BigInt): BigDecimal =
-  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
-
 val ofxDateTimeFormatter: DateTimeFormatter =
   DateTimeFormatter.ofPattern:
     "yyyyMMddHHmmss.SSS"
@@ -1124,3 +1103,24 @@ def writeOfx(
     .drain *>
     info:
       s"Wrote OFX to $output."
+
+// Monzo reports an amount in the minor unit of the account's own currency, and
+// OFX wants major units. Export has no book to read a fraction from — the
+// import path divides by the book currency's own `fraction` — so the 100 here
+// is GBP's, which is the only currency either path handles today, named rather
+// than inlined so the two at least spell the same idea the same way.
+val gbpMinorUnitsPerMajorUnit = 100
+
+def majorUnits(minorUnits: BigInt): BigDecimal =
+  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
+
+// The human-readable payee, preferring the merchant (card spend), then the
+// counterparty (transfers), then Monzo's own description as a last resort.
+// Export uses it for the OFX NAME and import for the GnuCash transaction
+// description, so both outputs read identically.
+def payee(transaction: monzo.Transaction): String =
+  transaction.merchant
+    .map(_.name)
+    .orElse(transaction.counterparty.name)
+    .map(_.value)
+    .getOrElse(transaction.description.value)
