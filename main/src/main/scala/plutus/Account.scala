@@ -1,41 +1,15 @@
 package plutus
 
 import cats.effect.*
-import cats.effect.std.UUIDGen
-import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
+// What an account *is*, and everything answerable from the accounts rows and
+// the account's own KVP slots. Where an account *ought* to sit — the Archive
+// subroot, the canonical path a Monzo-backed asset account belongs at, what a
+// run would have written — is GnuCashCommands' business, which is why nothing
+// here mentions dryRun or Verbosity. See CLAUDE.md.
 object Account:
-
-  // Resolve a path of names from the root ("Expenses" :: "Groceries" :: Nil),
-  // reusing the existing `child` navigation. None if any segment is missing, so
-  // the importer can fail fast rather than silently mis-file.
-  def atPath(
-      segments: List[String]
-  )(using db: Database[IO]): IO[Option[Account]] =
-    Account.root.flatMap: root =>
-      segments.foldLeftM(Option(root)):
-        case (Some(parent), segment) => parent.child(segment)
-        case (None, _)               => IO.pure(None)
-
-  val ArchiveName = "Archive"
-
-  def createOrRetrieveArchiveSubroot(using db: Database[IO]): IO[Account] =
-    for
-      root <- Account.root
-      archiveSubroot <- root.createOrRetrieveMirror(
-        parent = root,
-        name = ArchiveName,
-        hidden = true
-      )
-    yield archiveSubroot
-
-  // The read-only sibling of createOrRetrieveArchiveSubroot, for callers that
-  // only ask "is this account already archived?" and must not create the
-  // subroot as a side effect (a dry-run import, for one).
-  def retrieveArchiveSubroot(using db: Database[IO]): IO[Option[Account]] =
-    root.flatMap(_.child(ArchiveName))
 
   // The account a guid names, if it names one at all — the importer resolves
   // an online_id tag this way, by the primary key, having read every tag in
@@ -137,30 +111,6 @@ final case class Account(
     placeholder: Boolean
 ):
 
-  def createOrRetrieveMirror(
-      parent: Account,
-      name: String,
-      hidden: Boolean = false
-  )(using db: Database[IO]): IO[Account] = parent
-    .child(name)
-    .flatMap:
-      case None =>
-        for
-          guid <- newGuid
-          mirror = copy(
-            guid = guid,
-            name = name,
-            parentGuid = Some(parent.guid),
-            hidden = hidden,
-            placeholder = true
-          )
-          _ <- mirror.insert
-        yield mirror
-
-      case Some(mirror) =>
-        IO.pure:
-          mirror
-
   def allChildren(using db: Database[IO]): IO[List[Account]] =
     db.execute(
       query = sql"""
@@ -179,28 +129,50 @@ final case class Account(
       args = guid
     )
 
-  def hiddenChildren(
-      archiveSubroot: Account
-  )(using db: Database[IO]): IO[List[Account]] = for
-    directChildren <- directChildren
-    hiddenChildren <- directChildren.traverse: child =>
-      if child == archiveSubroot then
-        // Hidden or not, we don't want to include anything already in the
-        // archive subroot - because the purpose of this function is to discover
-        // those which do need moving to it.
-        IO.pure:
-          Nil
-      else if child.hidden then
-        // Children of a hidden account are implicitly hidden, i.e. we don't
-        // want to include them in the results, hence we don't recurse (but we
-        // do include this child).
-        IO.pure:
-          child :: Nil
-        // While this account is not hidden, it may have hidden children.
-      else
-        child.hiddenChildren:
-          archiveSubroot
-  yield hiddenChildren.flatten
+  def path(using db: Database[IO]): IO[List[Account]] =
+    db.execute(
+      query = sql"""
+        with recursive ancestors as (
+          select guid, parent_guid, 0 as depth
+          from accounts
+          where guid = $text
+          union all
+          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
+          from accounts
+          join ancestors on accounts.guid = ancestors.parent_guid
+        )
+        ${Account.selectAccountsWithFlags}
+        join ancestors on ancestors.guid = accounts.guid
+        order by ancestors.depth desc
+      """.query:
+        Account.decoder
+      ,
+      args = guid
+    )
+
+  def pathString(using db: Database[IO]): IO[String] =
+    path.map(
+      _.map(_.name)
+        .mkString:
+          "/"
+    )
+
+  // The names between `ancestor` and this account, exclusive: the path a mirror
+  // of this account on the other side of the live/archive boundary has to
+  // reproduce. The import path knows its paths up front (they are code-defined);
+  // archive-accounts and restore-account start from an account instead and read
+  // theirs out of the book.
+  def pathInitBelow(ancestor: Account)(using
+      db: Database[IO]
+  ): IO[List[String]] =
+    path.flatMap: accounts =>
+      accounts.indexWhere(_.guid == ancestor.guid) match
+        case -1 =>
+          IO.raiseError:
+            Error(
+              s"${ancestor.name} is not an ancestor of $name."
+            )
+        case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
 
   // Moves and renames share one updater. hidden has its own (updateHidden)
   // because it also owns a KVP slot; placeholder is still set only at insert
@@ -239,6 +211,18 @@ final case class Account(
       _ <- IO.whenA(hidden):
         Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
     yield copy(hidden = hidden)
+
+  // The other slot an account can carry, written the same way updateHidden
+  // writes its own: GnuCash's OFX importer records which external account a
+  // book account stands for in an account-level online_id slot, and Plutus
+  // writes the same one so the book itself carries the association (see
+  // Slot.OnlineId). What the value *means* is the caller's — every one this
+  // codebase writes is a Monzo account ID — which is why the Monzo types stop
+  // at the call site.
+  def tagOnlineId(value: String)(using db: Database[IO]): IO[Unit] =
+    Slot
+      .stringSlot(objGuid = guid, name = Slot.OnlineId, value = value)
+      .insert
 
   // description is a plain accounts column, with no KVP slot behind it (unlike
   // hidden and placeholder), so there is nothing to keep in step here. Null
@@ -281,34 +265,6 @@ final case class Account(
             Error(
               s"${children.size} accounts are named $name under $parentPath; resolve by hand — merge them or rename all but one, since nothing here can tell which of them was meant."
             )
-
-  def pathString(using db: Database[IO]): IO[String] =
-    path.map(
-      _.map(_.name)
-        .mkString:
-          "/"
-    )
-
-  def path(using db: Database[IO]): IO[List[Account]] =
-    db.execute(
-      query = sql"""
-        with recursive ancestors as (
-          select guid, parent_guid, 0 as depth
-          from accounts
-          where guid = $text
-          union all
-          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
-          from accounts
-          join ancestors on accounts.guid = ancestors.parent_guid
-        )
-        ${Account.selectAccountsWithFlags}
-        join ancestors on ancestors.guid = accounts.guid
-        order by ancestors.depth desc
-      """.query:
-        Account.decoder
-      ,
-      args = guid
-    )
 
   def insert(using db: Database[IO]): IO[Unit] =
     for
@@ -393,18 +349,3 @@ final case class Account(
       ,
       args = guid
     )
-
-  def parent(using db: Database[IO]): IO[Option[Account]] =
-    db.option(
-      query = sql"""
-        ${Account.selectAccountsWithFlags}
-        where accounts.guid = ${text.opt}
-      """.query:
-        Account.decoder
-      ,
-      args = parentGuid
-    )
-
-// GnuCash GUIDs are 32-char hex with the UUID dashes stripped.
-val newGuid: IO[String] =
-  UUIDGen[IO].randomUUID.map(_.toString.replaceAll("-", ""))
