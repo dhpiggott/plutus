@@ -240,9 +240,7 @@ lazy val main = projectMatrix
   )
   .jvmPlatform(
     scalaVersions = scala3Versions,
-    // `jvmPlatform` already prepends `VirtualAxis.jvm`.
-    axisValues = Seq.empty,
-    configure = _.settings(
+    settings = Seq(
       libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
       fork := true,
       connectInput := true,
