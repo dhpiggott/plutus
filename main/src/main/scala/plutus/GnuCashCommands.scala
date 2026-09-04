@@ -445,9 +445,9 @@ def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
         Error(s"No GnuCash book at $input.")
 
 // Lives here rather than under `monzo` because it's conceptually a GnuCash
-// import — a future variant could read the CSVs the Monzo app exports instead
-// of the API. The Monzo session plumbing it borrows (fetchTransactionsByAccount)
-// stays in MonzoCommands.
+// import: it consumes a TransactionSource, and a future variant could be
+// handed one reading the CSVs the Monzo app exports instead of the API. The
+// Monzo session plumbing behind monzoTransactionSource stays in MonzoCommands.
 lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "import-transactions",
   help = "Import Monzo transactions directly into the GnuCash book."
@@ -460,9 +460,15 @@ lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     importDryRunOpts,
     ignoreLockOpts
   ).tupled.map: (verbosity, input, since, before, dryRun, ignoreLock) =>
-    importTransactions(input, since, before, dryRun, ignoreLock)(using
-      verbosity
-    )
+    importTransactions(
+      // Never !dryRun: the book dedups on the online_id slot rather than on
+      // bookmarks, so advancing them would make the next export skip the
+      // window this run just imported. See monzoTransactionSource.
+      monzoTransactionSource(since, before, advanceBookmarks = false),
+      input,
+      dryRun,
+      ignoreLock
+    )(using verbosity)
 
 lazy val importDryRunOpts: Opts[Boolean] =
   Opts
@@ -474,9 +480,8 @@ lazy val importDryRunOpts: Opts[Boolean] =
     .orFalse
 
 def importTransactions(
+    source: TransactionSource,
     input: fs2.io.file.Path,
-    since: Option[Instant],
-    before: Option[Instant],
     dryRun: Boolean,
     ignoreLock: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
@@ -487,7 +492,10 @@ def importTransactions(
   // The zone the transactions' calendar dates are taken in (see
   // neutralPostDate), read once so every row of a run agrees.
   zone <- IO.delay(ZoneId.systemDefault)
-  (now, byAccount, pots) <- fetchTransactionsByAccount(since, before)
+  // IO.pure, not the book work: the book is opened after the source has let
+  // go, so nothing it holds open outlives the fetch, and the pot links it
+  // records survive an import that then fails.
+  (now, byAccount, pots) <- source.use(IO.pure)
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
     given Database[IO] = db
     val assetAccounts = AssetAccounts.default
@@ -519,7 +527,7 @@ def importTransactions(
       // is no unique constraint on the online_id slot to catch it. Monzo's
       // model says a pot transfer is one transaction in the main account's
       // statement and a separate one in the pot's own (see
-      // fetchTransactionsByAccount), so neither check below should ever
+      // monzoTransactionSource), so neither check below should ever
       // fire; they are here because the alternative to them firing is a
       // silent double-post. They are separate checks because the two say
       // different things about Monzo: the same ID under two accounts means

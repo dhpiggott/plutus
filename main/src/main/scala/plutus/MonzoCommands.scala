@@ -47,10 +47,13 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     dryRunOpts
   ).tupled.map: (verbosity, since, before, output, dryRun) =>
     exportTransactions(
-      since,
-      before,
+      monzoTransactionSource(since, before, advanceBookmarks = !dryRun),
       output,
-      dryRun
+      // The sink can't ask the source what window it fetched, so the policy
+      // travels with the sink: --since names the window, so re-rendering it
+      // over an existing file is what was asked for, while bookmark mode would
+      // replace a full export with whatever happened since it.
+      overwrite = since.isDefined
     )(using verbosity)
 
 lazy val sinceOpts: Opts[Option[Instant]] =
@@ -93,22 +96,62 @@ lazy val dryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
-def exportTransactions(
+// Every transaction (main accounts and discovered pots) for the window,
+// grouped by account so a sink can post each account's transactions to the
+// asset account its type maps to (see AssetAccounts), plus each pot backing
+// account's pot, so pots get individual asset accounts, currency-checked and
+// archived when their pot goes. The Monzo session's whole state lifecycle
+// lives here: pot links are recorded whenever they're seen (see potLinks) and
+// the bookmarks are advanced only if advanceBookmarks and `consume` both say
+// so, which is what makes a source the one thing a sink has to be given.
+//
+// Import passes advanceBookmarks = false rather than !dryRun: it dedups on the
+// online_id slot rather than on bookmarks, so advancing them would make the
+// next export skip the very window that was just imported.
+def monzoTransactionSource(
     since: Option[Instant],
     before: Option[Instant],
-    output: fs2.io.file.Path,
-    dryRun: Boolean
-)(using verbosity: Verbosity): IO[Unit] =
-  withMonzoApi(since): (monzoApi, state, now) =>
-    exportTransactions(
-      monzoApi,
-      state,
-      since,
-      before = before.getOrElse(now),
-      output,
-      dryRun
-    ).map: updatedState =>
-      (state = updatedState, result = ())
+    advanceBookmarks: Boolean
+): TransactionSource = new TransactionSource:
+  def use[A](consume: Fetched => IO[A])(using verbosity: Verbosity): IO[A] =
+    withMonzoApi(since): (monzoApi, state, now) =>
+      for
+        byAccount <- listAllTransactions(
+          monzoApi,
+          state,
+          since,
+          before = before.getOrElse(now)
+        )
+        // Merge before resolving, so this run's own discoveries serve this
+        // run's pots too.
+        potIds = state.potIds ++ potLinks(byAccount)
+        pots <- potsByAccountId(monzoApi, byAccount, potIds)
+        result <- consume(
+          (now = now, byAccount = byAccount, pots = pots)
+        )
+        // Pot links are facts about Monzo's account topology, not export
+        // progress, so they're recorded even on a dry run; only the bookmarks
+        // respect --dry-run. See potLinks.
+        linkedState = state.copy(potIds = potIds)
+      yield (
+        state =
+          if !advanceBookmarks then linkedState
+          else
+            linkedState.copy(
+              lastTransactions = linkedState.lastTransactions ++
+                byAccount
+                  .map: (account, transactions) =>
+                    account.id -> transactions.lastOption
+                  .collect:
+                    case (accountId, Some(lastTransaction)) =>
+                      accountId -> LastTransaction(
+                        lastTransaction.id,
+                        lastTransaction.created
+                      )
+            )
+        ,
+        result = result
+      )
 
 lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
@@ -601,59 +644,31 @@ object BearerAuthMiddleware:
                     Credentials.Token(AuthScheme.Bearer, accessToken.value)
         else identity
 
+// Writing the OFX inside `use` is what gates the source's bookmarks on it: a
+// failed write leaves the window to be fetched again next run.
 def exportTransactions(
-    monzoApi: monzo.Api[IO],
-    state: State,
-    since: Option[Instant],
-    before: Instant,
+    source: TransactionSource,
     output: fs2.io.file.Path,
-    dryRun: Boolean
-)(using verbosity: Verbosity): IO[State] = for
-  accountsAndTransactions <- listAllTransactions(
-    monzoApi,
-    state,
-    since,
-    before
-  )
-  // An account with nothing material would render as an empty OFX statement
-  // block, so drop it.
-  materialAccountIdsAndTransactions = accountsAndTransactions
-    .map: (account, transactions) =>
-      account.id -> materialTransactions(transactions)
-    .filter: (_, transactions) =>
-      transactions.nonEmpty
-  _ <- writeOfx(
-    toOfx:
-      materialAccountIdsAndTransactions
-    ,
-    output,
-    overwrite = since.isDefined
-  ).adaptError:
-    case _: FileAlreadyExistsException =>
-      Error:
-        s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
-  // Pot links are facts about Monzo's account topology, not export progress,
-  // so they're recorded even on a dry run; only the bookmarks respect
-  // --dry-run. See potLinks.
-  linkedState = state.copy(
-    potIds = state.potIds ++ potLinks(accountsAndTransactions)
-  )
-  updatedState =
-    if dryRun then linkedState
-    else
-      linkedState.copy(
-        lastTransactions = linkedState.lastTransactions ++
-          accountsAndTransactions
-            .map: (account, transactions) =>
-              account.id -> transactions.lastOption
-            .collect:
-              case (accountId, Some(lastTransaction)) =>
-                accountId -> LastTransaction(
-                  lastTransaction.id,
-                  lastTransaction.created
-                )
-      )
-yield updatedState
+    overwrite: Boolean
+)(using verbosity: Verbosity): IO[Unit] =
+  source.use: fetched =>
+    // An account with nothing material would render as an empty OFX statement
+    // block, so drop it.
+    val materialAccountIdsAndTransactions = fetched.byAccount
+      .map: (account, transactions) =>
+        account.id -> materialTransactions(transactions)
+      .filter: (_, transactions) =>
+        transactions.nonEmpty
+    writeOfx(
+      toOfx:
+        materialAccountIdsAndTransactions
+      ,
+      output,
+      overwrite
+    ).adaptError:
+      case _: FileAlreadyExistsException =>
+        Error:
+          s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
 
 // Skip £0 active-card checks and declined authorisations: neither is real
 // spend, so export leaves them out of the OFX and import leaves them out of
@@ -670,8 +685,7 @@ def materialTransactions(
 // /accounts account appears as a key, keeping an empty transaction list when
 // nothing was fetched for it (no bookmark in bookmark mode, or no activity):
 // pot naming needs every owner present, and consumers treat an empty value as
-// nothing to do. Shared by export and import; the verbose entity dump lives
-// here so both commands emit it.
+// nothing to do. The verbose entity dump lives here, so every sink emits it.
 def listAllTransactions(
     monzoApi: monzo.Api[IO],
     state: State,
@@ -759,49 +773,12 @@ def listAllTransactions(
     .map(_ -> List.empty[monzo.Transaction])
 yield accountsAndTransactions ++ unfetchedMain ++ potAccountsAndTransactions
 
-// Fetch every transaction (main accounts and discovered pots) for the window,
-// grouped by account so import can post each account's transactions to the
-// asset account its type maps to (see AssetAccounts), plus each pot backing
-// account's pot — name, currency, deleted — so pots get individual asset
-// accounts, currency-checked and archived when their pot goes. Used by import,
-// which dedups on the Monzo ID rather than bookmarks, so it leaves the
-// persisted state untouched. Returns `now` too, so import can stamp enter_date
-// with the session's single clock read rather than taking a second one.
-def fetchTransactionsByAccount(
-    since: Option[Instant],
-    before: Option[Instant]
-)(using
-    verbosity: Verbosity
-): IO[
-  (
-      now: Instant,
-      byAccount: List[(monzo.Account, List[monzo.Transaction])],
-      pots: Map[monzo.AccountId, monzo.Pot]
-  )
-] =
-  withMonzoApi(since): (monzoApi, state, now) =>
-    for
-      byAccount <- listAllTransactions(
-        monzoApi,
-        state,
-        since,
-        before = before.getOrElse(now)
-      )
-      // Merge before resolving, so this run's own discoveries serve this
-      // run's pots too.
-      potIds = state.potIds ++ potLinks(byAccount)
-      pots <- potsByAccountId(monzoApi, byAccount, potIds)
-    yield (
-      state = state.copy(potIds = potIds),
-      result = (now = now, byAccount = byAccount, pots = pots)
-    )
-
 // Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
 // account's side carries pot_account_id alongside pot_id, and on the pot's own
-// side the account the leg was fetched from *is* the backing account. Both
-// export and import merge these into State.potIds whenever they fetch, so a
-// link seen once names the pot forever — even in a later window holding no
-// transfer for it (a dormant pot earning only interest).
+// side the account the leg was fetched from *is* the backing account. The
+// Monzo source merges these into State.potIds on every fetch, whichever sink
+// asked for it, so a link seen once names the pot forever — even in a later
+// window holding no transfer for it (a dormant pot earning only interest).
 def potLinks(
     byAccount: List[(monzo.Account, List[monzo.Transaction])]
 ): Map[monzo.AccountId, monzo.PotId] =
