@@ -9,9 +9,32 @@ import java.time.Instant
 // behind each pot backing account — name, currency, deleted. Every account
 // appears in byAccount, keeping an empty transaction list when nothing was
 // fetched for it, because pot naming needs every owner present.
+//
+// `incremental` says the window carried on from wherever the last run left off
+// rather than being one the caller named. It's here because it's the one thing
+// about a fetch a sink can't work out for itself and can't ignore: --since
+// belongs to the Monzo source and means nothing to a source reading a file,
+// yet whether the OFX file is a complete statement or a window's worth of new
+// rows decides whether writing it may replace one already there. See
+// exportTransactions.
 type Fetched = (
-    byAccount: List[(monzo.Account, List[monzo.Transaction])],
-    pots: Map[monzo.AccountId, monzo.Pot]
+    byAccount: List[(FetchedAccount, List[monzo.Transaction])],
+    pots: Map[monzo.AccountId, monzo.Pot],
+    incremental: Boolean
+)
+
+// The account a source attributes transactions to, stated rather than
+// inferred. potBacking is why this isn't just monzo.Account: the Monzo source
+// recognises a pot backing account by its missing type (see isPotBacking),
+// which is an artefact of /accounts not listing them and answers nothing for a
+// source handed a bare acc_… on a command line. A sink that re-derived the
+// rule would file such an account down the pot naming path, and a mis-filed
+// row is permanent — online_id dedup skips it on every later run.
+case class FetchedAccount(
+    id: monzo.AccountId,
+    accountType: Option[monzo.AccountType],
+    closed: Boolean,
+    potBacking: Boolean
 )
 
 // Scoped rather than a plain IO[Fetched] because a source can carry a

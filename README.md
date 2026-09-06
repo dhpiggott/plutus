@@ -48,7 +48,9 @@ A book with no `gnclock` table at all — one no GnuCash with a SQL backend has 
 
 Fetches Monzo transactions and writes them to `--output` (default `./monzo.ofx`).
 
-By default the export starts from each account's last-exported transaction (a per-account bookmark held in the state store) and ends at the current time; pass `--since` / `--before` (ISO-8601 timestamps) to override. `--dry-run` writes the OFX file without advancing the bookmarks.
+By default the export starts from each account's last-exported transaction (a per-account bookmark held in the state store) and ends at the current time; pass `--since` / `--before` (ISO-8601 timestamps) to override. A `--since` run names the whole of the window it renders, so it replaces an existing `--output`; a bookmark run holds only what has happened since the last one, so it refuses to overwrite one rather than stand in for the full export already there.
+
+`--dry-run` prints what would be exported — a line per account with its transaction count, and the file that would be written — while writing nothing and leaving the bookmarks where they are. It makes the same refusal a real run would, so a plan that prints is a run that would have succeeded.
 
 #### Pot transactions
 
