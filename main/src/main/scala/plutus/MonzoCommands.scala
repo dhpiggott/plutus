@@ -127,7 +127,7 @@ def monzoTransactionSource(
         potIds = state.potIds ++ potLinks(byAccount)
         pots <- potsByAccountId(monzoApi, byAccount, potIds)
         result <- consume(
-          (now = now, byAccount = byAccount, pots = pots)
+          (at = now, byAccount = byAccount, pots = pots)
         )
         // Pot links are facts about Monzo's account topology, not export
         // progress, so they're recorded even on a dry run; only the bookmarks

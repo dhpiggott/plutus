@@ -11,7 +11,7 @@ import java.time.Instant
 // account appears in byAccount, keeping an empty transaction list when nothing
 // was fetched for it, because pot naming needs every owner present.
 type Fetched = (
-    now: Instant,
+    at: Instant,
     byAccount: List[(monzo.Account, List[monzo.Transaction])],
     pots: Map[monzo.AccountId, monzo.Pot]
 )
