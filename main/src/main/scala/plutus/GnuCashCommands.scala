@@ -489,13 +489,18 @@ def importTransactions(
   // message rather than the whole OAuth-and-fetch round trip that would
   // otherwise run before the book is ever opened.
   _ <- requireExistingBook(input)
+  // The run's instant, taken at invocation and spent on both the source's
+  // window and this run's own writes — the backup's name and every row's
+  // enter_date — so one run stamps one time. Same as archiveAccounts and
+  // restoreAccount, which read their own here too.
+  now <- IO.realTimeInstant
   // The zone the transactions' calendar dates are taken in (see
   // neutralPostDate), read once so every row of a run agrees.
   zone <- IO.delay(ZoneId.systemDefault)
   // IO.pure, not the book work: the book is opened after the source has let
   // go, so nothing it holds open outlives the fetch, and the pot links it
   // records survive an import that then fails.
-  (now, byAccount, pots) <- source.use(IO.pure)
+  (byAccount, pots) <- source.use(now)(IO.pure)
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
     given Database[IO] = db
     val assetAccounts = AssetAccounts.default
@@ -904,8 +909,8 @@ def promoteBackup(
     ) *> info(s"Moved $temporaryBackup to $backup.")
 
 // Compact UTC, so backups sort chronologically by name, and no colons, which
-// Finder renders as slashes. The instant is the Monzo session's own, so every
-// artefact of a run carries the same stamp.
+// Finder renders as slashes. The instant is the one the command took at
+// invocation, so every artefact of a run carries the same stamp.
 val backupTimestamp: DateTimeFormatter =
   DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
 

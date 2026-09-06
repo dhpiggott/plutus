@@ -113,8 +113,10 @@ def monzoTransactionSource(
     before: Option[Instant],
     advanceBookmarks: Boolean
 ): TransactionSource = new TransactionSource:
-  def use[A](consume: Fetched => IO[A])(using verbosity: Verbosity): IO[A] =
-    withMonzoApi(since): (monzoApi, state, now) =>
+  def use[A](now: Instant)(consume: Fetched => IO[A])(using
+      verbosity: Verbosity
+  ): IO[A] =
+    withMonzoApi(since, now): (monzoApi, state) =>
       for
         byAccount <- listAllTransactions(
           monzoApi,
@@ -127,7 +129,7 @@ def monzoTransactionSource(
         potIds = state.potIds ++ potLinks(byAccount)
         pots <- potsByAccountId(monzoApi, byAccount, potIds)
         result <- consume(
-          (at = now, byAccount = byAccount, pots = pots)
+          (byAccount = byAccount, pots = pots)
         )
         // Pot links are facts about Monzo's account topology, not export
         // progress, so they're recorded even on a dry run; only the bookmarks
@@ -162,16 +164,16 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 // token-exchange response body carries the tokens, hence trace only),
 // rotate/obtain an access token, and run `use` against the authenticated API.
 // `use` returns the State to persist alongside its own result, and the rotated
-// refresh token is saved even if `use` fails, so it isn't lost.
+// refresh token is saved even if `use` fails, so it isn't lost. `now` is the
+// run's instant rather than one read here, so the token arithmetic below and
+// whatever the command goes on to stamp agree on when the run happened.
 def withMonzoApi[A](
-    since: Option[Instant]
+    since: Option[Instant],
+    now: Instant
 )(
-    use: (monzo.Api[IO], State, Instant) => IO[(state: State, result: A)]
+    use: (monzo.Api[IO], State) => IO[(state: State, result: A)]
 )(using verbosity: Verbosity): IO[A] = for
   maybeState <- loadState()
-  now <- Clock[IO].realTime.map: finiteDuration =>
-    Instant.ofEpochMilli:
-      finiteDuration.toMillis
   // Remind (and, if confirmed, record) before the computed refresh-token expiry
   // passes, while there's still a working refresh token to extend in the app.
   checkedState <- maybeState.traverse:
@@ -251,7 +253,7 @@ def withMonzoApi[A](
             accessToken
         .resource
           .use: monzoApi =>
-            use(monzoApi, state, now)
+            use(monzoApi, state)
           .onError:
             // Ensure the refreshed token isn't lost if `use` fails after
             // accessToken() has already rotated it.
@@ -650,8 +652,12 @@ def exportTransactions(
     source: TransactionSource,
     output: fs2.io.file.Path,
     overwrite: Boolean
-)(using verbosity: Verbosity): IO[Unit] =
-  source.use: fetched =>
+)(using verbosity: Verbosity): IO[Unit] = for
+  // The run's instant, taken here rather than by the source, so a source with
+  // no clock of its own still resolves its window against this run's. See
+  // TransactionSource.
+  now <- IO.realTimeInstant
+  _ <- source.use(now): fetched =>
     // An account with nothing material would render as an empty OFX statement
     // block, so drop it.
     val materialAccountIdsAndTransactions = fetched.byAccount
@@ -669,6 +675,7 @@ def exportTransactions(
       case _: FileAlreadyExistsException =>
         Error:
           s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
+yield ()
 
 // Skip £0 active-card checks and declined authorisations: neither is real
 // spend, so export leaves them out of the OFX and import leaves them out of
