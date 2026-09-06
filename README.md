@@ -155,12 +155,9 @@ GitHub Actions runs two workflows: `ci.yml` on pushes to `main` and on pull requ
 
 | Module | Platforms | Purpose |
 | --- | --- | --- |
-| `keychain-jvm` | jvm | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain via Java's Foreign Function & Memory API. |
-| `keychain-native` | native | `object Keychain` (same surface) backed by the macOS Keychain via sn-bindgen. |
-| `porcupine-jvm` | jvm | `object Sqlite` (`Connection` / `Statement` over sqlite3) via jextract + Java's Foreign Function & Memory API. |
-| `porcupine-native` | native | `object Sqlite` (same surface) backed by sqlite3 via sn-bindgen. |
-| `porcupine` | cross | Inlined Porcupine fork. Builds the cats-effect `Database` interface on top of whichever `Sqlite` impl is on the classpath. |
-| `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + the Porcupine impl into `decline`'s `CommandIOApp`. |
+| `keychain` | jvm + native | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain. One row per platform under `src/main/scalajvm` and `src/main/scalanative`, reaching it through Java's Foreign Function & Memory API (jextract) and sn-bindgen respectively. |
+| `porcupine` | jvm + native | Inlined Porcupine fork: the cats-effect `Database` interface, on top of a per-platform `object Sqlite` (`Connection` / `Statement` over sqlite3) that sits alongside it under `src/main/scalajvm` and `src/main/scalanative`. |
+| `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + `Database` into `decline`'s `CommandIOApp`. |
 
 ## Status
 
