@@ -30,7 +30,7 @@ type Fetched = (
 // source handed a bare acc_… on a command line. A sink that re-derived the
 // rule would file such an account down the pot naming path, and a mis-filed
 // row is permanent — online_id dedup skips it on every later run.
-case class FetchedAccount(
+final case class FetchedAccount(
     id: monzo.AccountId,
     accountType: Option[monzo.AccountType],
     closed: Boolean,
