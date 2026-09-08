@@ -690,7 +690,8 @@ def exportTransactions(
       // A --since run names the whole of the window it renders, so writing it
       // over an existing file is what was asked for; a bookmark run would
       // replace a full export with whatever has happened since it. The source
-      // says which it fetched, because a sink can't ask a file about --since.
+      // says which it fetched, because the transactions it hands over don't
+      // say what window asked for them.
       overwrite = !fetched.incremental,
       dryRun
     ).adaptError:
