@@ -44,16 +44,12 @@ lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     sinceOpts,
     beforeOpts,
     outputOpts,
-    dryRunOpts
+    exportDryRunOpts
   ).tupled.map: (verbosity, since, before, output, dryRun) =>
     exportTransactions(
       monzoTransactionSource(since, before, advanceBookmarks = !dryRun),
       output,
-      // The sink can't ask the source what window it fetched, so the policy
-      // travels with the sink: --since names the window, so re-rendering it
-      // over an existing file is what was asked for, while bookmark mode would
-      // replace a full export with whatever happened since it.
-      overwrite = since.isDefined
+      dryRun
     )(using verbosity)
 
 lazy val sinceOpts: Opts[Option[Instant]] =
@@ -88,11 +84,12 @@ lazy val outputOpts: Opts[fs2.io.file.Path] =
         fs2.io.file.Path:
           "monzo.ofx"
 
-lazy val dryRunOpts: Opts[Boolean] =
+lazy val exportDryRunOpts: Opts[Boolean] =
   Opts
     .flag(
       "dry-run",
-      help = "Don't update state-file's last-transactions bookmarks."
+      help =
+        "Print what would be exported without writing the OFX file and without updating the state file's last-transactions bookmarks."
     )
     .orFalse
 
@@ -128,8 +125,24 @@ def monzoTransactionSource(
         // run's pots too.
         potIds = state.potIds ++ potLinks(byAccount)
         pots <- potsByAccountId(monzoApi, byAccount, potIds)
+        // The one reading of the missing-type rule: every sink downstream
+        // takes potBacking's word for it rather than re-deriving it from a
+        // shape only /accounts produces. See FetchedAccount.
+        fetchedAccounts = byAccount.map: (account, transactions) =>
+          FetchedAccount(
+            id = account.id,
+            accountType = account.accountType,
+            closed = account.closed.exists(_.value),
+            potBacking = isPotBacking(account)
+          ) -> transactions
         result <- consume(
-          (byAccount = byAccount, pots = pots)
+          (
+            byAccount = fetchedAccounts,
+            pots = pots,
+            // Bookmark mode carries on from each account's last exported
+            // transaction; a --since run names its own window.
+            incremental = since.isEmpty
+          )
         )
         // Pot links are facts about Monzo's account topology, not export
         // progress, so they're recorded even on a dry run; only the bookmarks
@@ -651,7 +664,7 @@ object BearerAuthMiddleware:
 def exportTransactions(
     source: TransactionSource,
     output: fs2.io.file.Path,
-    overwrite: Boolean
+    dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] = for
   // The run's instant, taken here rather than by the source, so a source with
   // no clock of its own still resolves its window against this run's. See
@@ -665,12 +678,22 @@ def exportTransactions(
         account.id -> materialTransactions(transactions)
       .filter: (_, transactions) =>
         transactions.nonEmpty
-    writeOfx(
+    (IO.whenA(dryRun):
+      materialAccountIdsAndTransactions.traverse_ : (accountId, transactions) =>
+        info:
+          s"Would export ${transactions.size} transaction(s) for ${accountId.value}."
+    ) *> writeOfx(
       toOfx:
         materialAccountIdsAndTransactions
       ,
       output,
-      overwrite
+      // A --since run names the whole of the window it renders, so writing it
+      // over an existing file is what was asked for; a bookmark run would
+      // replace a full export with whatever has happened since it. The source
+      // says which it fetched, because the transactions it hands over don't
+      // say what window asked for them.
+      overwrite = !fetched.incremental,
+      dryRun
     ).adaptError:
       case _: FileAlreadyExistsException =>
         Error:
@@ -793,9 +816,8 @@ def potLinks(
     .flatMap: (account, transactions) =>
       transactions.flatMap: transaction =>
         potId(transaction).flatMap: potId =>
-          account.accountType match
-            case None    => Some(account.id -> potId)
-            case Some(_) => potAccountId(transaction).map(_ -> potId)
+          if isPotBacking(account) then Some(account.id -> potId)
+          else potAccountId(transaction).map(_ -> potId)
     .toMap
 
 // Pot backing accounts carry no pot details of their own, but /pots lists
@@ -1041,52 +1063,65 @@ def toOfx(
                 )
           )
 
+// A dry run reports rather than writes, and checks the one thing that would
+// have stopped the write, so what it prints is a plan that would have
+// succeeded — the same bargain import's dry run strikes with the book.
 def writeOfx(
     content: ofx.Ofx,
     output: fs2.io.file.Path,
-    overwrite: Boolean
+    overwrite: Boolean,
+    dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
-  ((fs2.Stream:
-    "ENCODING:UTF-8\n"
-  )
-  ++
-    XmlDocument.documentEventifier
-      .eventify:
-        XmlDocument.Encoder
-          .fromSchema:
-            ofx.Ofx.schema
-          .encode:
-            content
-      // GnuCash imports OFX through libofx, an SGML parser that doesn't
-      // recognise the &apos; / &quot; entities smithy4s escapes apostrophes
-      // and quotes to; both are valid literally in element text, so undo the
-      // escapes.
-      .map:
-        case fs2.data.xml.XmlEvent.XmlString(s, isCDATA) =>
-          fs2.data.xml.XmlEvent.XmlString(
-            s.replace("&apos;", "'").replace("&quot;", "\""),
-            isCDATA
-          )
-        case event => event
-      .through:
-        fs2.data.xml.render.prettyPrint(width = 60, indent = 4)
-  )
-    .through:
-      fs2.io.file
-        .Files[IO]
-        .writeUtf8(
-          output,
-          if overwrite then fs2.io.file.Flags.Write
-          else
-            fs2.io.file.Flags(
-              fs2.io.file.Flag.Write,
-              fs2.io.file.Flag.CreateNew
+  if dryRun then
+    for
+      exists <- fs2.io.file.Files[IO].exists(output)
+      _ <- IO.raiseWhen(exists && !overwrite):
+        FileAlreadyExistsException(output.toString)
+      _ <- info:
+        s"Would write OFX to $output."
+    yield ()
+  else
+    ((fs2.Stream:
+      "ENCODING:UTF-8\n"
+    )
+    ++
+      XmlDocument.documentEventifier
+        .eventify:
+          XmlDocument.Encoder
+            .fromSchema:
+              ofx.Ofx.schema
+            .encode:
+              content
+        // GnuCash imports OFX through libofx, an SGML parser that doesn't
+        // recognise the &apos; / &quot; entities smithy4s escapes apostrophes
+        // and quotes to; both are valid literally in element text, so undo the
+        // escapes.
+        .map:
+          case fs2.data.xml.XmlEvent.XmlString(s, isCDATA) =>
+            fs2.data.xml.XmlEvent.XmlString(
+              s.replace("&apos;", "'").replace("&quot;", "\""),
+              isCDATA
             )
-        )
-    .compile
-    .drain *>
-    info:
-      s"Wrote OFX to $output."
+          case event => event
+        .through:
+          fs2.data.xml.render.prettyPrint(width = 60, indent = 4)
+    )
+      .through:
+        fs2.io.file
+          .Files[IO]
+          .writeUtf8(
+            output,
+            if overwrite then fs2.io.file.Flags.Write
+            else
+              fs2.io.file.Flags(
+                fs2.io.file.Flag.Write,
+                fs2.io.file.Flag.CreateNew
+              )
+          )
+      .compile
+      .drain *>
+      info:
+        s"Wrote OFX to $output."
 
 // Monzo reports an amount in the minor unit of the account's own currency, and
 // OFX wants major units. Export has no book to read a fraction from — the

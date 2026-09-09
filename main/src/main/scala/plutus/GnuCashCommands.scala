@@ -500,7 +500,9 @@ def importTransactions(
   // IO.pure, not the book work: the book is opened after the source has let
   // go, so nothing it holds open outlives the fetch, and the pot links it
   // records survive an import that then fails.
-  (byAccount, pots) <- source.use(now)(IO.pure)
+  fetched <- source.use(now)(IO.pure)
+  byAccount = fetched.byAccount
+  pots = fetched.pots
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
     given Database[IO] = db
     val assetAccounts = AssetAccounts.default
@@ -579,9 +581,9 @@ def importTransactions(
           .map: assetPath =>
             (account, assetPath)
       allMonzoPotAccountIds = byAccount.collect:
-        case (account, _) if isPotBacking(account) => account.id
+        case (account, _) if account.potBacking => account.id
       materialMonzoPotAccountIds = materialByAccount.collect:
-        case (account, _) if isPotBacking(account) => account.id
+        case (account, _) if account.potBacking => account.id
       // Every online_id in the book, in one scan: the tags below and the
       // dedup check further down are the run's only two readers of them,
       // and both would otherwise scan an unindexed table that grows with
@@ -660,7 +662,7 @@ def importTransactions(
             // Each Monzo account has its own asset account, so retirement
             // is its own closure: a closed account is archived while the
             // account that replaced it goes on being posted to.
-            retired = account.closed.exists(_.value),
+            retired = account.closed,
             monzoAccountId = account.id,
             tagged = taggedByMonzoAccountId(account.id),
             roots = roots,
