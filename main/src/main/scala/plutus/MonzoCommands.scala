@@ -3,8 +3,6 @@ package plutus
 import cats.effect.*
 import cats.syntax.all.*
 import com.comcast.ip4s.*
-import com.monovore.decline.*
-import com.monovore.decline.time.*
 import cue4s.*
 import org.http4s.*
 import org.http4s.client.Client
@@ -28,70 +26,6 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import scala.concurrent.duration.*
-
-lazy val monzoOpts: Opts[IO[Unit]] = Opts.subcommand(
-  name = "monzo",
-  help = "Monzo commands."
-):
-  exportTransactionsOpts
-
-lazy val exportTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
-  name = "export-transactions",
-  help = "Export Monzo transactions to OFX format."
-):
-  (
-    verbosityOpts,
-    sinceOpts,
-    beforeOpts,
-    outputOpts,
-    exportDryRunOpts
-  ).tupled.map: (verbosity, since, before, output, dryRun) =>
-    exportTransactions(
-      monzoTransactionSource(since, before, advanceBookmarks = !dryRun),
-      output,
-      dryRun
-    )(using verbosity)
-
-lazy val sinceOpts: Opts[Option[Instant]] =
-  Opts
-    .option[Instant](
-      "since",
-      help =
-        "Timestamp to export transactions from. If not specified defaults to the last recorded transaction ID for each account, unless there is no last recorded transaction for that account, in which case no transactions will be exported for it."
-    )
-    .orNone
-
-lazy val beforeOpts: Opts[Option[Instant]] =
-  Opts
-    .option[Instant](
-      "before",
-      help =
-        "Timestamp to export transactions to. If not specified defaults to now."
-    )
-    .orNone
-
-lazy val outputOpts: Opts[fs2.io.file.Path] =
-  Opts
-    .option[java.nio.file.Path](
-      "output",
-      help =
-        "Path to write OFX file to. If not specified defaults to monzo.ofx in the current directory."
-    )
-    .map:
-      fs2.io.file.Path.fromNioPath
-    .orElse:
-      Opts:
-        fs2.io.file.Path:
-          "monzo.ofx"
-
-lazy val exportDryRunOpts: Opts[Boolean] =
-  Opts
-    .flag(
-      "dry-run",
-      help =
-        "Print what would be exported without writing the OFX file and without updating the state file's last-transactions bookmarks."
-    )
-    .orFalse
 
 // Every transaction (main accounts and discovered pots) for the window,
 // grouped by account so a sink can post each account's transactions to the
@@ -133,7 +67,11 @@ def monzoTransactionSource(
             id = account.id,
             accountType = account.accountType,
             closed = account.closed.exists(_.value),
-            potBacking = isPotBacking(account)
+            potBacking = isPotBacking(account),
+            // /accounts and /transactions never name a currency; a pot's own
+            // details do, and the book sink checks those separately. See
+            // FetchedAccount.
+            currency = None
           ) -> transactions
         result <- consume(
           (
@@ -678,11 +616,26 @@ def exportTransactions(
         account.id -> materialTransactions(transactions)
       .filter: (_, transactions) =>
         transactions.nonEmpty
-    (IO.whenA(dryRun):
+    // Fail fast on an account a source says is denominated in anything but
+    // the currency majorUnits divides by: an OFX file has no book behind it
+    // to read a fraction from, so its amounts would be off by whatever that
+    // currency's minor unit is, and silently — the file states no currency.
+    // The book sink makes the same check against the book's own commodity.
+    val foreignAccounts = fetched.byAccount
+      .flatMap: (account, _) =>
+        account.currency
+          .filterNot(_.value == gbpCurrencyCode)
+          .map: currency =>
+            s"${account.id.value} (${currency.value})"
+      .distinct
+    IO.raiseUnless(foreignAccounts.isEmpty)(
+      Error(
+        s"Account(s) not denominated in $gbpCurrencyCode: ${foreignAccounts.sorted.mkString(", ")}."
+      )
+    ) *> (IO.whenA(dryRun):
       materialAccountIdsAndTransactions.traverse_ : (accountId, transactions) =>
         info:
-          s"Would export ${transactions.size} transaction(s) for ${accountId.value}."
-    ) *> writeOfx(
+          s"Would export ${transactions.size} transaction(s) for ${accountId.value}.") *> writeOfx(
       toOfx:
         materialAccountIdsAndTransactions
       ,
@@ -1127,8 +1080,12 @@ def writeOfx(
 // OFX wants major units. Export has no book to read a fraction from — the
 // import path divides by the book currency's own `fraction` — so the 100 here
 // is GBP's, which is the only currency either path handles today, named rather
-// than inlined so the two at least spell the same idea the same way.
+// than inlined so the two at least spell the same idea the same way. The code
+// beside it is what exportTransactions refuses anything else by, and what the
+// CSV source's own scaling back to minor units rests on.
 val gbpMinorUnitsPerMajorUnit = 100
+
+val gbpCurrencyCode = "GBP"
 
 def majorUnits(minorUnits: BigInt): BigDecimal =
   BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit

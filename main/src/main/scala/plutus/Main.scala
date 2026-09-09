@@ -24,7 +24,7 @@ object Plutus
     ):
 
   override def main: Opts[IO[ExitCode]] =
-    (gnucashOpts orElse monzoOpts)
+    (transactionsOpts orElse archiveAccountsOpts orElse restoreAccountOpts)
       .map:
         _.as:
           ExitCode.Success
