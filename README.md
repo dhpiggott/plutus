@@ -2,7 +2,7 @@
 
 A small personal-finance CLI that does two related jobs:
 
-- **Move Monzo transactions** — read them from the Monzo API or from the CSV statements the Monzo app exports, and write them either into a GnuCash SQLite book (filing each by its Monzo category and skipping rows already imported) or to a single `monzo.ofx` file suitable for import into GnuCash (or anything else that reads OFX). Source and sink are named separately, so all four combinations are runs.
+- **Copy Monzo transactions** — read them from the Monzo API or from the CSV statements the Monzo app exports, and write them either into a GnuCash SQLite book (filing each by its Monzo category and skipping rows already imported) or to a single `monzo.ofx` file suitable for import into GnuCash (or anything else that reads OFX). Source and sink are named separately, so all four combinations are runs.
 - **GnuCash housekeeping** — archive hidden accounts in a local GnuCash SQLite file, and restore them later.
 
 It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and an inlined fork of [Porcupine](https://github.com/armanbilge/porcupine) for SQLite access. It targets both the JVM and Scala Native; both builds reach `sqlite3` and the macOS Keychain through the same FFI mechanism per platform — the JVM build via the [Foreign Function & Memory API](https://openjdk.org/jeps/454) (using jextract for bindings), the Scala Native build via [sn-bindgen](https://sn-bindgen.indoorvivants.com/).

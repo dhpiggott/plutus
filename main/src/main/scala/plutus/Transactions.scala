@@ -10,7 +10,7 @@ import com.monovore.decline.time.*
 import java.time.Instant
 import java.time.ZoneId
 
-// One command for moving transactions, named for what it does rather than for
+// One command for copying transactions, named for what it does rather than for
 // either end of it, because neither end is fixed any more: --from-… says where
 // they come from and --to-… where they go, and all four pairs are runs someone
 // wants — including CSV to OFX, which is neither an import nor an export in
@@ -21,7 +21,7 @@ import java.time.ZoneId
 // pair.
 lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "transactions",
-  help = "Move Monzo transactions into a GnuCash book or an OFX file."
+  help = "Copy Monzo transactions into a GnuCash book or an OFX file."
 ):
   (
     verbosityOpts,
@@ -216,6 +216,6 @@ lazy val transactionsDryRunOpts: Opts[Boolean] =
     .flag(
       "dry-run",
       help =
-        "Print what would be moved without writing to the book or the OFX file, without taking a backup, and without updating the state file's last-transactions bookmarks."
+        "Print what would be copied without writing to the book or the OFX file, without taking a backup, and without updating the state file's last-transactions bookmarks."
     )
     .orFalse
