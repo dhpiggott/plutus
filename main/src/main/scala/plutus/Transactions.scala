@@ -37,7 +37,12 @@ lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
 // advanced them would make the next OFX export skip the window it had just
 // filed. The CSV source ignores it — it has no bookmarks to advance and no
 // state store to advance them in.
-type TransactionSourceFor = Boolean => TransactionSource
+//
+// A trait rather than a Boolean => TransactionSource alias, so the two sinks
+// can name the argument they pass: a bare true or false at the call site says
+// nothing about which of them it is.
+trait TransactionSourceFor:
+  def apply(advanceBookmarks: Boolean): TransactionSource
 
 lazy val sourceOpts: Opts[TransactionSourceFor] =
   monzoSourceOpts orElse csvSourceOpts
@@ -175,7 +180,12 @@ lazy val toBookOpts: Opts[TransactionSink] =
       // Never !dryRun: the book dedups on the online_id slot rather than on
       // bookmarks, so advancing them would make the next OFX export skip the
       // window this run just imported. See monzoTransactionSource.
-      importTransactions(source(false), input, dryRun, ignoreLock)
+      importTransactions(
+        source(advanceBookmarks = false),
+        input,
+        dryRun,
+        ignoreLock
+      )
 
 // An optional-argument option (--to-book, or --to-book=PATH), so naming the
 // sink doesn't force a path on a run that wants the default. decline binds an
@@ -195,7 +205,8 @@ lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
 
 lazy val toOfxOpts: Opts[TransactionSink] =
   toOfxPathOpts.map: output =>
-    (source, dryRun) => exportTransactions(source(!dryRun), output, dryRun)
+    (source, dryRun) =>
+      exportTransactions(source(advanceBookmarks = !dryRun), output, dryRun)
 
 lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
   Opts
