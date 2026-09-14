@@ -80,8 +80,6 @@ Monzo's token endpoint doesn't tell you when a refresh token expires, but the Mo
 
 Reads the CSV statements the Monzo app exports, one file per account or pot, with no session at all — no OAuth client, no refresh token, no state store. That is the point of it: the API caps a pot's window at 90 days once Strong Customer Authentication has lapsed (see [Pot transactions](#pot-transactions)), so a statement is the only way to reach a pot's older interest, and this is the way to backfill it without losing the categorisation and dedup a QIF import gives up.
 
-Export them in the app: an account statement from **Settings → Statements** (choose CSV), and a pot statement from **Pot → Pot documents → Pot statement**.
-
 A statement has no account-ID column, so each file is paired on the command line with the account it belongs to, and the two options say which kind it is:
 
 ```
