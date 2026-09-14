@@ -46,8 +46,11 @@ def csvTransactionSource(
       verbosity: Verbosity
   ): IO[A] =
     val statements =
-      accounts.map((accountId, path) => (accountId, path, false)) ++
-        potAccounts.map((accountId, path) => (accountId, path, true))
+      accounts.map((accountId, path) =>
+        (accountId = accountId, path = path, potBacking = false)
+      ) ++ potAccounts.map((accountId, path) =>
+        (accountId = accountId, path = path, potBacking = true)
+      )
     for
       // The zone the statements' local Date and Time are read in, defaulting
       // to this machine's own — the same one the book sink normalises post
@@ -63,23 +66,22 @@ def csvTransactionSource(
       // both files had been decoded, and with a message about Monzo rather
       // than about the command line.
       _ <- IO.raiseUnless(
-        statements.map((accountId, _, _) => accountId).distinct.sizeIs ==
-          statements.size
+        statements.map(_.accountId).distinct.sizeIs == statements.size
       ):
         Error(
           s"More than one statement given for the same account: ${statements
-              .groupBy((accountId, _, _) => accountId)
+              .groupBy(_.accountId)
               .collect:
-                case (accountId, paths) if paths.sizeIs > 1 =>
-                  s"${accountId.value} (${paths.map((_, path, _) => path.toString).sorted.mkString(", ")})"
+                case (accountId, duplicates) if duplicates.sizeIs > 1 =>
+                  s"${accountId.value} (${duplicates.map(_.path.toString).sorted.mkString(", ")})"
               .toList
               .sorted
               .mkString("; ")}."
         )
-      byAccount <- statements.traverse: (accountId, path, potBacking) =>
-        csvStatement(path, resolvedZone).map: (currency, transactions) =>
+      byAccount <- statements.traverse: statement =>
+        csvStatement(statement.path, resolvedZone).map: read =>
           FetchedAccount(
-            id = accountId,
+            id = statement.accountId,
             // A statement names no type, and the ID alone can't be looked up
             // without the API. Resolution is by the book's own online_id tags
             // instead — see importTransactions.
@@ -88,9 +90,9 @@ def csvTransactionSource(
             // absence of one says nothing either, since the run is only given
             // the files it was asked to import.
             closed = false,
-            potBacking = potBacking,
-            currency = currency
-          ) -> transactions
+            potBacking = statement.potBacking,
+            currency = read.currency
+          ) -> read.transactions
       _ <- (IO.whenA:
         verbosity.ordinal >= Verbosity.VERBOSE.ordinal
       ):
@@ -129,7 +131,9 @@ def csvStatement(
     zone: ZoneId
 )(using
     verbosity: Verbosity
-): IO[(Option[monzo.Currency], List[monzo.Transaction])] = for
+): IO[
+  (currency: Option[monzo.Currency], transactions: List[monzo.Transaction])
+] = for
   // Checked rather than left to the read: a mistyped path surfaces as an
   // errno on one platform and a NoSuchFileException on the other, and neither
   // names the option it came from.
@@ -156,15 +160,15 @@ def csvStatement(
         // span several.
         Error(row.line.fold(s"$path: $message"): line =>
           s"$path line $line: $message")
-  currencies = decoded.map((currency, _) => currency).distinct
+  currencies = decoded.map(_.currency).distinct
   _ <- IO.raiseUnless(currencies.sizeIs <= 1):
     Error(
       s"$path holds more than one currency (${currencies.map(_.value).sorted.mkString(", ")}), so it isn't one account's statement."
     )
-  transactions = decoded.map((_, transaction) => transaction)
+  transactions = decoded.map(_.transaction)
   _ <- info:
     s"Read ${transactions.size} transaction(s) from $path."
-yield (currencies.headOption, transactions)
+yield (currency = currencies.headOption, transactions = transactions)
 
 // The nine columns import consumes, named as the app's own export names them.
 // Only the members downstream reads are filled: declineReason stays None
@@ -184,7 +188,10 @@ yield (currencies.headOption, transactions)
 def csvTransaction(
     row: CsvRow[String],
     zone: ZoneId
-): Either[String, (monzo.Currency, monzo.Transaction)] = for
+): Either[
+  String,
+  (currency: monzo.Currency, transaction: monzo.Transaction)
+] = for
   id <- requiredCell(row, "Transaction ID")
   date <- requiredCell(row, "Date")
   time <- requiredCell(row, "Time")
@@ -194,8 +201,8 @@ def csvTransaction(
   currency <- requiredCell(row, "Currency")
   description <- cell(row, "Description")
 yield (
-  monzo.Currency(currency),
-  monzo.Transaction(
+  currency = monzo.Currency(currency),
+  transaction = monzo.Transaction(
     id = monzo.TransactionId(id),
     created = monzo.Created(created),
     amount = monzo.Amount(minorUnits),
