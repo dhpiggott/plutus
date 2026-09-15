@@ -232,38 +232,32 @@ def optionalCell(row: CsvRow[String], header: String): Option[String] =
   row(header).filter(_.nonEmpty)
 
 // The app stamps Date and Time in the account's own local time and says
-// nowhere which zone that is, so --from-csv-zone names it and defaults to
-// Europe/London, where a Monzo account is held. It decides more than tidiness:
-// a transaction either side of midnight falls on a different calendar date
-// read in the wrong zone, and the calendar date is what a GnuCash post_date is
-// normalised to (see neutralPostDate).
+// nowhere which zone that is, so --from-csv-zone names it and it defaults to
+// this machine's own. It decides more than tidiness: a transaction either side
+// of midnight falls on a different calendar date read in the wrong zone, and
+// the calendar date is what a GnuCash post_date is normalised to (see
+// neutralPostDate).
 //
-// Both spellings of each are accepted because the export's have changed
-// before and neither is documented; whichever one a fresh export carries, the
-// pair below names it.
-lazy val csvDateFormats: List[DateTimeFormatter] =
-  List("dd/MM/yyyy", "yyyy-MM-dd").map(DateTimeFormatter.ofPattern)
+// One spelling each, because that is what the export writes. A fresh export
+// that writes another is a change to the file's shape, and a row it can't read
+// says so by name rather than being silently read a second way.
+lazy val csvDateFormat: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("dd/MM/yyyy")
 
-lazy val csvTimeFormats: List[DateTimeFormatter] =
-  List("HH:mm:ss", "HH:mm").map(DateTimeFormatter.ofPattern)
+lazy val csvTimeFormat: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("HH:mm:ss")
 
 def csvCreated(
     date: String,
     time: String,
     zone: ZoneId
 ): Either[String, Timestamp] = for
-  localDate <- csvDateFormats
-    .collectFirstSome: format =>
-      Either
-        .catchOnly[DateTimeParseException](LocalDate.parse(date, format))
-        .toOption
-    .toRight(s"Date isn't a date: $date")
-  localTime <- csvTimeFormats
-    .collectFirstSome: format =>
-      Either
-        .catchOnly[DateTimeParseException](LocalTime.parse(time, format))
-        .toOption
-    .toRight(s"Time isn't a time: $time")
+  localDate <- Either
+    .catchOnly[DateTimeParseException](LocalDate.parse(date, csvDateFormat))
+    .leftMap(_ => s"Date isn't a dd/MM/yyyy date: $date")
+  localTime <- Either
+    .catchOnly[DateTimeParseException](LocalTime.parse(time, csvTimeFormat))
+    .leftMap(_ => s"Time isn't an HH:mm:ss time: $time")
 yield localDate.atTime(localTime).atZone(zone).toInstant.asSmithyTimestamp
 
 // The export writes an amount in major units with a decimal point, where the
