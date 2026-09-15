@@ -183,7 +183,7 @@ def withMonzoApi[A](
         logHeaders = true,
         logBody = true,
         logAction = Some:
-          trace
+          trace(_)
       )
     .use: client =>
       for
@@ -468,7 +468,7 @@ def exchangeAuthCode(
         logHeaders = true,
         logBody = true,
         logAction = Some:
-          trace
+          trace(_)
       )(
         HttpRoutes
           .of[IO]:
