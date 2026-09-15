@@ -7,7 +7,7 @@ import porcupine.*
 // Wraps body in one SQLite transaction: a mid-run failure rolls the book back
 // to exactly its pre-run state, rather than leaving it partway through a
 // multi-write command (archive-accounts, restore-account and
-// import-transactions all use this). NOTE: the per-connection Mutex in
+// transactions --to-book all use this). NOTE: the per-connection Mutex in
 // Database.open only guards one prepared statement at a time — it's taken
 // and released per statement, not held across the whole body — so it is NOT
 // what makes begin/body/commit atomic here. That safety comes entirely from

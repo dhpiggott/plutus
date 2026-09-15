@@ -15,12 +15,6 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import scala.collection.immutable.SortedMap
 
-lazy val gnucashOpts: Opts[IO[Unit]] = Opts.subcommand(
-  name = "gnucash",
-  help = "GnuCash housekeeping."
-):
-  archiveAccountsOpts orElse restoreAccountOpts orElse importTransactionsOpts
-
 lazy val archiveAccountsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "archive-accounts",
   help = "Archive hidden accounts."
@@ -223,7 +217,7 @@ final case class BookRoots(root: Account, archiveSubroot: IO[Account])
 object BookRoots:
 
   // For the commands that may have to bring the Archive subroot into being:
-  // import-transactions retiring a closed account, and archive-accounts.
+  // transactions --to-book retiring a closed account, and archive-accounts.
   // restore-account builds its own from a subroot that must already exist.
   def creating(dryRun: Boolean)(using
       db: Database[IO],
@@ -444,41 +438,6 @@ def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
       IO.raiseUnless(exists):
         Error(s"No GnuCash book at $input.")
 
-// Lives here rather than under `monzo` because it's conceptually a GnuCash
-// import: it consumes a TransactionSource, and a future variant could be
-// handed one reading the CSVs the Monzo app exports instead of the API. The
-// Monzo session plumbing behind monzoTransactionSource stays in MonzoCommands.
-lazy val importTransactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
-  name = "import-transactions",
-  help = "Import Monzo transactions directly into the GnuCash book."
-):
-  (
-    verbosityOpts,
-    inputOpts,
-    sinceOpts,
-    beforeOpts,
-    importDryRunOpts,
-    ignoreLockOpts
-  ).tupled.map: (verbosity, input, since, before, dryRun, ignoreLock) =>
-    importTransactions(
-      // Never !dryRun: the book dedups on the online_id slot rather than on
-      // bookmarks, so advancing them would make the next export skip the
-      // window this run just imported. See monzoTransactionSource.
-      monzoTransactionSource(since, before, advanceBookmarks = false),
-      input,
-      dryRun,
-      ignoreLock
-    )(using verbosity)
-
-lazy val importDryRunOpts: Opts[Boolean] =
-  Opts
-    .flag(
-      "dry-run",
-      help =
-        "Print the plan (a line per transaction that would be filed, the already-present count, and the accounts that would be created) without writing to the book and without taking a backup."
-    )
-    .orFalse
-
 def importTransactions(
     source: TransactionSource,
     input: fs2.io.file.Path,
@@ -584,6 +543,17 @@ def importTransactions(
         case (account, _) if account.potBacking => account.id
       materialMonzoPotAccountIds = materialByAccount.collect:
         case (account, _) if account.potBacking => account.id
+      // An account a source names without saying what kind it is — a CSV
+      // statement gives an ID and nothing else (see csvTransactionSource).
+      // There's no type to map to a code-defined path, so the book's own tag
+      // is the whole of the resolution below and the account is posted to
+      // exactly where it already sits: a placement enforced from a path
+      // guessed at here would move a joint account under the personal
+      // account's, and would do it on every run.
+      untypedMonzoAccountIds = byAccount.collect:
+        case (account, _)
+            if account.accountType.isEmpty && !account.potBacking =>
+          account.id
       // Every online_id in the book, in one scan: the tags below and the
       // dedup check further down are the run's only two readers of them,
       // and both would otherwise scan an unindexed table that grows with
@@ -599,7 +569,8 @@ def importTransactions(
       // run: nothing in the book says which is meant, and posting into the
       // wrong one would be permanent.
       monzoAccountIds = typedAccountsAndPaths
-        .map((account, _) => account.id) ++ allMonzoPotAccountIds
+        .map((account, _) => account.id) ++ allMonzoPotAccountIds ++
+        untypedMonzoAccountIds
       taggedGuids = onlineIds
         .filter: (value, _) =>
           monzoAccountIds.exists(_.value == value)
@@ -635,6 +606,21 @@ def importTransactions(
         Error(
           s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
         )
+      // The same fail-fast for an untyped account, and for the same reason:
+      // with no type there is no path to create one at, so an untagged one
+      // can only be guessed at, and a guess is permanent — online_id dedup
+      // skips a mis-filed row on every later run. The remedy differs because
+      // the API knows the type: one run from --from-monzo creates the account
+      // and tags it, and every CSV run afterwards finds it.
+      untaggedAccounts = materialByAccount.collect:
+        case (account, _)
+            if untypedMonzoAccountIds.contains(account.id) &&
+              taggedByMonzoAccountId(account.id).isEmpty =>
+          account.id.value
+      _ <- IO.raiseUnless(untaggedAccounts.isEmpty):
+        Error(
+          s"No account in the book is tagged with the Monzo account ID(s) ${untaggedAccounts.sorted.mkString(", ")}, and a CSV statement doesn't say what kind of account they are; run once with --from-monzo to create and tag them, or tag an existing account by hand."
+        )
       currency <- Commodity.gbp
       // Fail fast on a pot denominated in anything but the book's currency:
       // its minor units would otherwise be posted as if they were pence.
@@ -647,6 +633,20 @@ def importTransactions(
       _ <- IO.raiseUnless(foreignPots.isEmpty):
         Error(
           s"Pot(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignPots.mkString(", ")}."
+        )
+      // The same check for an account whose source stated a currency — a CSV
+      // statement's Currency column — rather than only for the pots /pots
+      // named. The Monzo source states none, so this is silent on that path;
+      // see FetchedAccount. Distinct from the book-side check further down,
+      // which asks what the accounts being posted *to* are denominated in.
+      foreignMonzoAccounts = materialByAccount.flatMap: (account, _) =>
+        account.currency
+          .filterNot(_.value == currency.mnemonic)
+          .map: accountCurrency =>
+            s"${account.id.value} (${accountCurrency.value})"
+      _ <- IO.raiseUnless(foreignMonzoAccounts.isEmpty):
+        Error(
+          s"Monzo account(s) not denominated in the book's currency (${currency.mnemonic}): ${foreignMonzoAccounts.sorted.mkString(", ")}."
         )
       // The root and the Archive subroot every placement below hangs off,
       // resolved once for the run. The subroot stays lazy inside: a run with
@@ -699,7 +699,14 @@ def importTransactions(
           _.collect:
             case (monzoAccountId, Some(account)) => monzoAccountId -> account
           .toMap
-      assets = typedAssets ++ potAssets
+      // Resolved by tag alone: untaggedAccounts above has already failed the
+      // run for any that's material and untagged, and an untyped account
+      // with no material transactions needs no asset account at all.
+      untypedAssets = untypedMonzoAccountIds
+        .flatMap: monzoAccountId =>
+          taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
+        .toMap
+      assets = typedAssets ++ potAssets ++ untypedAssets
       // One book account per Monzo account, checked rather than assumed.
       // Resolution never adopts an account it found by location, so two
       // Monzo accounts can only land on one book account if the book itself
@@ -980,7 +987,7 @@ def titleCased(category: String): String =
 
 // One resolver for every Monzo-backed asset account. The online_id tag is the
 // only thing it matches on, and identity therefore survives moves and
-// renames. An account a past GUI import of export-transactions' OFX
+// renames. An account a past GUI import of the OFX sink's own output
 // associated already carries that slot (see Slot.OnlineId), so an untagged
 // account is one no run and no import has ever touched: a fresh account is
 // created at the canonical spot and tagged, which is what puts tags in the

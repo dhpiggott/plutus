@@ -30,11 +30,19 @@ type Fetched = (
 // source handed a bare acc_… on a command line. A sink that re-derived the
 // rule would file such an account down the pot naming path, and a mis-filed
 // row is permanent — online_id dedup skips it on every later run.
+//
+// currency is what the account's amounts are denominated in, where the source
+// knows: a CSV statement carries a Currency column, while /accounts and
+// /transactions never say, so the Monzo source leaves it None and only the
+// pots it fetches (see Pot.currency) answer for themselves. It's optional
+// rather than defaulted because "the source didn't say" and "the source said
+// GBP" are different things, and only the first may be let through unchecked.
 final case class FetchedAccount(
     id: monzo.AccountId,
     accountType: Option[monzo.AccountType],
     closed: Boolean,
-    potBacking: Boolean
+    potBacking: Boolean,
+    currency: Option[monzo.Currency]
 )
 
 // Scoped rather than a plain IO[Fetched] because a source can carry a
