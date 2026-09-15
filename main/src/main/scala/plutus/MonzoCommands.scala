@@ -730,22 +730,19 @@ def listAllTransactions(
   _ <- (IO.whenA(newPotAccountIds.nonEmpty)):
     warn:
       s"Found pot accounts with no last recorded transaction; specify --since to export their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
-  _ <- (IO.whenA:
-    verbosity.ordinal >= Verbosity.VERBOSE.ordinal
-  ):
-    IO.println:
-      Json.writeDocumentAsPrettyString:
-        Document.array:
-          (accountsAndTransactions ++ potAccountsAndTransactions).map:
-            (account, transactions) =>
-              Document.obj(
-                "account" -> Document.encode:
-                  account
-                ,
-                "transactions" -> Document.array:
-                  transactions.map:
-                    Document.encode(_)
-              )
+  _ <- log(Verbosity.VERBOSE):
+    Json.writeDocumentAsPrettyString:
+      Document.array:
+        (accountsAndTransactions ++ potAccountsAndTransactions).map:
+          (account, transactions) =>
+            Document.obj(
+              "account" -> Document.encode:
+                account
+              ,
+              "transactions" -> Document.array:
+                transactions.map:
+                  Document.encode(_)
+            )
   fetchedMainIds = accountsAndTransactions
     .map: (account, _) =>
       account.id

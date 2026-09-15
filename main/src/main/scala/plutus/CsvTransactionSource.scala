@@ -93,21 +93,18 @@ def csvTransactionSource(
             potBacking = statement.potBacking,
             currency = read.currency
           ) -> read.transactions
-      _ <- (IO.whenA:
-        verbosity.ordinal >= Verbosity.VERBOSE.ordinal
-      ):
-        IO.println:
-          Json.writeDocumentAsPrettyString:
-            Document.array:
-              byAccount.map: (account, transactions) =>
-                Document.obj(
-                  "account" -> Document.encode:
-                    account.id
-                  ,
-                  "transactions" -> Document.array:
-                    transactions.map:
-                      Document.encode(_)
-                )
+      _ <- log(Verbosity.VERBOSE):
+        Json.writeDocumentAsPrettyString:
+          Document.array:
+            byAccount.map: (account, transactions) =>
+              Document.obj(
+                "account" -> Document.encode:
+                  account.id
+                ,
+                "transactions" -> Document.array:
+                  transactions.map:
+                    Document.encode(_)
+              )
       result <- consume(
         (
           byAccount = byAccount,

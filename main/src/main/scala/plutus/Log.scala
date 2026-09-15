@@ -27,7 +27,12 @@ def trace(message: String)(using verbosity: Verbosity): IO[Unit] =
     fansi.Color.White:
       message
 
-def log(level: Verbosity)(a: fansi.Str)(using verbosity: Verbosity): IO[Unit] =
+// `a` by name so a message costs nothing below its level: the JSON dumps in
+// the sources encode every transaction they were given, which is a whole
+// account's history in the CSV case, and the default verbosity discards it.
+def log(level: Verbosity)(a: => fansi.Str)(using
+    verbosity: Verbosity
+): IO[Unit] =
   (IO.whenA:
     verbosity.ordinal >= level.ordinal
   ):
