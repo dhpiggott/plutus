@@ -219,6 +219,7 @@ lazy val main = projectMatrix
     dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
       "co.fs2" %%% "fs2-io" % "3.13.0",
+      "org.gnieh" %%% "fs2-data-csv" % "1.14.1",
       "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-json" % smithy4sVersion.value,
