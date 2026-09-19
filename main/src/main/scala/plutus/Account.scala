@@ -7,7 +7,7 @@ import porcupine.Codec.*
 // What an account *is*, and everything answerable from the accounts rows and
 // the account's own KVP slots. Where an account *ought* to sit — the Archive
 // subroot, the canonical path a Monzo-backed asset account belongs at, what a
-// run would have written — is GnuCashCommands' business, which is why nothing
+// run would have written — is GnuCashBook's business, which is why nothing
 // here mentions dryRun or Verbosity. See CLAUDE.md.
 
 /** sqlite> .schema accounts CREATE TABLE accounts( guid text(32) PRIMARY KEY
