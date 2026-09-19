@@ -4,7 +4,7 @@ package plutus
 // their type (uk_retail, uk_retail_joint, …) via byAccountType — no per-account
 // CLI wiring — and are found by their online_id tags and nothing else, created
 // and tagged when no tag names them, and kept at their code-defined placement
-// (see GnuCashCommands.enforcePlacement); an account whose type
+// (see GnuCashBook.enforcePlacement); an account whose type
 // isn't in the map fails the run rather than being guessed at. Pot
 // backing accounts never appear in /accounts and so carry no type (they're
 // discovered from transaction metadata); each posts into a child of `pots`
@@ -16,7 +16,7 @@ package plutus
 // would be permanent, because online_id dedup skips the rows on every re-run.
 // The paths below name only the shared part: every asset account's leaf name
 // also carries the Monzo account ID posting into it (see
-// GnuCashCommands.assetAccountPath), so accounts that share a type — a closed
+// GnuCashBook.assetAccountPath), so accounts that share a type — a closed
 // account and its replacement — and pots that share a name each get one of
 // their own, and a book account shared by two Monzo accounts fails the run.
 final case class AssetAccounts(
