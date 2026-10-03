@@ -62,7 +62,7 @@ def csvTransactionSource(
       resolvedZone <- zone.fold(IO.delay(ZoneId.systemDefault))(IO.pure)
       // One account, one statement. Two files under one ID would both be read
       // and both filed, and the run's own duplicate check would then fail on
-      // every row they share (see importTransactions) — after the whole of
+      // every row they share (see gnuCashTransactionSink) — after the whole of
       // both files had been decoded, and with a message about Monzo rather
       // than about the command line.
       _ <- IO.raiseUnless(
@@ -84,7 +84,7 @@ def csvTransactionSource(
             id = statement.accountId,
             // A statement names no type, and the ID alone can't be looked up
             // without the API. Resolution is by the book's own online_id tags
-            // instead — see importTransactions.
+            // instead — see gnuCashTransactionSink.
             accountType = None,
             // Nothing in a statement says the account behind it is closed;
             // absence of one says nothing either, since the run is only given

@@ -16,7 +16,7 @@ import java.time.Instant
 // belongs to the Monzo source and means nothing to a source reading a file,
 // yet whether the OFX file is a complete statement or a window's worth of new
 // rows decides whether writing it may replace one already there. See
-// exportTransactions.
+// ofxTransactionSink.
 type Fetched = (
     byAccount: List[(FetchedAccount, List[monzo.Transaction])],
     pots: Map[monzo.AccountId, monzo.Pot],

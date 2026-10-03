@@ -178,9 +178,9 @@ lazy val toBookOpts: Opts[TransactionSink] =
   (toBookPathOpts, ignoreLockOpts).tupled.map: (input, ignoreLock) =>
     (source, dryRun) =>
       // Never !dryRun: the book dedups on the online_id slot rather than on
-      // bookmarks, so advancing them would make the next OFX export skip the
-      // window this run just imported. See monzoTransactionSource.
-      importTransactions(
+      // bookmarks, so advancing them would make the next OFX run skip the
+      // window this run just filed. See monzoTransactionSource.
+      gnuCashTransactionSink(
         source(advanceBookmarks = false),
         input,
         dryRun,
@@ -206,7 +206,7 @@ lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
 lazy val toOfxOpts: Opts[TransactionSink] =
   toOfxPathOpts.map: output =>
     (source, dryRun) =>
-      exportTransactions(source(advanceBookmarks = !dryRun), output, dryRun)
+      ofxTransactionSink(source(advanceBookmarks = !dryRun), output, dryRun)
 
 lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
   Opts
