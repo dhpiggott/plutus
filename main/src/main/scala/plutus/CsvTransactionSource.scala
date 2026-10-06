@@ -40,7 +40,7 @@ import java.time.format.DateTimeParseException
 def csvTransactionSource(
     accounts: List[(monzo.AccountId, fs2.io.file.Path)],
     potAccounts: List[(monzo.AccountId, fs2.io.file.Path)],
-    zone: Option[ZoneId]
+    zone: IO[ZoneId]
 ): TransactionSource = new TransactionSource:
   def use[A](now: Instant)(consume: Fetched => IO[A])(using
       verbosity: Verbosity
@@ -52,14 +52,11 @@ def csvTransactionSource(
         (accountId = accountId, path = path, potBacking = true)
       )
     for
-      // The zone the statements' local Date and Time are read in, defaulting
-      // to this machine's own — the same one the book sink normalises post
-      // dates against, so a run agrees with itself. Read here rather than
-      // where the option is parsed because a region ID needs a time zone
-      // database and Scala Native has none: on that row this is a fixed
-      // offset, so a statement spanning a daylight-saving change wants
-      // --from-csv-zone and the JVM build. See fromCsvZoneOpts.
-      resolvedZone <- zone.fold(IO.delay(ZoneId.systemDefault))(IO.pure)
+      // The zone the statements' local Date and Time are read in — the same
+      // one the book sink normalises post dates against, so a run agrees with
+      // itself. Resolved here rather than where the option is parsed because
+      // reading the default is an effect; see fromCsvZoneOpts.
+      resolvedZone <- zone
       // One account, one statement. Two files under one ID would both be read
       // and both filed, and the run's own duplicate check would then fail on
       // every row they share (see gnuCashTransactionSink) — after the whole of

@@ -138,14 +138,17 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
     .map:
       _.toList
 
-// Left unresolved here rather than defaulted to a zone: a region ID is only
-// resolvable where a tzdb is (Scala Native ships none, so ZoneId.of("Europe/
-// London") throws on that row), and this is a lazy val forced while the
-// command is built, so a default naming one would take down --help and every
-// other command with it. The source falls back to the machine's own zone,
-// which is also what the book sink normalises post dates against, so one run
-// reads one zone unless told otherwise.
-lazy val fromCsvZoneOpts: Opts[Option[ZoneId]] =
+// An IO rather than a ZoneId, because resolving a zone is an effect that has
+// to wait for the run: this is a lazy val forced while the command is built,
+// so a default resolved here would take down --help and every other command
+// with it. The default is the machine's own zone, which is also what the book
+// sink normalises post dates against, so one run reads one zone unless told
+// otherwise. On the Scala Native row that machine zone is a fixed offset
+// rather than a region, since there is no tzdb to name one against (which is
+// also why ZoneId.of("Europe/London") throws on that row, caught below), so a
+// statement spanning a daylight-saving change wants --from-csv-zone and the
+// JVM build.
+lazy val fromCsvZoneOpts: Opts[IO[ZoneId]] =
   Opts
     .option[String](
       "from-csv-zone",
@@ -159,7 +162,8 @@ lazy val fromCsvZoneOpts: Opts[Option[ZoneId]] =
         .leftMap: _ =>
           s"Not a time zone this build can resolve: $zone."
         .toValidatedNel
-    .orNone
+    .map(IO.pure)
+    .withDefault(IO.delay(ZoneId.systemDefault))
 
 // What a sink is, once its own options are parsed: something that consumes a
 // source and honours --dry-run. The two aren't peers beyond that — the book
