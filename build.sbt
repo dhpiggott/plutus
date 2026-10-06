@@ -78,16 +78,86 @@ lazy val keychain = projectMatrix
           JextractBinding(header, "macos")
             .withArgs(
               Seq(
+                // The SDK's TargetConditionals.h refuses to be included by a
+                // compiler without `-fdefine_target_os_macros` *if* it is
+                // targeting KernelKit, which it asks with
+                // `__is_target_environment(kernelkit)`. jextract's bundled
+                // libclang is 13.0.0 (still, as of jextract 25), old enough
+                // that it has never heard of that environment — and a clang
+                // that old answers an environment it doesn't know by matching
+                // it against the unknown environment of our own target, so it
+                // says yes and the header `#error`s out. Every CoreFoundation
+                // and Security header reaches it, so nothing generates: see
+                // the guard below for what that looks like. Answering no
+                // instead is what this target means anyway, on any clang —
+                // arm64-apple-darwin names no environment at all — and it
+                // leaves the macabi and simulator questions the header asks
+                // further down answered the same way.
+                "-D",
+                "__is_target_environment(x)=0",
                 "-I",
                 includeDir.getAbsolutePath,
                 "-l",
                 ":/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
                 "-l",
-                ":/System/Library/Frameworks/Security.framework/Security"
+                ":/System/Library/Frameworks/Security.framework/Security",
+                // Generate what `Keychain.scala` calls and nothing else,
+                // because that is what keeps the generated surface a single
+                // class. jextract splits a package it considers large across
+                // `macos_h`, `macos_h_1`, `macos_h_2`, … chaining them by
+                // inheritance — and Scala does not import a Java class's
+                // *inherited* statics, so each class in that chain has to be
+                // imported by name. Which one a symbol lands in follows from
+                // how many declarations the SDK's headers hold, so left
+                // unfiltered that import list is a function of the SDK
+                // version: the macOS 26 headers moved `CFRelease` and
+                // `kCFBooleanTrue` into a third class that an older SDK
+                // doesn't produce at all. Filtered, it is `macos_h` on any
+                // SDK, and calling something new from Scala means adding it
+                // here.
+                "--include-function",
+                "SecItemCopyMatching",
+                "--include-function",
+                "SecItemAdd",
+                "--include-function",
+                "SecItemUpdate",
+                "--include-function",
+                "CFRelease",
+                "--include-function",
+                "CFDataGetLength",
+                "--include-function",
+                "CFDataGetBytePtr",
+                "--include-function",
+                "CFStringCreateWithBytes",
+                "--include-function",
+                "CFDataCreate",
+                "--include-function",
+                "CFDictionaryCreate",
+                "--include-var",
+                "kSecClass",
+                "--include-var",
+                "kSecClassGenericPassword",
+                "--include-var",
+                "kSecAttrAccount",
+                "--include-var",
+                "kSecReturnData",
+                "--include-var",
+                "kSecValueData",
+                "--include-var",
+                "kCFBooleanTrue",
+                "--include-constant",
+                "errSecSuccess",
+                "--include-constant",
+                "errSecItemNotFound",
+                "--include-constant",
+                "kCFStringEncodingUTF8"
               )
             )
         },
         jextractMode := JextractMode.ResourceGenerator,
+        Compile / sourceGenerators += requireJextractBindings(
+          "macos"
+        ).taskValue,
         // Emit MethodParameters into the jextract-generated Java bytecode so
         // `Keychain.scala` can call those methods with named arguments.
         javacOptions += "-parameters"
@@ -141,6 +211,26 @@ lazy val keychain = projectMatrix
       )
   )
 
+// jextract reports a header it couldn't parse by exiting non-zero, but
+// sbt-jextract ignores the exit code and reports whatever files are in the
+// output directory — so a run that generated nothing is a successful task
+// returning no sources, and its cache then keeps that answer: the inputs
+// haven't changed, so jextract is never asked again. What surfaces instead is
+// `Not found: macos` from the Scala that imports the package, several steps
+// later and in another module's source, and clearing it needs the task's cache
+// rather than the empty output directory. Checking the output here puts the
+// failure back on the step that failed, with jextract's own diagnostics still
+// above it in the log.
+def requireJextractBindings(pkg: String) = Def.task {
+  if ((Compile / jextractGenerate).value.isEmpty)
+    sys.error(
+      s"jextract generated no $pkg bindings — its own error is above. Remove " +
+        s"${(Compile / jextractGenerate / streams).value.cacheDirectory} to " +
+        "make it run again, since the empty result is cached."
+    )
+  Seq.empty[File]
+}
+
 lazy val porcupine = projectMatrix
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -171,6 +261,10 @@ lazy val porcupine = projectMatrix
             )
         },
         jextractMode := JextractMode.ResourceGenerator,
+        // The same guard as `keychain`, for the same reason.
+        Compile / sourceGenerators += requireJextractBindings(
+          "libsqlite"
+        ).taskValue,
         // Emit MethodParameters into the jextract-generated Java bytecode so
         // `Sqlite.scala` can call those methods with named arguments.
         javacOptions += "-parameters"
