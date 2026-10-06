@@ -1,6 +1,6 @@
 package porcupine
 
-import libsqlite.libsqlite_h_1.*
+import libsqlite.libsqlite_h.*
 
 import java.lang.foreign.*
 import java.lang.foreign.ValueLayout.*
