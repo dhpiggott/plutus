@@ -1,0 +1,38 @@
+name: Probe
+
+# Runs .github/scripts/probe.sh from the dispatched branch on a macOS runner
+# with the build already set up, so that a question only a Mac can answer (what
+# a linked native binary actually prints, say) can be settled from a Linux
+# container that can't build anything. The answer is the job log.
+#
+# The script is read from the branch rather than taken as an input, so a probe
+# runs nothing that a push of that branch wouldn't have CI run anyway: to ask a
+# different question, commit a different probe.sh to the branch and dispatch
+# against it.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: macos-latest
+    # Long enough for a cold build plus a native link, short enough that a
+    # probe stuck waiting on something is cut off before it burns an hour of
+    # macOS runner time.
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          # sbt-dynver derives `version` from the tag history, and `version`
+          # ends up in BuildInfo. A shallow clone silently produces 0.0.0+….
+          fetch-depth: 0
+
+      - name: Set up the build
+        uses: ./.github/actions/setup-build
+
+      - name: Run the probe
+        run: .github/scripts/probe.sh </dev/null
