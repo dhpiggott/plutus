@@ -9,4 +9,4 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-sbt --batch -no-colors "mainNative3/run --help"
+sbt --batch --no-colors "mainNative3/run --help"

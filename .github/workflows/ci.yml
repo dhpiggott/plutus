@@ -44,4 +44,4 @@ jobs:
       # too, despite being slow, because changes are written in Linux containers
       # that can't build anything, so this is the first place they are linked.
       - name: Link the native binary
-        run: sbt --batch -no-colors "mainNative3/nativeLink"
+        run: sbt --batch --no-colors "mainNative3/nativeLink"
