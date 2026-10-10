@@ -35,4 +35,4 @@ jobs:
         uses: ./.github/actions/setup-build
 
       - name: Run the probe
-        run: .github/scripts/probe.sh </dev/null
+        run: .github/scripts/probe.sh
