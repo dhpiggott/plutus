@@ -9,7 +9,7 @@ set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 
-zones=("" "Europe/London" "America/New_York" "UTC" "Asia/Kolkata")
+zones=("" "Europe/London")
 
 probe_line() {
   tr -s ' \n' ' ' | sed -n 's/.*\(PROBE.*\)A named region.*/\1/p'
@@ -37,6 +37,11 @@ for tz in "${zones[@]}"; do
   [ $rc -gt 0 ] && echo "$out" | tail -20
 done
 
+echo "=== Native, with the runner's system zone set to Europe/London"
+sudo systemsetup -settimezone Europe/London 2>&1 || sudo ln -sf /var/db/timezone/zoneinfo/Europe/London /etc/localtime
+ls -l /etc/localtime; date
+out=$(env -u TZ "$bin" transactions --help 2>&1); echo "exit $?"; echo "$out" | probe_line
+
 echo "=== Native, default zone used by a real run (missing file expected)"
 TZ=Europe/London "$bin" transactions --from-csv acc_probe=/nonexistent.csv \
   --to-ofx=probe.ofx --dry-run 2>&1 | tail -5
@@ -45,6 +50,9 @@ echo "exit $?"
 echo "=== Native, --from-csv-zone Europe/London"
 "$bin" transactions --from-csv acc_probe=/nonexistent.csv \
   --from-csv-zone Europe/London --to-ofx=probe.ofx --dry-run 2>&1 | tail -5
+
+echo "=== JVM, system zone Europe/London, TZ unset"
+out=$(env -u TZ sbt --batch --no-colors "main3/run transactions --help" 2>&1); echo "exit $?"; echo "$out" | probe_line
 
 for tz in "${zones[@]}"; do
   echo "=== JVM, TZ='${tz}'"
