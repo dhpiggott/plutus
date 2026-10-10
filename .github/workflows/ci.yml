@@ -8,8 +8,7 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   # Cancel superseded PR builds, but never a build of main: those are the runs
-  # that populate the caches every other run restores from, and the only ones
-  # that link the native binary.
+  # that populate the caches every other run restores from.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -40,8 +39,9 @@ jobs:
 
       # Linking is where the native row's link flags get exercised (s2n from
       # Homebrew, the CoreFoundation and Security frameworks, vcpkg's
-      # libsqlite3.a), and none of that shows up at compile time. It is slow, so
-      # only on main rather than on every push to a PR.
+      # libsqlite3.a), and where a JDK class missing from Scala Native's javalib
+      # is first reported; none of that shows up at compile time. It runs on PRs
+      # too, despite being slow, because changes are written in Linux containers
+      # that can't build anything, so this is the first place they are linked.
       - name: Link the native binary
-        if: github.event_name == 'push'
-        run: sbt --batch -no-colors "mainNative3/nativeLink"
+        run: sbt --batch --no-colors "mainNative3/nativeLink"
