@@ -1,12 +1,57 @@
 #!/usr/bin/env bash
 
-# What the Probe workflow runs. A branch that needs evidence from a real macOS
-# build replaces the body below with its question and dispatches Probe against
-# itself; this default just links and starts the native binary, which is the
-# step a Linux container can never take.
+# PROBE (dhpiggott/plutus#78): can --from-csv-zone's default be resolved
+# eagerly, as a plain ZoneId, on both rows? This branch makes it eager and
+# prints, from inside --help, what ZoneId.systemDefault and friends actually
+# return. Not for merging.
 
-set -euo pipefail
+set -uo pipefail
 
 cd "$(dirname "$0")/../.."
 
-sbt --batch --no-colors "mainNative3/run --help"
+zones=("" "Europe/London" "America/New_York" "UTC" "Asia/Kolkata")
+
+probe_line() {
+  tr -s ' \n' ' ' | sed -n 's/.*\(PROBE.*\)A named region.*/\1/p'
+}
+
+echo "=== Runner's own zone"
+ls -l /etc/localtime || true
+date
+
+echo "=== java.time on the Native classpath"
+sbt --batch --no-colors "export mainNative3/Compile/fullClasspath" |
+  tail -1 | tr ':' '\n' | grep -iE 'time|tzdb|javalib' || true
+
+echo "=== Linking the native binary"
+sbt --batch --no-colors "show mainNative3/nativeLink" | tee link.log | tail -5
+bin=$(grep -oE '/[^ ]*main/target/native-3/[^ ]+' link.log | tail -1)
+echo "binary: $bin"
+
+for tz in "${zones[@]}"; do
+  echo "=== Native, TZ='${tz}'"
+  if [ -z "$tz" ]; then out=$(env -u TZ "$bin" transactions --help 2>&1); rc=$?
+  else out=$(TZ="$tz" "$bin" transactions --help 2>&1); rc=$?; fi
+  echo "exit $rc"
+  echo "$out" | probe_line
+  [ $rc -gt 0 ] && echo "$out" | tail -20
+done
+
+echo "=== Native, default zone used by a real run (missing file expected)"
+TZ=Europe/London "$bin" transactions --from-csv acc_probe=/nonexistent.csv \
+  --to-ofx=probe.ofx --dry-run 2>&1 | tail -5
+echo "exit $?"
+
+echo "=== Native, --from-csv-zone Europe/London"
+"$bin" transactions --from-csv acc_probe=/nonexistent.csv \
+  --from-csv-zone Europe/London --to-ofx=probe.ofx --dry-run 2>&1 | tail -5
+
+for tz in "${zones[@]}"; do
+  echo "=== JVM, TZ='${tz}'"
+  if [ -z "$tz" ]; then out=$(env -u TZ sbt --batch --no-colors "main3/run transactions --help" 2>&1); rc=$?
+  else out=$(TZ="$tz" sbt --batch --no-colors "main3/run transactions --help" 2>&1); rc=$?; fi
+  echo "exit $rc"
+  echo "$out" | probe_line
+done
+
+echo "=== done"

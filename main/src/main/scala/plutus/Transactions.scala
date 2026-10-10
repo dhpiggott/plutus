@@ -148,12 +148,12 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
 // also why ZoneId.of("Europe/London") throws on that row, caught below), so a
 // statement spanning a daylight-saving change wants --from-csv-zone and the
 // JVM build.
-lazy val fromCsvZoneOpts: Opts[IO[ZoneId]] =
+lazy val fromCsvZoneOpts: Opts[ZoneId] =
   Opts
     .option[String](
       "from-csv-zone",
       help =
-        "Time zone the CSV statements' Date and Time columns are stamped in. If not specified defaults to this machine's own zone. A named region (Europe/London) needs a time zone database, which the JVM build has and the Scala Native build doesn't; a fixed offset (+01:00) works on both."
+        s"Time zone the CSV statements' Date and Time columns are stamped in. If not specified defaults to this machine's own zone (PROBE systemDefault=${scala.util.Try(ZoneId.systemDefault)} class=${scala.util.Try(ZoneId.systemDefault.getClass.getName)} rules=${scala.util.Try(ZoneId.systemDefault.getRules)} of(Europe/London)=${scala.util.Try(ZoneId.of("Europe/London"))} TimeZone.getDefault.getID=${scala.util.Try(java.util.TimeZone.getDefault.getID)} TZ=${sys.env.get("TZ")}). A named region (Europe/London) needs a time zone database, which the JVM build has and the Scala Native build doesn't; a fixed offset (+01:00) works on both."
     )
     .mapValidated: zone =>
       Validated
@@ -162,8 +162,7 @@ lazy val fromCsvZoneOpts: Opts[IO[ZoneId]] =
         .leftMap: _ =>
           s"Not a time zone this build can resolve: $zone."
         .toValidatedNel
-    .map(IO.pure)
-    .withDefault(IO.delay(ZoneId.systemDefault))
+    .withDefault(ZoneId.systemDefault)
 
 // What a sink is, once its own options are parsed: something that consumes a
 // source and honours --dry-run. The two aren't peers beyond that — the book
