@@ -211,26 +211,6 @@ lazy val keychain = projectMatrix
       )
   )
 
-// jextract reports a header it couldn't parse by exiting non-zero, but
-// sbt-jextract ignores the exit code and reports whatever files are in the
-// output directory — so a run that generated nothing is a successful task
-// returning no sources, and its cache then keeps that answer: the inputs
-// haven't changed, so jextract is never asked again. What surfaces instead is
-// `Not found: macos` from the Scala that imports the package, several steps
-// later and in another module's source, and clearing it needs the task's cache
-// rather than the empty output directory. Checking the output here puts the
-// failure back on the step that failed, with jextract's own diagnostics still
-// above it in the log.
-def requireJextractBindings(pkg: String) = Def.task {
-  if ((Compile / jextractGenerate).value.isEmpty)
-    sys.error(
-      s"jextract generated no $pkg bindings — its own error is above. Remove " +
-        s"${(Compile / jextractGenerate / streams).value.cacheDirectory} to " +
-        "make it run again, since the empty result is cached."
-    )
-  Seq.empty[File]
-}
-
 lazy val porcupine = projectMatrix
   .settings(
     dependencyUpdatesFailBuild := true,
@@ -374,6 +354,26 @@ lazy val porcupine = projectMatrix
         )
       )
   )
+
+// jextract reports a header it couldn't parse by exiting non-zero, but
+// sbt-jextract ignores the exit code and reports whatever files are in the
+// output directory — so a run that generated nothing is a successful task
+// returning no sources, and its cache then keeps that answer: the inputs
+// haven't changed, so jextract is never asked again. What surfaces instead is
+// `Not found: macos` from the Scala that imports the package, several steps
+// later and in another module's source, and clearing it needs the task's cache
+// rather than the empty output directory. Checking the output here puts the
+// failure back on the step that failed, with jextract's own diagnostics still
+// above it in the log.
+def requireJextractBindings(pkg: String) = Def.task {
+  if ((Compile / jextractGenerate).value.isEmpty)
+    sys.error(
+      s"jextract generated no $pkg bindings — its own error is above. Remove " +
+        s"${(Compile / jextractGenerate / streams).value.cacheDirectory} to " +
+        "make it run again, since the empty result is cached."
+    )
+  Seq.empty[File]
+}
 
 lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
