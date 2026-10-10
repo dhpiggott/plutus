@@ -366,11 +366,14 @@ lazy val porcupine = projectMatrix
 // failure back on the step that failed, with jextract's own diagnostics still
 // above it in the log.
 def requireJextractBindings(pkg: String) = Def.task {
-  if ((Compile / jextractGenerate).value.isEmpty)
+  val generated = (Compile / jextractGenerate).value
+  val cacheDirectory =
+    (Compile / jextractGenerate / streams).value.cacheDirectory
+  if (generated.isEmpty)
     sys.error(
       s"jextract generated no $pkg bindings — its own error is above. Remove " +
-        s"${(Compile / jextractGenerate / streams).value.cacheDirectory} to " +
-        "make it run again, since the empty result is cached."
+        s"$cacheDirectory to make it run again, since the empty result is " +
+        "cached."
     )
   Seq.empty[File]
 }
