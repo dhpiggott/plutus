@@ -19,6 +19,7 @@ bin=$work/bindgen.exe
 curl -sSfL -o "$bin" \
   "https://repo1.maven.org/maven2/com/indoorvivants/bindgen_native0.5_3/$version/bindgen_native0.5_3-$version-aarch64-osx.exe"
 chmod +x "$bin"
+otool -L "$bin"
 
 sdk=$(xcrun --show-sdk-path)
 header=$work/macos.h
@@ -61,3 +62,4 @@ end=$(date +%s)
 
 echo "=== summary: version=$version parallelism=$parallelism NOTHREADS=${LIBCLANG_NOTHREADS-} NOCRASHREC=${LIBCLANG_DISABLE_CRASH_RECOVERY-} seconds=$((end - start))"
 cat "$work"/out-*/code | sort | uniq -c
+! grep -qv "^0$" "$work"/out-*/code

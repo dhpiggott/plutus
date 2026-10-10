@@ -26,8 +26,10 @@ jobs:
           - { name: "0.4.5 par4", version: "0.4.5", parallelism: 4, nothreads: "", nocrashrec: "" }
     steps:
       - uses: actions/checkout@v7
+      - name: Install Homebrew build dependencies
+        run: .github/scripts/install-build-deps.sh
       - name: Run the probe
         env:
           PROBE_NOTHREADS: ${{ matrix.nothreads }}
           PROBE_NOCRASHREC: ${{ matrix.nocrashrec }}
-        run: .github/scripts/probe-bindgen.sh ${{ matrix.version }} 400 ${{ matrix.parallelism }}
+        run: .github/scripts/probe-bindgen.sh ${{ matrix.version }} 600 ${{ matrix.parallelism }}
