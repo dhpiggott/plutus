@@ -183,9 +183,9 @@ sbt dependencyUpdates       # fails (rather than just reporting) if any dep is s
 .github/scripts/verify.sh   # scalafmtCheckAll, scalafmtSbtCheck, compile, scalafixAll --check
 ```
 
-That is what CI runs, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
+That is what CI runs before linking, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
 
-GitHub Actions runs two workflows: `ci.yml` on pushes to `main` and on pull requests, and `claude.yml`, which answers [Claude Code](https://github.com/anthropics/claude-code-action) `@claude` mentions on issues and pull requests. There is deliberately no automatic reviewer — ask for one by commenting `@claude review this` on the pull request. Both run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`.
+GitHub Actions runs two workflows. `ci.yml` runs on pushes to `main` and on pull requests: `verify.sh`, then a link of the native binary, since that is where the native row's link flags and any JDK class missing from Scala Native's javalib first show up. `probe.yml` is dispatched by hand against a branch and runs that branch's `.github/scripts/probe.sh` on a fully set-up runner, for questions only a macOS build can answer. Both run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`.
 
 ## Project layout
 
