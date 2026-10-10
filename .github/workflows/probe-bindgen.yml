@@ -1,0 +1,33 @@
+name: Probe bindgen
+
+# Temporary, removed before this branch is merged: measures how often the
+# sn-bindgen binary crashes on keychain's macos.h under different conditions.
+on:
+  push:
+    branches: [claude/dazzling-fermat-9t7xgs]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe ${{ matrix.name }}
+    runs-on: macos-latest
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "0.4.4 seq", version: "0.4.4", parallelism: 1, nothreads: "", nocrashrec: "" }
+          - { name: "0.4.4 par4", version: "0.4.4", parallelism: 4, nothreads: "", nocrashrec: "" }
+          - { name: "0.4.4 seq NOTHREADS", version: "0.4.4", parallelism: 1, nothreads: "1", nocrashrec: "" }
+          - { name: "0.4.4 par4 NOTHREADS", version: "0.4.4", parallelism: 4, nothreads: "1", nocrashrec: "" }
+          - { name: "0.4.4 par4 NOCRASHREC", version: "0.4.4", parallelism: 4, nothreads: "", nocrashrec: "1" }
+          - { name: "0.4.5 par4", version: "0.4.5", parallelism: 4, nothreads: "", nocrashrec: "" }
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run the probe
+        env:
+          PROBE_NOTHREADS: ${{ matrix.nothreads }}
+          PROBE_NOCRASHREC: ${{ matrix.nocrashrec }}
+        run: .github/scripts/probe-bindgen.sh ${{ matrix.version }} 400 ${{ matrix.parallelism }}
