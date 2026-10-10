@@ -20,15 +20,19 @@ There are no tests in the repo — `sbt test` is a no-op, and there is no `src/t
 
 The four `Test / *Bindings := Seq.empty` overrides in `build.sbt` are load-bearing for anything that touches the Test configuration. There are still four of them after the module pairs collapsed — one per platform row of `keychain` and `porcupine`, now living in each row's `configure` block rather than in a module of its own. Without them every FFI row regenerates its bindings a second time into `src_managed/test`, which nothing consumes, concurrently with the Compile run. That duplicated work is their whole justification. They were once credited with stopping sn-bindgen's `Unrecoverable NullPointerException`, but that crash has since been seen in the **Compile** config with the overrides in place (`keychainNative3 / Compile / bindgenGenerateScalaSources`, CI run 38043110807), and it has nothing to do with them. See the next paragraph.
 
-**sn-bindgen runs through `bindgenWithoutCrashRecovery`, a wrapper that sets `LIBCLANG_DISABLE_CRASH_RECOVERY=1`. Don't drop it because builds look fine without it.** Without it, a few percent of sn-bindgen runs die while libclang parses the header. Scala Native prints `Unrecoverable NullPointerException in user thread` and the plugin reports `failed with code 10`. Neither message means what it seems to. Scala Native prints that line from its SIGSEGV/SIGBUS handler when the fault address is 0, then calls `exit(sig)`, so 10 is SIGBUS on macOS, not an exception code. Calling the binary directly on a macOS runner against keychain's `macos.h`, 600 runs at a time:
+**sn-bindgen runs through `bindgenWithoutCrashRecovery`, a wrapper that sets `LIBCLANG_DISABLE_CRASH_RECOVERY=1`. Don't drop it because builds look fine without it.** Without it, a few percent of sn-bindgen runs die while libclang parses the header. Scala Native prints `Unrecoverable NullPointerException in user thread` and the plugin reports `failed with code 10`. Neither message means what it seems to. Scala Native prints that line from its SIGSEGV/SIGBUS handler when the fault address is 0, then calls `exit(sig)`, so 10 is SIGBUS on macOS, not an exception code. Calling the binary directly on a macOS runner against keychain's `macos.h`:
 
 | Condition | Crashed |
 | --- | --- |
-| one at a time | 3 |
-| four at a time | 30 |
-| four at a time, `LIBCLANG_NOTHREADS=1` | 37 |
-| four at a time, sn-bindgen 0.4.5 (Scala Native 0.5.12) | 21 |
-| four at a time, `LIBCLANG_DISABLE_CRASH_RECOVERY=1` | 0 |
+| one at a time | 3 of 600 |
+| four at a time | 359 of 6,600 |
+| four at a time, `LIBCLANG_NOTHREADS=1` | 37 of 600 |
+| one at a time, `LIBCLANG_NOTHREADS=1` | 2 of 600 |
+| four at a time, sn-bindgen 0.4.5 (Scala Native 0.5.12) | 21 of 600 |
+| four at a time, `LIBCLANG_DISABLE_CRASH_RECOVERY=1` | 0 of 12,600 |
+| one at a time, `LIBCLANG_DISABLE_CRASH_RECOVERY=1` | 0 of 3,000 |
+
+Through sbt and the wrapper, regenerating both Native rows' Scala bindings from clean 240 times also produced no crash.
 
 So it isn't concurrency between bindgen runs: the plugin already limits `BindgenTags.Generate` to one at a time across the whole build, and the crash happens with nothing else running. Load only makes it more likely. Upgrading sn-bindgen doesn't help either, at least up to 0.4.5. The working theory is that libclang's crash recovery and Scala Native's runtime both install SIGBUS/SIGSEGV handlers and step on each other, but nobody has confirmed the mechanism; the evidence is the table. The plugin starts the binary with sbt's own environment and has no setting for extra variables, which is why the fix is a wrapper script installed as `bindgenBinary` on both Native FFI rows rather than an `env:` in CI, and why it covers local builds too.
 
