@@ -36,12 +36,23 @@ Through sbt and the wrapper, regenerating both Native rows' Scala bindings from 
 
 So it isn't concurrency between bindgen runs: the plugin already limits `BindgenTags.Generate` to one at a time across the whole build, and the crash happens with nothing else running. Load only makes it more likely. Upgrading sn-bindgen doesn't help either, at least up to 0.4.5. `LIBCLANG_NOTHREADS` only moves the parse off libclang's 8 MB helper thread onto the caller's, which is why it changes nothing.
 
-The likely mechanism, read from libclang 17's source (the LLVM sn-bindgen links) but not confirmed by experiment:
+The mechanism, read from libclang 17's source (the LLVM sn-bindgen links), with the GC's part confirmed on a macOS runner:
 
 1. Unless `LIBCLANG_DISABLE_CRASH_RECOVERY` is set, `clang_createIndex` calls `llvm::CrashRecoveryContext::Enable()`. That replaces the process's handlers for SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV and SIGTRAP with LLVM's own, so a crash inside a parse can jump back out of it.
 2. Scala Native needs SIGBUS for itself on macOS. Its multithreaded GC stops threads by making a trap page unreadable, and each thread that touches it faults into Scala Native's handler and parks.
 3. LLVM's handler saves the handlers it replaced but never calls them. A signal on a thread with no recovery context in progress, such as a Scala Native thread hitting the GC trap, makes it restore the old handlers and `raise()` the signal again.
 4. A raised signal is not tied to a memory access, so it reaches Scala Native's handler with fault address 0. That isn't the trap page, and a fault at 0 is exactly the case the handler reports as `Unrecoverable NullPointerException` before calling `exit(10)`.
+
+The GC's part was tested with `probe.yml`, 1,000 runs per row, four at a time, using the Scala Native heap settings the binary reads at startup and `SCALANATIVE_GC_LOG_LEVEL=info` to count collections:
+
+| Condition | Crashed | GC collections |
+| --- | --- | --- |
+| defaults | 47 | 10,655 |
+| `GC_INITIAL_HEAP_SIZE=2g` | 0 | 0 |
+| `GC_MAXIMUM_HEAP_SIZE=32m` | 271 (the rest ran out of heap) | 12,467 |
+| `GC_MAXIMUM_HEAP_SIZE=32m`, `LIBCLANG_DISABLE_CRASH_RECOVERY=1` | 0 (all ran out of heap) | 13,452 |
+
+With no collections there were no crashes, and 44 of the 47 crashes at the defaults came while a collection was in progress. Even with collections running constantly, there were none with crash recovery off. Step 3 is still read from the source rather than observed directly.
 
 That accounts for SIGBUS, address 0, "in user thread" rather than main, more crashes under load (a GC pause is likelier to land during the parse), no effect from `LIBCLANG_NOTHREADS`, and 0.4.5 reporting `Unhandled signal 10 … address 0x0` instead but still dying. Disabling crash recovery means Scala Native's handler is never replaced, and loses nothing: sn-bindgen exits on a libclang crash either way. The plugin starts the binary with sbt's own environment and has no setting for extra variables, which is why the fix is a wrapper script installed as `bindgenBinary` on both Native FFI rows rather than an `env:` in CI, and why it covers local builds too.
 
