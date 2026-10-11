@@ -114,7 +114,10 @@ lazy val keychain = projectMatrix
                 // `kCFBooleanTrue` into a third class that an older SDK
                 // doesn't produce at all. Filtered, it is `macos_h` on any
                 // SDK, and calling something new from Scala means adding it
-                // here.
+                // here. The alternative is raising jextract's
+                // `jextract.decls.per.header` so it never splits, which only
+                // an environment variable can do until
+                // indoorvivants/sbt-jextract#5 lets a binding set it.
                 "--include-function",
                 "SecItemCopyMatching",
                 "--include-function",
@@ -364,7 +367,8 @@ lazy val porcupine = projectMatrix
 // later and in another module's source, and clearing it needs the task's cache
 // rather than the empty output directory. Checking the output here puts the
 // failure back on the step that failed, with jextract's own diagnostics still
-// above it in the log.
+// above it in the log. indoorvivants/sbt-jextract#4 fixes this upstream; once
+// a release carries it, this guard and both its uses can go.
 def requireJextractBindings(pkg: String) = Def.task {
   val generated = (Compile / jextractGenerate).value
   val cacheDirectory =
