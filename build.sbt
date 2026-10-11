@@ -449,12 +449,15 @@ lazy val main = projectMatrix
 // Runs sn-bindgen with libclang's crash recovery turned off. With it on, a few
 // percent of runs die on a SIGBUS at address 0 while libclang parses the
 // header, which Scala Native reports as "Unrecoverable NullPointerException in
-// user thread" and exits with the signal number, 10. Both libclang's crash
-// recovery and Scala Native's runtime install SIGBUS/SIGSEGV handlers, and
-// setting LIBCLANG_DISABLE_CRASH_RECOVERY took the crash from 359 in 6,600
-// runs to none in 12,600; CLAUDE.md has the rest of the numbers. The plugin
-// starts the binary with sbt's own environment and offers no way to add to it,
-// so the variable goes in a wrapper script that stands in for the binary.
+// user thread" and exits with the signal number, 10. Crash recovery replaces
+// Scala Native's SIGBUS handler, which its GC needs, with LLVM's, and LLVM's
+// answers a signal it wasn't expecting by re-raising it with no fault address.
+// That is read from the source rather than confirmed, but setting
+// LIBCLANG_DISABLE_CRASH_RECOVERY took the crash from 359 in 6,600 runs to
+// none in 12,600; CLAUDE.md has the rest of the numbers and the mechanism. The
+// plugin starts the binary with sbt's own environment and offers no way to add
+// to it, so the variable goes in a wrapper script that stands in for the
+// binary.
 lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
   val binary = bindgenBinary.value
   val wrapper = target.value / "bindgen-without-crash-recovery"
