@@ -15,7 +15,7 @@ cd "$(dirname "$0")/../.."
 
 # scalafmtCheckAll skips build.sbt and project/, which .scalafmt.conf has a
 # dedicated sbt1 fileOverride for; scalafmtSbtCheck is what covers those.
-sbt --batch -no-colors \
+sbt --batch --no-colors \
   scalafmtCheckAll \
   scalafmtSbtCheck \
   compile \

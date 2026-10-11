@@ -138,19 +138,25 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
     .map:
       _.toList
 
-// Left unresolved here rather than defaulted to a zone: a region ID is only
-// resolvable where a tzdb is (Scala Native ships none, so ZoneId.of("Europe/
-// London") throws on that row), and this is a lazy val forced while the
-// command is built, so a default naming one would take down --help and every
-// other command with it. The source falls back to the machine's own zone,
-// which is also what the book sink normalises post dates against, so one run
-// reads one zone unless told otherwise.
-lazy val fromCsvZoneOpts: Opts[Option[ZoneId]] =
+// The default is this machine's own zone, which is also what the book sink
+// normalises post dates against, so one run reads one zone unless told
+// otherwise. It is resolved here, while the command is built, because
+// ZoneId.systemDefault can't throw on either row; only ZoneId.of a region can,
+// on Scala Native, and that is caught below.
+//
+// On the Scala Native row the default is also wrong: scala-java-time
+// hard-codes TimeZone.getDefault to UTC there, so it is UTC whatever TZ or
+// /etc/localtime say, and a statement from a machine in Europe/London reads an
+// hour out all summer — a day out for anything stamped in the first hour after
+// midnight. That is likely a won't-fix, on the basis that the CSV import may
+// well be short-lived; until then a Native run wants --from-csv-zone, and a
+// statement spanning a clock change wants the JVM build.
+lazy val fromCsvZoneOpts: Opts[ZoneId] =
   Opts
     .option[String](
       "from-csv-zone",
       help =
-        "Time zone the CSV statements' Date and Time columns are stamped in. If not specified defaults to this machine's own zone. A named region (Europe/London) needs a time zone database, which the JVM build has and the Scala Native build doesn't; a fixed offset (+01:00) works on both."
+        "Time zone the CSV statements' Date and Time columns are stamped in. If not specified defaults to this machine's own zone on the JVM build, and to UTC on the Scala Native build, which can't read the machine's zone. A named region (Europe/London) needs a time zone database, which the JVM build has and the Scala Native build doesn't; a fixed offset (+01:00) works on both."
     )
     .mapValidated: zone =>
       Validated
@@ -159,7 +165,7 @@ lazy val fromCsvZoneOpts: Opts[Option[ZoneId]] =
         .leftMap: _ =>
           s"Not a time zone this build can resolve: $zone."
         .toValidatedNel
-    .orNone
+    .withDefault(ZoneId.systemDefault)
 
 // What a sink is, once its own options are parsed: something that consumes a
 // source and honours --dry-run. The two aren't peers beyond that — the book
