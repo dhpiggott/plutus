@@ -457,7 +457,8 @@ lazy val main = projectMatrix
 // none in 12,600; CLAUDE.md has the rest of the numbers and the mechanism. The
 // plugin starts the binary with sbt's own environment and offers no way to add
 // to it, so the variable goes in a wrapper script that stands in for the
-// binary.
+// binary. indoorvivants/sn-bindgen#416 fixes it upstream; this can go once a
+// release carries that.
 lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
   val binary = bindgenBinary.value
   val wrapper = target.value / "bindgen-without-crash-recovery"
