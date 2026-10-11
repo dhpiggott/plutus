@@ -78,16 +78,89 @@ lazy val keychain = projectMatrix
           JextractBinding(header, "macos")
             .withArgs(
               Seq(
+                // jextract's bundled libclang is 13.0.0 (still, as of
+                // jextract 25), which predates clang defining the TARGET_OS_*
+                // macros itself, so the SDK's TargetConditionals.h works them
+                // out by asking `__is_target_environment(...)` about each
+                // Apple environment it knows. A clang that old answers one it
+                // has never heard of by matching it against our own target's
+                // unknown environment, so it says yes to every new one. On
+                // any SDK with the exclave environments that silently takes
+                // the ExclaveKit branch and leaves `TARGET_OS_OSX` 0; on the
+                // macOS 26 SDKs that also ask about KernelKit it is an
+                // `#error`, so nothing generates: see the guard below for
+                // what that looks like. Answering no is what this target
+                // means on any clang — arm64-apple-darwin names no
+                // environment at all — and it leaves the macabi and
+                // simulator questions answered the same way.
+                "-D",
+                "__is_target_environment(x)=0",
                 "-I",
                 includeDir.getAbsolutePath,
                 "-l",
                 ":/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation",
                 "-l",
-                ":/System/Library/Frameworks/Security.framework/Security"
+                ":/System/Library/Frameworks/Security.framework/Security",
+                // Generate what `Keychain.scala` calls and nothing else,
+                // because that is what keeps the generated surface a single
+                // class. jextract splits a package it considers large across
+                // `macos_h`, `macos_h_1`, `macos_h_2`, … chaining them by
+                // inheritance — and Scala does not import a Java class's
+                // *inherited* statics, so each class in that chain has to be
+                // imported by name. Which one a symbol lands in follows from
+                // how many declarations the SDK's headers hold, so left
+                // unfiltered that import list is a function of the SDK
+                // version: the macOS 26 headers moved `CFRelease` and
+                // `kCFBooleanTrue` into a third class that an older SDK
+                // doesn't produce at all. Filtered, it is `macos_h` on any
+                // SDK, and calling something new from Scala means adding it
+                // here. The alternative is raising jextract's
+                // `jextract.decls.per.header` so it never splits, which only
+                // an environment variable can do until
+                // indoorvivants/sbt-jextract#5 lets a binding set it.
+                "--include-function",
+                "SecItemCopyMatching",
+                "--include-function",
+                "SecItemAdd",
+                "--include-function",
+                "SecItemUpdate",
+                "--include-function",
+                "CFRelease",
+                "--include-function",
+                "CFDataGetLength",
+                "--include-function",
+                "CFDataGetBytePtr",
+                "--include-function",
+                "CFStringCreateWithBytes",
+                "--include-function",
+                "CFDataCreate",
+                "--include-function",
+                "CFDictionaryCreate",
+                "--include-var",
+                "kSecClass",
+                "--include-var",
+                "kSecClassGenericPassword",
+                "--include-var",
+                "kSecAttrAccount",
+                "--include-var",
+                "kSecReturnData",
+                "--include-var",
+                "kSecValueData",
+                "--include-var",
+                "kCFBooleanTrue",
+                "--include-constant",
+                "errSecSuccess",
+                "--include-constant",
+                "errSecItemNotFound",
+                "--include-constant",
+                "kCFStringEncodingUTF8"
               )
             )
         },
         jextractMode := JextractMode.ResourceGenerator,
+        Compile / sourceGenerators += requireJextractBindings(
+          "macos"
+        ).taskValue,
         // Emit MethodParameters into the jextract-generated Java bytecode so
         // `Keychain.scala` can call those methods with named arguments.
         javacOptions += "-parameters"
@@ -166,11 +239,84 @@ lazy val porcupine = projectMatrix
             .withArgs(
               Seq(
                 "-l",
-                ":/usr/lib/libsqlite3.dylib"
+                ":/usr/lib/libsqlite3.dylib",
+                // Filtered to what `Sqlite.scala` calls, for the reason given
+                // in `keychain`: unfiltered, `sqlite3.h` is big enough to be
+                // split across `libsqlite_h` and `libsqlite_h_1`, and which
+                // class a symbol lands in is a property of the header rather
+                // than of anything here. Everything this row needs happens to
+                // be in `libsqlite_h_1` today, which is a coincidence a
+                // SQLite upgrade can take away.
+                "--include-function",
+                "sqlite3_open_v2",
+                "--include-function",
+                "sqlite3_close",
+                "--include-function",
+                "sqlite3_prepare_v2",
+                "--include-function",
+                "sqlite3_step",
+                "--include-function",
+                "sqlite3_reset",
+                "--include-function",
+                "sqlite3_finalize",
+                "--include-function",
+                "sqlite3_bind_null",
+                "--include-function",
+                "sqlite3_bind_int64",
+                "--include-function",
+                "sqlite3_bind_double",
+                "--include-function",
+                "sqlite3_bind_text",
+                "--include-function",
+                "sqlite3_bind_blob",
+                "--include-function",
+                "sqlite3_column_count",
+                "--include-function",
+                "sqlite3_column_type",
+                "--include-function",
+                "sqlite3_column_int64",
+                "--include-function",
+                "sqlite3_column_double",
+                "--include-function",
+                "sqlite3_column_text",
+                "--include-function",
+                "sqlite3_column_blob",
+                "--include-function",
+                "sqlite3_column_bytes",
+                "--include-function",
+                "sqlite3_errmsg",
+                "--include-function",
+                "sqlite3_errstr",
+                "--include-constant",
+                "SQLITE_OK",
+                "--include-constant",
+                "SQLITE_ROW",
+                "--include-constant",
+                "SQLITE_DONE",
+                "--include-constant",
+                "SQLITE_OPEN_READWRITE",
+                "--include-constant",
+                "SQLITE_OPEN_CREATE",
+                "--include-constant",
+                "SQLITE_OPEN_NOMUTEX",
+                "--include-constant",
+                "SQLITE_INTEGER",
+                "--include-constant",
+                "SQLITE_FLOAT",
+                "--include-constant",
+                "SQLITE_TEXT",
+                "--include-constant",
+                "SQLITE_BLOB",
+                "--include-constant",
+                "SQLITE_NULL"
               )
             )
         },
         jextractMode := JextractMode.ResourceGenerator,
+        // The same guard as `keychain`, for the same reason.
+        Compile / sourceGenerators += requireJextractBindings(
+          "libsqlite"
+        ).taskValue,
         // Emit MethodParameters into the jextract-generated Java bytecode so
         // `Sqlite.scala` can call those methods with named arguments.
         javacOptions += "-parameters"
@@ -211,6 +357,30 @@ lazy val porcupine = projectMatrix
         )
       )
   )
+
+// jextract reports a header it couldn't parse by exiting non-zero, but
+// sbt-jextract ignores the exit code and reports whatever files are in the
+// output directory — so a run that generated nothing is a successful task
+// returning no sources, and its cache then keeps that answer: the inputs
+// haven't changed, so jextract is never asked again. What surfaces instead is
+// `Not found: macos` from the Scala that imports the package, several steps
+// later and in another module's source, and clearing it needs the task's cache
+// rather than the empty output directory. Checking the output here puts the
+// failure back on the step that failed, with jextract's own diagnostics still
+// above it in the log. indoorvivants/sbt-jextract#4 fixes this upstream; once
+// a release carries it, this guard and both its uses can go.
+def requireJextractBindings(pkg: String) = Def.task {
+  val generated = (Compile / jextractGenerate).value
+  val cacheDirectory =
+    (Compile / jextractGenerate / streams).value.cacheDirectory
+  if (generated.isEmpty)
+    sys.error(
+      s"jextract generated no $pkg bindings — its own error is above. Remove " +
+        s"$cacheDirectory to make it run again, since the empty result is " +
+        "cached."
+    )
+  Seq.empty[File]
+}
 
 lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
