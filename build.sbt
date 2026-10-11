@@ -78,21 +78,21 @@ lazy val keychain = projectMatrix
           JextractBinding(header, "macos")
             .withArgs(
               Seq(
-                // The SDK's TargetConditionals.h refuses to be included by a
-                // compiler without `-fdefine_target_os_macros` *if* it is
-                // targeting KernelKit, which it asks with
-                // `__is_target_environment(kernelkit)`. jextract's bundled
-                // libclang is 13.0.0 (still, as of jextract 25), old enough
-                // that it has never heard of that environment — and a clang
-                // that old answers an environment it doesn't know by matching
-                // it against the unknown environment of our own target, so it
-                // says yes and the header `#error`s out. Every CoreFoundation
-                // and Security header reaches it, so nothing generates: see
-                // the guard below for what that looks like. Answering no
-                // instead is what this target means anyway, on any clang —
-                // arm64-apple-darwin names no environment at all — and it
-                // leaves the macabi and simulator questions the header asks
-                // further down answered the same way.
+                // jextract's bundled libclang is 13.0.0 (still, as of
+                // jextract 25), which predates clang defining the TARGET_OS_*
+                // macros itself, so the SDK's TargetConditionals.h works them
+                // out by asking `__is_target_environment(...)` about each
+                // Apple environment it knows. A clang that old answers one it
+                // has never heard of by matching it against our own target's
+                // unknown environment, so it says yes to every new one. On
+                // any SDK with the exclave environments that silently takes
+                // the ExclaveKit branch and leaves `TARGET_OS_OSX` 0; on the
+                // macOS 26 SDKs that also ask about KernelKit it is an
+                // `#error`, so nothing generates: see the guard below for
+                // what that looks like. Answering no is what this target
+                // means on any clang — arm64-apple-darwin names no
+                // environment at all — and it leaves the macabi and
+                // simulator questions answered the same way.
                 "-D",
                 "__is_target_environment(x)=0",
                 "-I",
