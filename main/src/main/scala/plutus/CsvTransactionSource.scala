@@ -40,7 +40,7 @@ import java.time.format.DateTimeParseException
 def csvTransactionSource(
     accounts: List[(monzo.AccountId, fs2.io.file.Path)],
     potAccounts: List[(monzo.AccountId, fs2.io.file.Path)],
-    zone: ZoneId
+    zone: Option[ZoneId]
 ): TransactionSource = new TransactionSource:
   def use[A](now: Instant)(consume: Fetched => IO[A])(using
       verbosity: Verbosity
@@ -70,8 +70,11 @@ def csvTransactionSource(
               .sorted
               .mkString("; ")}."
         )
+      // Resolved here, in the run, rather than as the option's default: on
+      // Scala Native it can warn (see Host.zone and fromCsvZoneOpts).
+      statementZone <- zone.fold(Host.zone)(IO.pure)
       byAccount <- statements.traverse: statement =>
-        csvStatement(statement.path, zone).map: read =>
+        csvStatement(statement.path, statementZone).map: read =>
           FetchedAccount(
             id = statement.accountId,
             // A statement names no type, and the ID alone can't be looked up
@@ -225,10 +228,10 @@ def optionalCell(row: CsvRow[String], header: String): Option[String] =
 
 // The app stamps Date and Time in the account's own local time and says
 // nowhere which zone that is, so --from-csv-zone names it and it defaults to
-// this machine's own (UTC on Scala Native; see fromCsvZoneOpts). It decides
-// more than tidiness: a transaction either side of midnight falls on a
-// different calendar date read in the wrong zone, and the calendar date is
-// what a GnuCash post_date is normalised to (see neutralPostDate).
+// this machine's own (see Host.zone). It decides more than tidiness: a
+// transaction either side of midnight falls on a different calendar date read
+// in the wrong zone, and the calendar date is what a GnuCash post_date is
+// normalised to (see neutralPostDate).
 //
 // One spelling each, because that is what the export writes. A fresh export
 // that writes another is a change to the file's shape, and a row it can't read

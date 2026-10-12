@@ -427,6 +427,12 @@ lazy val main = projectMatrix
     // it's applied to, so enabling it project-wide poisons JVM compilation.
     configure = _.enablePlugins(VcpkgNativePlugin)
       .settings(
+        // Scala Native has no time zone database of its own, so without this
+        // ZoneId.of("Europe/London") throws, and Host.zone has nothing to look
+        // the machine's zone up in. The JVM has one built in. Its data is
+        // frozen at whatever the release shipped (tzdb 2019c, as of 2.6.0);
+        // the version matches the scala-java-time decline brings in.
+        libraryDependencies += "io.github.cquiroz" %%% "scala-java-time-tzdb" % "2.6.0",
         vcpkgDependencies := VcpkgDependencies("sqlite3"),
         // Append rather than replace: VcpkgNativePlugin has already injected
         // `-L<vcpkg-install>/lib -lsqlite3 -pthread`, which a bare
