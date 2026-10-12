@@ -35,14 +35,9 @@ lazy val keychain = projectMatrix
         // the Compile run and, for the two rows that generate their header
         // below, writing that header while the other process is reading it.
         //
-        // `sbt scalafixAll` (which touches both configs) has been seen to die
-        // that way: sn-bindgen exits 10, which is Scala Native's
-        // unhandled-exception code, having printed "Unrecoverable
-        // NullPointerException in user thread" rather than any diagnostic about
-        // the headers. It is intermittent — it reproduced on the first two runs
-        // and then stopped reproducing, including from a cleaned src_managed —
-        // so treat the race as the motivation for dropping duplicate work, not
-        // as a diagnosis anyone has confirmed.
+        // This used to be blamed for sn-bindgen crashing with "Unrecoverable
+        // NullPointerException in user thread", but that crash turned out to
+        // have nothing to do with concurrency: see `bindgenWithoutCrashRecovery`.
         //
         // It has to be this explicit override rather than scoping the
         // definition below to `Compile`: Test extends Compile in sbt's
@@ -174,6 +169,7 @@ lazy val keychain = projectMatrix
       .settings(
         // Emptied for Test for the reason given on the JVM row above.
         Test / bindgenBindings := Seq.empty,
+        bindgenWithoutCrashRecovery,
         bindgenBindings += {
           // sn-bindgen filters out declarations from headers that clang tags as
           // system headers. Includes via the angle-bracket form (e.g.
@@ -333,6 +329,7 @@ lazy val porcupine = projectMatrix
         vcpkgDependencies := VcpkgDependencies("sqlite3"),
         // Emptied for Test for the reason given in `keychain`.
         Test / bindgenBindings := Seq.empty,
+        bindgenWithoutCrashRecovery,
         bindgenBindings += {
           // Package `libsqlite` (not `sqlite3`) avoids colliding with the
           // `sqlite3` struct that lives inside it.
@@ -448,6 +445,32 @@ lazy val main = projectMatrix
         )
       )
   )
+
+// Runs sn-bindgen with libclang's crash recovery turned off. With it on, a few
+// percent of runs die on a SIGBUS at address 0 while libclang parses the
+// header, which Scala Native reports as "Unrecoverable NullPointerException in
+// user thread" and exits with the signal number, 10. Crash recovery replaces
+// Scala Native's SIGBUS handler, which its GC needs, with LLVM's, and LLVM's
+// answers a signal it wasn't expecting by re-raising it with no fault address.
+// A probe confirmed the GC's part (no collections, no crashes), and setting
+// LIBCLANG_DISABLE_CRASH_RECOVERY took the crash from 359 in 6,600 runs to
+// none in 12,600; CLAUDE.md has the rest of the numbers and the mechanism. The
+// plugin starts the binary with sbt's own environment and offers no way to add
+// to it, so the variable goes in a wrapper script that stands in for the
+// binary. indoorvivants/sn-bindgen#416 fixes it upstream; this can go once a
+// release carries that.
+lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
+  val binary = bindgenBinary.value
+  val wrapper = target.value / "bindgen-without-crash-recovery"
+  IO.write(
+    wrapper,
+    s"""#!/bin/sh
+       |LIBCLANG_DISABLE_CRASH_RECOVERY=1 exec '${binary.getAbsolutePath}' "$$@"
+       |""".stripMargin
+  )
+  wrapper.setExecutable(true)
+  wrapper
+}
 
 lazy val scala3Versions = Seq(scala3Version)
 
