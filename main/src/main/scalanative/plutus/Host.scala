@@ -38,6 +38,10 @@ object Host:
 
   private def machineZone: Either[String, ZoneId] =
     sys.env.get("TZ") match
+      // POSIX reads an empty TZ as UTC, so this is the machine's zone rather
+      // than one to warn about.
+      case Some("") =>
+        Right(ZoneOffset.UTC)
       case Some(tz) =>
         region(tz.stripPrefix(":")).toRight:
           s"TZ is $tz, which isn't a time zone this build knows"
