@@ -33,7 +33,7 @@ EOF
 
 echo "::group::Link ZoneProbe"
 sbt --batch --no-colors \
-  'set mainNative3 / Compile / mainClass := Some("plutus.ZoneProbe")' \
+  'set LocalProject("mainNative3") / Compile / mainClass := Some("plutus.ZoneProbe")' \
   mainNative3/nativeLink
 echo "::endgroup::"
 probe=$(find main/target/native-3 -type f -name 'plutus.ZoneProbe' | head -1)
