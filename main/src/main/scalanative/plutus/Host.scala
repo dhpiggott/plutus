@@ -19,14 +19,14 @@ object Host:
   // ZoneId.systemDefault can't answer this here: scala-java-time hard-codes
   // TimeZone.getDefault to UTC on Scala Native, whatever TZ or /etc/localtime
   // say. So this asks them itself, in the order libc does — TZ if it is set,
-  // otherwise the zone /etc/localtime links to — and looks the name up in
-  // scala-java-time-tzdb, which build.sbt adds to this row only. The JVM row
-  // has nothing to warn about, which is why only this one takes Verbosity.
+  // otherwise the zone /etc/localtime links to — and ZoneId.of looks the name
+  // up in the machine's own zoneinfo (see java.time.zone.TzdbZoneRulesProvider
+  // in this row's sources). The JVM row has nothing to warn about, which is
+  // why only this one takes Verbosity.
   //
-  // UTC with a warning, rather than a failure, when neither names a zone the
-  // database knows: TZ can hold a POSIX rule (GMT0BST,M3.5.0/1,M10.5.0) rather
-  // than a name, and the database is frozen at whatever its release shipped,
-  // so a zone newer than that is unknown to it.
+  // UTC with a warning, rather than a failure, when neither names a zone
+  // there: TZ can hold a POSIX rule (GMT0BST,M3.5.0/1,M10.5.0) rather than a
+  // name, or a name for a zone this machine doesn't have.
   def zone(using verbosity: Verbosity): IO[ZoneId] =
     IO.delay(machineZone)
       .flatMap:
@@ -44,7 +44,7 @@ object Host:
         Right(ZoneOffset.UTC)
       case Some(tz) =>
         region(tz.stripPrefix(":")).toRight:
-          s"TZ is $tz, which isn't a time zone this build knows"
+          s"TZ is $tz, which isn't a zone in ${Tzif.zoneinfo}"
       case None =>
         Either
           .catchNonFatal(Files.readSymbolicLink(Paths.get("/etc/localtime")))
@@ -52,7 +52,7 @@ object Host:
             s"Can't read the link at /etc/localtime ($e)"
           .flatMap: target =>
             region(target.toString).toRight:
-              s"/etc/localtime links to $target, which isn't a time zone this build knows"
+              s"/etc/localtime links to $target, which isn't a zone in ${Tzif.zoneinfo}"
 
   // A zone name, or a path to its file in a zoneinfo directory: macOS links
   // /etc/localtime to /var/db/timezone/zoneinfo/<region>, and TZ may name a
