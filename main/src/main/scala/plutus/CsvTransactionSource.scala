@@ -11,7 +11,7 @@ import smithy4s.time.Timestamp
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
-import java.time.ZoneId
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 
@@ -39,8 +39,7 @@ import java.time.format.DateTimeParseException
 // behind it still exists — so archiving is left to a later API run.
 def csvTransactionSource(
     accounts: List[(monzo.AccountId, fs2.io.file.Path)],
-    potAccounts: List[(monzo.AccountId, fs2.io.file.Path)],
-    zone: ZoneId
+    potAccounts: List[(monzo.AccountId, fs2.io.file.Path)]
 ): TransactionSource = new TransactionSource:
   def use[A](now: Instant)(consume: Fetched => IO[A])(using
       verbosity: Verbosity
@@ -71,7 +70,7 @@ def csvTransactionSource(
               .mkString("; ")}."
         )
       byAccount <- statements.traverse: statement =>
-        csvStatement(statement.path, zone).map: read =>
+        csvStatement(statement.path).map: read =>
           FetchedAccount(
             id = statement.accountId,
             // A statement names no type, and the ID alone can't be looked up
@@ -116,8 +115,7 @@ def csvTransactionSource(
 // rather than about a row — every row of one statement carries the same one,
 // and rows that disagree mean the file isn't one account's statement.
 def csvStatement(
-    path: fs2.io.file.Path,
-    zone: ZoneId
+    path: fs2.io.file.Path
 )(using
     verbosity: Verbosity
 ): IO[
@@ -143,7 +141,7 @@ def csvStatement(
         Error(s"$path isn't readable as CSV: ${csvException.getMessage}")
   decoded <- rows.traverse: row =>
     IO.fromEither:
-      csvTransaction(row, zone).leftMap: message =>
+      csvTransaction(row).leftMap: message =>
         // The parser's own line number where it has one, so the message
         // points at the line an editor shows even though a quoted cell may
         // span several.
@@ -175,8 +173,7 @@ yield (currency = currencies.headOption, transactions = transactions)
 // the API path does with the same transaction, so the two agree, and splitting
 // it would need a posting with more than two legs.
 def csvTransaction(
-    row: CsvRow[String],
-    zone: ZoneId
+    row: CsvRow[String]
 ): Either[
   String,
   (currency: monzo.Currency, transaction: monzo.Transaction)
@@ -184,7 +181,7 @@ def csvTransaction(
   id <- requiredCell(row, "Transaction ID")
   date <- requiredCell(row, "Date")
   time <- requiredCell(row, "Time")
-  created <- csvCreated(date, time, zone)
+  created <- csvCreated(date, time)
   amount <- requiredCell(row, "Amount")
   minorUnits <- csvMinorUnits(amount)
   currency <- requiredCell(row, "Currency")
@@ -223,12 +220,12 @@ def cell(row: CsvRow[String], header: String): Either[String, String] =
 def optionalCell(row: CsvRow[String], header: String): Option[String] =
   row(header).filter(_.nonEmpty)
 
-// The app stamps Date and Time in the account's own local time and says
-// nowhere which zone that is, so --from-csv-zone names it and it defaults to
-// this machine's own (UTC on Scala Native; see fromCsvZoneOpts). It decides
-// more than tidiness: a transaction either side of midnight falls on a
-// different calendar date read in the wrong zone, and the calendar date is
-// what a GnuCash post_date is normalised to (see neutralPostDate).
+// The app stamps Date and Time in UTC, though the file says so nowhere: a
+// summer transaction's Time reads an hour behind the clock time the app's own
+// feed shows for it (checked against a real export). Reading it in any other
+// zone would move a transaction made in the hour after midnight on to the
+// wrong calendar date, and the calendar date is what a GnuCash post_date is
+// normalised to (see neutralPostDate), so nothing offers to.
 //
 // One spelling each, because that is what the export writes. A fresh export
 // that writes another is a change to the file's shape, and a row it can't read
@@ -241,8 +238,7 @@ lazy val csvTimeFormat: DateTimeFormatter =
 
 def csvCreated(
     date: String,
-    time: String,
-    zone: ZoneId
+    time: String
 ): Either[String, Timestamp] = for
   localDate <- Either
     .catchOnly[DateTimeParseException](LocalDate.parse(date, csvDateFormat))
@@ -250,7 +246,7 @@ def csvCreated(
   localTime <- Either
     .catchOnly[DateTimeParseException](LocalTime.parse(time, csvTimeFormat))
     .leftMap(_ => s"Time isn't an HH:mm:ss time: $time")
-yield localDate.atTime(localTime).atZone(zone).toInstant.asSmithyTimestamp
+yield localDate.atTime(localTime).toInstant(ZoneOffset.UTC).asSmithyTimestamp
 
 // The export writes an amount in major units with a decimal point, where the
 // API reports the minor units every consumer downstream expects, so the scale

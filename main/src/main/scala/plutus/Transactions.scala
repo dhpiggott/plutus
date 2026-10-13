@@ -8,7 +8,6 @@ import com.monovore.decline.*
 import com.monovore.decline.time.*
 
 import java.time.Instant
-import java.time.ZoneId
 
 // One command for copying transactions, named for what it does rather than for
 // either end of it, because neither end is fixed any more: --from-… says where
@@ -86,14 +85,10 @@ lazy val beforeOpts: Opts[Option[Instant]] =
 // while an all-optional branch would match a command line naming no source at
 // all and make `orElse` above ambiguous rather than exclusive.
 lazy val csvSourceOpts: Opts[TransactionSourceFor] =
-  ((fromCsvOpts, fromCsvPotOpts.withDefault(Nil), fromCsvZoneOpts).tupled
-    orElse (
-      fromCsvOpts.withDefault(Nil),
-      fromCsvPotOpts,
-      fromCsvZoneOpts
-    ).tupled)
-    .map: (accounts, potAccounts, zone) =>
-      _ => csvTransactionSource(accounts, potAccounts, zone)
+  ((fromCsvOpts, fromCsvPotOpts.withDefault(Nil)).tupled
+    orElse (fromCsvOpts.withDefault(Nil), fromCsvPotOpts).tupled)
+    .map: (accounts, potAccounts) =>
+      _ => csvTransactionSource(accounts, potAccounts)
 
 lazy val fromCsvOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
   Opts
@@ -137,35 +132,6 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
       _.traverse(accountStatement)
     .map:
       _.toList
-
-// The default is this machine's own zone, which is also what the book sink
-// normalises post dates against, so one run reads one zone unless told
-// otherwise. It is resolved here, while the command is built, because
-// ZoneId.systemDefault can't throw on either row; only ZoneId.of a region can,
-// on Scala Native, and that is caught below.
-//
-// On the Scala Native row the default is also wrong: scala-java-time
-// hard-codes TimeZone.getDefault to UTC there, so it is UTC whatever TZ or
-// /etc/localtime say, and a statement from a machine in Europe/London reads an
-// hour out all summer — a day out for anything stamped in the first hour after
-// midnight. That is likely a won't-fix, on the basis that the CSV import may
-// well be short-lived; until then a Native run wants --from-csv-zone, and a
-// statement spanning a clock change wants the JVM build.
-lazy val fromCsvZoneOpts: Opts[ZoneId] =
-  Opts
-    .option[String](
-      "from-csv-zone",
-      help =
-        "Time zone the CSV statements' Date and Time columns are stamped in. If not specified defaults to this machine's own zone on the JVM build, and to UTC on the Scala Native build, which can't read the machine's zone. A named region (Europe/London) needs a time zone database, which the JVM build has and the Scala Native build doesn't; a fixed offset (+01:00) works on both."
-    )
-    .mapValidated: zone =>
-      Validated
-        .catchNonFatal:
-          ZoneId.of(zone)
-        .leftMap: _ =>
-          s"Not a time zone this build can resolve: $zone."
-        .toValidatedNel
-    .withDefault(ZoneId.systemDefault)
 
 // What a sink is, once its own options are parsed: something that consumes a
 // source and honours --dry-run. The two aren't peers beyond that — the book
