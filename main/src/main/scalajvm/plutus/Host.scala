@@ -1,7 +1,7 @@
 package plutus
 
-import cats.effect.IO
-
+import java.time.Instant
+import java.time.LocalDate
 import java.time.ZoneId
 
 // The PID this run announces in the book's gnclock row. Scala Native's javalib
@@ -11,12 +11,10 @@ import java.time.ZoneId
 // a module of its own: sbt-projectmatrix already puts src/main/scalajvm and
 // src/main/scalanative on the respective rows' sources.
 //
-// The machine's zone is the other: see the Scala Native row's Host.scala.
+// The local calendar date is the other: see the Scala Native row's Host.scala.
 object Host:
 
   def pid: Long = ProcessHandle.current.pid
 
-  // The JVM reads TZ and /etc/localtime itself, and ships a time zone
-  // database, so there is nothing to resolve and nothing to warn about.
-  def zone: IO[ZoneId] =
-    IO.delay(ZoneId.systemDefault)
+  def localDate(instant: Instant): LocalDate =
+    LocalDate.ofInstant(instant, ZoneId.systemDefault)
