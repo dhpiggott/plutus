@@ -11,12 +11,14 @@ runs:
       run: .github/scripts/install-build-deps.sh
 
     # JDK 22+: the Keychain and sqlite3 JVM bindings use the Foreign Function &
-    # Memory API, which is only final from 22 onwards.
+    # Memory API, which is only final from 22 onwards. The version lives in
+    # .java-version so that jenv, asdf, mise and SDKMAN put a local shell on the
+    # same JDK as the runner.
     - name: Set up the JDK
       uses: actions/setup-java@v5
       with:
         distribution: temurin
-        java-version: "25"
+        java-version-file: .java-version
 
     - name: Set up sbt
       uses: sbt/setup-sbt@v1
