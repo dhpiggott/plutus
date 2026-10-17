@@ -4,7 +4,6 @@ import cats.effect.*
 import porcupine.*
 
 import java.time.Instant
-import java.time.ZoneId
 
 // A Posting is the balanced unit Plutus actually writes: one transaction and
 // its two splits, constructed so the double-entry invariant (values sum to 0)
@@ -48,8 +47,7 @@ object Posting:
       assetAccount: Account,
       categoryAccount: Account,
       currency: Commodity,
-      enterDate: Instant,
-      zone: ZoneId
+      enterDate: Instant
   ): IO[Posting] =
     for
       transactionGuid <- newGuid
@@ -77,10 +75,7 @@ object Posting:
         // date (see neutralPostDate), so these rows render and sort like the
         // book's own. enter_date keeps the real instant: GnuCash treats that
         // one as a true timestamp of when the row was recorded.
-        postDate = neutralPostDate(
-          monzoTransaction.created.value.asInstant,
-          zone
-        ),
+        postDate = neutralPostDate(monzoTransaction.created.value.asInstant),
         enterDate = enterDate,
         description = Some(payee(monzoTransaction))
       )

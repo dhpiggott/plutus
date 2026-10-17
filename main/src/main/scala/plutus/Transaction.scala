@@ -6,7 +6,6 @@ import porcupine.Codec.*
 
 import java.time.Instant
 import java.time.LocalTime
-import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
@@ -75,15 +74,14 @@ def formatTimestamp(instant: Instant): String =
 // since GnuCash's own rows all sit at 10:59.
 val neutralTime: LocalTime = LocalTime.of(10, 59, 0)
 
-// The calendar day is taken in `zone`, matching what GnuCash's own
+// The calendar day is taken in the machine's zone, matching what GnuCash's own
 // normalisation does (it converts to local time and back), so an imported row
 // lands on the day the machine's user would say it happened rather than on its
-// UTC day. Callers pass the machine's zone; the consequence is that importing
-// the same transaction on a machine in another zone could pick the adjacent
-// day, which is the same tradeoff GnuCash itself makes for hand-entered rows.
-def neutralPostDate(instant: Instant, zone: ZoneId): Instant =
-  instant
-    .atZone(zone)
-    .toLocalDate
+// UTC day. The consequence is that importing the same transaction on a machine
+// in another zone could pick the adjacent day, which is the same tradeoff
+// GnuCash itself makes for hand-entered rows.
+def neutralPostDate(instant: Instant): Instant =
+  Host
+    .localDate(instant)
     .atTime(neutralTime)
     .toInstant(ZoneOffset.UTC)
