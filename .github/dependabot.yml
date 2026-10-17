@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    # "/" alone covers .github/workflows and a root action.yml, but not a
+    # composite action anywhere else, so setup-build's pins need naming too.
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    # Every PR is a full macOS build, so take each week's bumps as one.
+    groups:
+      github-actions:
+        patterns:
+          - "*"
