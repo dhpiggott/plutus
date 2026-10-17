@@ -5,7 +5,6 @@ import cats.syntax.all.*
 import porcupine.*
 
 import java.time.Instant
-import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
@@ -24,9 +23,6 @@ def gnuCashTransactionSink(
   // enter_date — so one run stamps one time. Same as archiveAccounts and
   // restoreAccount, which read their own here too.
   now <- IO.realTimeInstant
-  // The zone the transactions' calendar dates are taken in (see
-  // neutralPostDate), read once so every row of a run agrees.
-  zone <- IO.delay(ZoneId.systemDefault)
   // IO.pure, not the book work: the book is opened after the source has let
   // go, so nothing it holds open outlives the fetch, and the pot links it
   // records survive an import that then fails.
@@ -370,8 +366,7 @@ def gnuCashTransactionSink(
                 assetAccount,
                 categories(categoryPath),
                 currency,
-                now,
-                zone
+                now
               )
               .map: posting =>
                 (
