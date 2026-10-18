@@ -420,7 +420,7 @@ lazy val main = projectMatrix
   .jvmPlatform(
     scalaVersions = scala3Versions,
     settings = Seq(
-      libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.17",
+      libraryDependencies += "org.slf4j" % "slf4j-simple" % "2.0.20",
       fork := true,
       connectInput := true,
       // FFM API is final in JDK 22+; suppress the runtime "restricted method"
