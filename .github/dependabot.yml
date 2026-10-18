@@ -8,6 +8,11 @@ updates:
       - /.github/actions/*
     schedule:
       interval: weekly
+      # Saturday 06:00 UTC, the same slot as Scala Steward's run in
+      # dhpiggott/scala-steward, so all the week's update pull requests arrive
+      # together.
+      day: saturday
+      time: "06:00"
     # Every PR is a full macOS build, so group everything. No group-by:
     # dependency-name: it merges one action across directories, and no action
     # is pinned in both, so here it would only split the group by action.
