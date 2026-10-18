@@ -173,7 +173,6 @@ sbt scalafmtAll             # apply to sources
 sbt scalafmtSbtCheck        # check build.sbt and project/
 sbt scalafmtSbt             # apply to build.sbt and project/
 sbt scalafixAll             # OrganizeImports (add --check to verify instead of rewrite)
-sbt dependencyUpdates       # fails (rather than just reporting) if any dep is stale
 ```
 
 ### Continuous integration
