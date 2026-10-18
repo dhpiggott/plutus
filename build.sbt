@@ -404,7 +404,14 @@ lazy val main = projectMatrix
       // test-scoped modules) and none of what those declarations pull in.
       BuildInfoKey.map(Runtime / externalDependencyClasspath) {
         case (_, classpath) =>
-          "dependencies" -> classpath.flatMap(_.get(moduleID.key))
+          "dependencies" -> classpath
+            .flatMap(_.get(moduleID.key))
+            // A resolved module carries its `default` configuration and an
+            // artifact list, which `ModuleID.toString` would print as
+            // `:default ()`.
+            .map(module =>
+              s"${module.organization}:${module.name}:${module.revision}"
+            )
       },
       sbtVersion,
       scalaVersion,
