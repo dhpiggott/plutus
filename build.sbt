@@ -15,7 +15,7 @@ inThisBuild(
 
 lazy val keychain = projectMatrix
   .settings(
-    libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0"
+    libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.1"
   )
   .jvmPlatform(
     scalaVersions = scala3Versions,
@@ -212,7 +212,7 @@ lazy val keychain = projectMatrix
 lazy val porcupine = projectMatrix
   .settings(
     libraryDependencies ++= Seq(
-      "org.typelevel" %%% "cats-effect" % "3.7.0",
+      "org.typelevel" %%% "cats-effect" % "3.7.1",
       "co.fs2" %%% "fs2-core" % "3.14.0",
       "org.scodec" %%% "scodec-bits" % "1.2.5"
     )
