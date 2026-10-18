@@ -8,9 +8,9 @@ updates:
       - /.github/actions/*
     schedule:
       interval: weekly
-    # Every PR is a full macOS build, so take each directory's weekly bumps as
-    # one. (group-by: dependency-name would span directories, but at one PR per
-    # action, which is more PRs here, not fewer.)
+    # Every PR is a full macOS build, so group everything. No group-by:
+    # dependency-name: it merges one action across directories, and no action
+    # is pinned in both, so here it would only split the group by action.
     groups:
       github-actions:
         patterns:
