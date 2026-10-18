@@ -1,0 +1,47 @@
+name: Scala Steward
+
+on:
+  schedule:
+    # Weekly, the same cadence as dependabot.yml's Actions bumps.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+# Steward pushes and opens pull requests with the App's installation token, not
+# GITHUB_TOKEN: events from GITHUB_TOKEN start no workflow runs, so a pull
+# request it opened would never get `Build`, and could never merge.
+permissions: {}
+
+jobs:
+  scala-steward:
+    name: Scala Steward
+    # Linux, unlike ci.yml: Steward only loads the build to read its
+    # dependencies, and everything that needs the macOS SDK (`xcrun` in the
+    # jextract and sn-bindgen bindings) runs inside a task, not at load time.
+    # The action itself also only ships a Linux coursier by default. Its pull
+    # requests still get the full macOS `Build`.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Only for .java-version. Steward makes its own clone to work in.
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up the JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version-file: .java-version
+
+      - name: Run Scala Steward
+        uses: scala-steward-org/scala-steward-action@v2
+        with:
+          github-app-id: ${{ secrets.APP_ID }}
+          github-app-installation-id: ${{ secrets.APP_INSTALLATION_ID }}
+          github-app-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Without this, an App's credentials make Steward update every
+          # repository the App is installed on, not just this one.
+          github-app-auth-only: true
