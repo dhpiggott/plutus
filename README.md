@@ -142,7 +142,7 @@ sbt 'main3/run archive-accounts --input Accounts.gnucash'
 
 Prerequisites:
 
-- JDK 22 or later — the Keychain state store uses the [Foreign Function & Memory API](https://openjdk.org/jeps/454), which is final in JDK 22.
+- JDK 22 or later — the Keychain state store uses the [Foreign Function & Memory API](https://openjdk.org/jeps/454), which is final in JDK 22. CI builds on the version in `.java-version`, which jenv, asdf, mise and SDKMAN (`sdk env`) pick up on their own; coursier doesn't read it, so with `cs java` name the version yourself.
 
 ### Scala Native (macOS only)
 
