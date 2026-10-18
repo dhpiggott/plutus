@@ -398,13 +398,13 @@ lazy val main = projectMatrix
       "tech.neander" %%% "cue4s" % "0.0.12"
     ),
     buildInfoKeys := Seq[BuildInfoKey](
-      // `--version` lists what's in the binary, so leave out what only the
-      // build uses: codegen inputs (`smithy4s`), compiler plugins
-      // (`plugin->default(compile)`) and test-scoped modules.
-      BuildInfoKey.map(libraryDependencies) { case (key, dependencies) =>
-        key -> dependencies.filter(
-          _.configurations.forall(Set("compile", "runtime"))
-        )
+      // `--version` lists what's in the binary: the resolved, transitive
+      // runtime classpath, rather than `libraryDependencies`, which also
+      // carries what only the build uses (codegen inputs, compiler plugins,
+      // test-scoped modules) and none of what those declarations pull in.
+      BuildInfoKey.map(Runtime / externalDependencyClasspath) {
+        case (_, classpath) =>
+          "dependencies" -> classpath.flatMap(_.get(moduleID.key))
       },
       sbtVersion,
       scalaVersion,
