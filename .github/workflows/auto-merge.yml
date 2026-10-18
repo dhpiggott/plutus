@@ -1,0 +1,32 @@
+name: Auto-merge
+
+# Turns on GitHub's own auto-merge for update bots' PRs, so they land as soon as
+# the ruleset is satisfied (Build green) instead of waiting for someone to press
+# the button. Nothing here merges anything itself: if Build fails, the PR stays
+# open as any other would.
+on:
+  pull_request:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    name: Enable auto-merge
+    # Keyed on who opened the PR rather than who pushed last, so a human push to
+    # a bot's branch doesn't change whether it qualifies. Add a bot's login here
+    # to opt its PRs in.
+    if: contains(fromJSON('["dependabot[bot]"]'), github.event.pull_request.user.login)
+    # Only gh is needed, and gh is on every runner image, so there is no reason
+    # to spend macOS minutes on it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Enable auto-merge
+        # Squash, because the ruleset requires signed commits and the squash
+        # commit is the one GitHub signs itself.
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
