@@ -398,7 +398,21 @@ lazy val main = projectMatrix
       "tech.neander" %%% "cue4s" % "0.0.12"
     ),
     buildInfoKeys := Seq[BuildInfoKey](
-      libraryDependencies,
+      // `--version` lists what's in the binary: the resolved, transitive
+      // runtime classpath, rather than `libraryDependencies`, which also
+      // carries what only the build uses (codegen inputs, compiler plugins,
+      // test-scoped modules) and none of what those declarations pull in.
+      BuildInfoKey.map(Runtime / externalDependencyClasspath) {
+        case (_, classpath) =>
+          "dependencies" -> classpath
+            .flatMap(_.get(moduleID.key))
+            // A resolved module carries its `default` configuration and an
+            // artifact list, which `ModuleID.toString` would print as
+            // `:default ()`.
+            .map(module =>
+              s"${module.organization}:${module.name}:${module.revision}"
+            )
+      },
       sbtVersion,
       scalaVersion,
       version
