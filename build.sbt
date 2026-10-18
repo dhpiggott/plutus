@@ -15,7 +15,6 @@ inThisBuild(
 
 lazy val keychain = projectMatrix
   .settings(
-    dependencyUpdatesFailBuild := true,
     libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.0"
   )
   .jvmPlatform(
@@ -212,7 +211,6 @@ lazy val keychain = projectMatrix
 
 lazy val porcupine = projectMatrix
   .settings(
-    dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-effect" % "3.7.0",
       "co.fs2" %%% "fs2-core" % "3.13.0",
@@ -383,7 +381,6 @@ lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
   .dependsOn(keychain, porcupine)
   .settings(
-    dependencyUpdatesFailBuild := true,
     libraryDependencies ++= Seq(
       "co.fs2" %%% "fs2-io" % "3.13.0",
       "org.gnieh" %%% "fs2-data-csv" % "1.14.1",
