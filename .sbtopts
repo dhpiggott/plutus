@@ -1,1 +1,1 @@
--J-XX:MaxRAM=8G
+-J-Xmx2G
