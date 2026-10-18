@@ -398,7 +398,14 @@ lazy val main = projectMatrix
       "tech.neander" %%% "cue4s" % "0.0.12"
     ),
     buildInfoKeys := Seq[BuildInfoKey](
-      libraryDependencies,
+      // `--version` lists what's in the binary, so leave out what only the
+      // build uses: codegen inputs (`smithy4s`), compiler plugins
+      // (`plugin->default(compile)`) and test-scoped modules.
+      BuildInfoKey.map(libraryDependencies) { case (key, dependencies) =>
+        key -> dependencies.filter(
+          _.configurations.forall(Set("compile", "runtime"))
+        )
+      },
       sbtVersion,
       scalaVersion,
       version
