@@ -1,0 +1,18 @@
+# Lands the update bots' PRs once Build is green. Mergify merges as its own
+# GitHub App rather than as GITHUB_TOKEN, so the push to main starts ci.yml like
+# any other merge does, which a workflow calling `gh pr merge --auto` could not.
+pull_request_rules:
+  - name: Merge update bots' PRs once Build passes
+    conditions:
+      - base=main
+      - or:
+          - author=dependabot[bot]
+          - author=scala-steward-dhpiggott[bot]
+      - -draft
+      - check-success=Build
+    actions:
+      merge:
+        # The ruleset requires signed commits. GitHub signs the squash commit
+        # itself, and refuses rebase merges outright; Scala Steward's own
+        # commits are unsigned, so a merge commit would be refused too.
+        method: squash
