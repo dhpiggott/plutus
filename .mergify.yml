@@ -20,7 +20,12 @@ pull_request_rules:
   # merges, and neither bot brings its PRs up to date unless they conflict, so
   # without this a PR stays behind for good once anything else lands. The
   # update is pushed by Mergify's App, so Build runs again on the result and the
-  # rule above merges it once that passes.
+  # rule above merges it once that passes. It rebases rather than merging main
+  # in because both bots abandon a PR carrying a commit authored by anyone else
+  # (Scala Steward logs "PR has commits by 'mergify[bot]'" and stops updating
+  # it), which would leave the next conflict for a person to resolve. A rebase
+  # keeps every commit authored by the bot; the rewritten commits are unsigned,
+  # which the squash merge above makes harmless.
   - name: Bring update bots' PRs up to date with main
     conditions:
       - base=main
@@ -31,4 +36,4 @@ pull_request_rules:
       - -conflict
       - "#commits-behind>0"
     actions:
-      update: {}
+      rebase: {}
