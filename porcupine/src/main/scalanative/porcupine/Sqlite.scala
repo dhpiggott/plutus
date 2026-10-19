@@ -100,5 +100,7 @@ object Sqlite:
           if len > 0 then
             memcpy(arr.at(0), sqlite3_column_blob(stmt, i), len.toCSize): Unit
           arr
+        case other =>
+          throw IllegalStateException(s"Unknown SQLite column type $other")
 
     def close(): Unit = guard(db)(sqlite3_finalize(stmt))

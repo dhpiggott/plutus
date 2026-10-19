@@ -485,4 +485,4 @@ lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
 
 lazy val scala3Versions = Seq(scala3Version)
 
-lazy val scala3Version = "3.8.3"
+lazy val scala3Version = "3.8.4"
