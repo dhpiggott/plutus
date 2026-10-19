@@ -138,6 +138,8 @@ object Sqlite:
             sqlite3_column_blob(stmt, i)
               .reinterpret(len.toLong)
               .toArray(JAVA_BYTE)
+        case other =>
+          throw IllegalStateException(s"Unknown SQLite column type $other")
 
     def close(): Unit =
       guard(db)(sqlite3_finalize(stmt))
