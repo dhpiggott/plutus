@@ -14,25 +14,27 @@ import java.time.Instant
 // account's pot, so pots get individual asset accounts, currency-checked and
 // archived when their pot goes. The Monzo session's whole state lifecycle
 // lives here: pot links are recorded whenever they're seen (see potLinks) and
-// the bookmarks are advanced only if advanceBookmarks and `consume` both say
-// so, which is what makes a source the one thing a sink has to be given.
-//
-// Import passes advanceBookmarks = false rather than !dryRun: it dedups on the
-// online_id slot rather than on bookmarks, so advancing them would make the
-// next export skip the very window that was just imported.
+// the bookmarks are advanced only if `resume` and `consume` both say so, which
+// is what makes a source the one thing a sink has to be given.
 def monzoTransactionSource(
     since: Option[Instant],
     before: Option[Instant],
-    advanceBookmarks: Boolean
+    resume: Resume
 ): TransactionSource = new TransactionSource:
   def use[A](now: Instant)(consume: Fetched => IO[A])(using
       verbosity: Verbosity
   ): IO[A] =
-    withMonzoApi(since, now): (monzoApi, state) =>
+    val advanceBookmarks = resume match
+      case Resume.FromBookmarks(advance) => advance
+      case Resume.FromStarts(_)          => false
+    def windowStarts(state: State): List[Instant] = since match
+      case Some(since) => List(since)
+      case None => resumePoints(resume, state).values.map(_.instant).toList
+    withMonzoApi(windowStarts, now): (monzoApi, state) =>
       for
         byAccount <- listAllTransactions(
           monzoApi,
-          state,
+          resumePoints(resume, state),
           since,
           before = before.getOrElse(now)
         )
@@ -87,16 +89,31 @@ def monzoTransactionSource(
         result = result
       )
 
+// Each account's resume point for a run with no --since, from whichever of the
+// two places the sink named. A bookmark carries the transaction's ID, which
+// Monzo's `since` takes directly; a sink's starting point is only a timestamp.
+def resumePoints(
+    resume: Resume,
+    state: State
+): Map[monzo.AccountId, ListTransactionsSince] = resume match
+  case Resume.FromBookmarks(_) =>
+    state.lastTransactions.view
+      .mapValues(ListTransactionsSince.IdAndTimestamp(_))
+      .toMap
+
+  case Resume.FromStarts(starts) =>
+    starts.view.mapValues(ListTransactionsSince.Timestamp(_)).toMap
+
 // List every main account's transactions, then the pot accounts discovered
-// from their metadata (plus any already bookmarked in state), combined into a
+// from their metadata (plus any already resumable), combined into a
 // single by-account list — no caller consumes the two phases separately. Every
 // /accounts account appears as a key, keeping an empty transaction list when
-// nothing was fetched for it (no bookmark in bookmark mode, or no activity):
+// nothing was fetched for it (nowhere to resume from, or no activity):
 // pot naming needs every owner present, and consumers treat an empty value as
 // nothing to do. The verbose entity dump lives here, so every sink emits it.
 def listAllTransactions(
     monzoApi: monzo.Api[IO],
-    state: State,
+    resumeFrom: Map[monzo.AccountId, ListTransactionsSince],
     since: Option[Instant],
     before: Instant
 )(using
@@ -116,10 +133,10 @@ def listAllTransactions(
     case None =>
       accounts
         .map: account =>
-          (account, state.lastTransactions.get(account.id))
+          (account, resumeFrom.get(account.id))
         .collect:
           case (account, Some(since)) =>
-            (account, ListTransactionsSince.IdAndTimestamp(since))
+            (account, since)
   _ <- info:
     "Listing transactions for accounts…"
   accountsAndTransactions <- listTransactionsForAccounts(
@@ -128,7 +145,7 @@ def listAllTransactions(
     before
   )
   potAccountsAndSince = discoverPotAccounts(
-    state,
+    resumeFrom,
     accounts,
     accountsAndTransactions,
     since
@@ -154,7 +171,7 @@ def listAllTransactions(
             .toSet
   _ <- (IO.whenA(newPotAccountIds.nonEmpty)):
     warn:
-      s"Found pot accounts with no last recorded transaction; specify --since to fetch their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
+      s"Found pot accounts with nowhere to resume from; specify --since to fetch their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
   _ <- log(Verbosity.VERBOSE):
     Json.writeDocumentAsPrettyString:
       Document.array:
@@ -265,17 +282,17 @@ def listTransactionsForAccounts(
 // account — current_account_id is the owning account, and the pot ID shares
 // only its creation-timestamp prefix with the backing-account ID, so one can't
 // be derived from the other. (Import does still use /pots, but only to *name*
-// pots discovered here — see potsByAccountId.) Once a pot has a bookmark in
-// the state store it's recognisable there as a key /accounts doesn't return,
-// so it keeps syncing even when no transfer falls in the export window. (That
-// inference assumes /accounts never stops listing a main account — it keeps
-// returning closed ones, so in practice only pots can be in state but not in
-// /accounts.) Note that SCA verification doesn't extend to pot accounts: a
-// window reaching back more than 90 days fails with
-// forbidden.verification_required even right after authorisation, when main
-// accounts would return their full history.
+// pots discovered here — see potsByAccountId.) Once a pot has somewhere to
+// resume from — a bookmark in the state store, or a tagged account in the book
+// — it's recognisable there as a key /accounts doesn't return, so it keeps
+// syncing even when no transfer falls in the window. (That inference assumes
+// /accounts never stops listing a main account — it keeps returning closed
+// ones, so in practice only pots can be resumable but not in /accounts.) Note
+// that SCA verification doesn't extend to pot accounts: a window reaching back
+// more than 90 days fails with forbidden.verification_required even right
+// after authorisation, when main accounts would return their full history.
 def discoverPotAccounts(
-    state: State,
+    resumeFrom: Map[monzo.AccountId, ListTransactionsSince],
     accounts: List[monzo.Account],
     accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])],
     since: Option[Instant]
@@ -284,13 +301,13 @@ def discoverPotAccounts(
     .map:
       _.id
     .toSet
-  val bookmarked = state.lastTransactions.keySet.diff:
+  val resumable = resumeFrom.keySet.diff:
     mainAccountIds
   since match
     case Some(since) =>
       val discovered = discoveredPotAccountIds(accountsAndTransactions).diff:
         mainAccountIds
-      bookmarked
+      resumable
         .union:
           discovered
         .toList
@@ -300,13 +317,11 @@ def discoverPotAccounts(
           monzo.Account(accountId) -> ListTransactionsSince.Timestamp(since)
 
     case None =>
-      bookmarked.toList
+      resumable.toList
         .sortBy:
           _.value
         .map: accountId =>
-          monzo.Account(accountId) -> ListTransactionsSince.IdAndTimestamp(
-            state.lastTransactions(accountId)
-          )
+          monzo.Account(accountId) -> resumeFrom(accountId)
 
 def discoveredPotAccountIds(
     accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
@@ -327,6 +342,13 @@ enum ListTransactionsSince:
   case Timestamp(instant: Instant)
   case IdAndTimestamp(lastTransaction: LastTransaction)
 
+  def instant: Instant = this match
+    case Timestamp(instant) =>
+      instant
+
+    case IdAndTimestamp(lastTransaction) =>
+      lastTransaction.created.value.asInstant
+
 def listTransactions(
     monzoApi: monzo.Api[IO],
     accountId: monzo.AccountId,
@@ -334,15 +356,9 @@ def listTransactions(
     before: Instant
 ): IO[List[monzo.Transaction]] =
   val beforeForThisPage =
-    val sinceInstant = since match
-      case ListTransactionsSince.Timestamp(instant) =>
-        instant
-
-      case ListTransactionsSince.IdAndTimestamp(lastTransaction) =>
-        lastTransaction.created.value.asInstant
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
-    val maxPermittedBeforeForThisPage = sinceInstant.plus:
+    val maxPermittedBeforeForThisPage = since.instant.plus:
       Duration.ofHours:
         8760
     val mustPaginate = before.isAfter:

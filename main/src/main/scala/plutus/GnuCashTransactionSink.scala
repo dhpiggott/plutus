@@ -7,9 +7,10 @@ import porcupine.*
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 
 def gnuCashTransactionSink(
-    source: TransactionSource,
+    source: TransactionSourceFor,
     input: fs2.io.file.Path,
     dryRun: Boolean,
     ignoreLock: Boolean
@@ -23,10 +24,16 @@ def gnuCashTransactionSink(
   // enter_date — so one run stamps one time. Same as archiveAccounts and
   // restoreAccount, which read their own here too.
   now <- IO.realTimeInstant
+  // Read before the fetch rather than inside withBook, which would hold
+  // gnclock across the network calls and any authorisation prompt. Anything
+  // filed in between only means a longer window, and dedup skips the overlap.
+  starts <- peekBook(input): db =>
+    given Database[IO] = db
+    startsFromBook
   // IO.pure, not the book work: the book is opened after the source has let
   // go, so nothing it holds open outlives the fetch, and the pot links it
   // records survive an import that then fails.
-  fetched <- source.use(now)(IO.pure)
+  fetched <- source(Resume.FromStarts(starts)).use(now)(IO.pure)
   byAccount = fetched.byAccount
   pots = fetched.pots
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
@@ -422,6 +429,31 @@ def gnuCashTransactionSink(
     // backup.
     db.transactOrRollBack(dryRun)(run)
 yield ()
+
+// Where each account's window starts when --since doesn't say: from what the
+// book has already filed for it, never from the state store's bookmarks, which
+// record how far OFX export has got. An export that ran ahead of the book would
+// otherwise make this run skip what the book never got, silently, and one that
+// lagged or was never run would fetch too much or nothing at all.
+//
+// The book has no Monzo `created`, only post_date — the transaction's local
+// calendar day at neutral time — so the start is the UTC midnight before that
+// day's: no instant on a local day that late can be earlier, from any zone
+// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
+// the online_id dedup then skips, where starting late could miss one. Only
+// tags shaped like a Monzo account ID count: GnuCash's own OFX importer tags
+// other banks' accounts with the same slot, and asking Monzo for one of those
+// would fail the run.
+def startsFromBook(using
+    db: Database[IO]
+): IO[Map[monzo.AccountId, Instant]] =
+  Split.latestImportedPostDates.map:
+    _.collect:
+      case (tag, postDate) if tag.startsWith("acc_") =>
+        monzo.AccountId(tag) -> postDate
+          .truncatedTo(ChronoUnit.DAYS)
+          .minus(1, ChronoUnit.DAYS)
+    .toMap
 
 // The account path a transaction's category leg posts to. Monzo's categories
 // are authoritative, but not all of them are spending: income files under

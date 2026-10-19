@@ -4,6 +4,8 @@ import cats.effect.*
 import porcupine.*
 import porcupine.Codec.*
 
+import java.time.Instant
+
 /** sqlite> .schema splits CREATE TABLE splits( guid text(32) PRIMARY KEY NOT
   * NULL, tx_guid text(32) NOT NULL, account_guid text(32) NOT NULL, memo
   * text(2048) NOT NULL, action text(2048) NOT NULL, reconcile_state text(1) NOT
@@ -75,3 +77,36 @@ object Split:
   // Transaction.gnuCashTimestamp.
   val NotReconciled: String = "n"
   val ReconcileEpoch: String = "1970-01-01 00:00:00"
+
+  // The latest post_date among each tagged account's imported splits, keyed by
+  // the account's trimmed online_id tag: an account-level online_id names the
+  // account a statement belongs to, and a split-level one marks a row imported
+  // from it (see Slot.OnlineId), so the pair says how far that statement has
+  // been filed. An account with a tag and no imported split is absent. One
+  // scan of slots for the tags, then index lookups — GnuCash indexes slots by
+  // obj_guid and splits by account and transaction — rather than a pass over
+  // every split. post_date's "yyyy-MM-dd HH:mm:ss" sorts as it reads, so max()
+  // is the latest; it comes back as epoch seconds rather than as GnuCash's
+  // string, so nothing here parses one.
+  def latestImportedPostDates(using
+      db: Database[IO]
+  ): IO[List[(String, Instant)]] =
+    db.execute(
+      query = sql"""
+        select
+          trim(account_tags.string_val),
+          cast(strftime('%s', max(transactions.post_date)) as integer)
+        from slots as account_tags
+        join splits on splits.account_guid = account_tags.obj_guid
+        join slots as split_ids on split_ids.obj_guid = splits.guid
+        join transactions on transactions.guid = splits.tx_guid
+        where account_tags.name = $text
+          and account_tags.string_val is not null
+          and split_ids.name = $text
+          and transactions.post_date is not null
+        group by trim(account_tags.string_val)
+      """.query(text *: integer *: nil),
+      args = (Slot.OnlineId, Slot.OnlineId)
+    ).map:
+      _.map: (tag, postDate) =>
+        tag -> Instant.ofEpochSecond(postDate)
