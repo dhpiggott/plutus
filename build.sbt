@@ -392,7 +392,7 @@ lazy val main = projectMatrix
       "com.monovore" %%% "decline-effect" % "2.6.2",
       "org.http4s" %%% "http4s-ember-client" % "0.23.38",
       "org.http4s" %%% "http4s-ember-server" % "0.23.38",
-      "tech.neander" %%% "cue4s" % "0.0.12"
+      "tech.neander" %%% "cue4s" % "0.0.13"
     ),
     buildInfoKeys := Seq[BuildInfoKey](
       // `--version` lists what's in the binary: the resolved, transitive

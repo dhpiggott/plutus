@@ -83,7 +83,7 @@ private def sqlImpl(
   val fragment = parts.zipAll(args, '{ "" }, '{ "" }).foldLeft('{ "" }) {
     case ('{ $acc: String }, ('{ $p: String }, '{ $s: String })) =>
       '{ $acc + $p + $s }
-    case ('{ $acc: String }, ('{ $p: String }, '{ $e: Encoder[t] })) =>
+    case ('{ $acc: String }, ('{ $p: String }, '{ ${ _ }: Encoder[t] })) =>
       '{ $acc + $p + "?" }
     case ('{ $acc: String }, ('{ $p: String }, '{ $f: Fragment[t] })) =>
       '{ $acc + $p + $f.fragment }
