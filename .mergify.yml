@@ -16,3 +16,19 @@ pull_request_rules:
         # itself, and refuses rebase merges outright; Scala Steward's own
         # commits are unsigned, so a merge commit would be refused too.
         method: squash
+  # The ruleset also requires a branch to be up to date with main before it
+  # merges, and neither bot brings its PRs up to date unless they conflict, so
+  # without this a PR stays behind for good once anything else lands. The
+  # update is pushed by Mergify's App, so Build runs again on the result and the
+  # rule above merges it once that passes.
+  - name: Bring update bots' PRs up to date with main
+    conditions:
+      - base=main
+      - or:
+          - author=dependabot[bot]
+          - author=scala-steward-dhpiggott[bot]
+      - -draft
+      - -conflict
+      - "#commits-behind>0"
+    actions:
+      update: {}
