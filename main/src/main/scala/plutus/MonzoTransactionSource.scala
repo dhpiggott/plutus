@@ -29,7 +29,7 @@ def monzoTransactionSource(
       case Resume.FromStarts(_)          => false
     def windowStarts(state: State): List[Instant] = since match
       case Some(since) => List(since)
-      case None => resumePoints(resume, state).values.map(_.instant).toList
+      case None        => resumePoints(resume, state).values.map(_.start).toList
     withMonzoApi(windowStarts, now): (monzoApi, state) =>
       for
         byAccount <- listAllTransactions(
@@ -342,7 +342,7 @@ enum ListTransactionsSince:
   case Timestamp(instant: Instant)
   case IdAndTimestamp(lastTransaction: LastTransaction)
 
-  def instant: Instant = this match
+  def start: Instant = this match
     case Timestamp(instant) =>
       instant
 
@@ -358,7 +358,7 @@ def listTransactions(
   val beforeForThisPage =
     // See
     // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
-    val maxPermittedBeforeForThisPage = since.instant.plus:
+    val maxPermittedBeforeForThisPage = since.start.plus:
       Duration.ofHours:
         8760
     val mustPaginate = before.isAfter:
