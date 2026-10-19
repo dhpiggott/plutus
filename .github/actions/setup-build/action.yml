@@ -15,7 +15,7 @@ runs:
     # .java-version so that jenv, asdf, mise and SDKMAN put a local shell on the
     # same JDK as the runner.
     - name: Set up the JDK
-      uses: actions/setup-java@v5
+      uses: actions/setup-java@v6
       with:
         distribution: temurin
         java-version-file: .java-version
