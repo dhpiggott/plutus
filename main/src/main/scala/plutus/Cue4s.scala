@@ -10,15 +10,15 @@ import cue4s.*
 // apparently ignored. The interrupt ends the wait, and use's finally takes the
 // terminal out of raw mode. Under main3/run the JVM still waits for one more
 // key before it exits.
-def prompt[A](f: SyncPrompts => A): IO[A] =
+def prompt[A](f: SyncPrompts => Completion[A]): IO[A] =
   IO.interruptible:
-    Prompts.sync.use(f)
+    Prompts.sync.use(f).getOrRaise
 
 extension [A](completion: Completion[A])
   // Completion#getOrThrow rethrows a cancelled prompt as CompletionError
   // .Interrupted, whose message is null — an opaque crash. Raise an Error with
   // a message so a cancelled prompt is reported like every other failure.
-  def getOrRaise: A =
+  private def getOrRaise: A =
     completion match
       case Completion.Finished(value) =>
         value

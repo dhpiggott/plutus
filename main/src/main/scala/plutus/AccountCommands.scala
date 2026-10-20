@@ -161,7 +161,7 @@ def restoreAccount(
           _.singleChoice(
             "Choose account to restore",
             archivedAccountsByPath.keys.toList
-          ).getOrRaise
+          )
         archivedAccount = archivedAccountsByPath(archivedAccountPath)
         // Only the writes are transacted, not the prompt above: begin
         // immediate takes SQLite's write lock immediately, and holding that

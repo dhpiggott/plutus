@@ -172,7 +172,7 @@ def warnIfRefreshTokenNearExpiry(
       didRefresh <- prompt:
         _.confirm(
           s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
-        ).getOrRaise
+        )
       updatedState <-
         if didRefresh then
           // Anchor the extension on now, not the existing deadline: after a
@@ -233,15 +233,15 @@ def accessToken(
       for
         (clientId, clientSecret) <- maybeState match
           case None =>
-            prompt: prompts =>
-              val clientId =
-                prompts.text("Enter your Monzo client ID").getOrRaise
-              val clientSecret =
-                prompts.password("Enter your Monzo client secret").getOrRaise
-              (
-                monzo.ClientId(clientId),
-                monzo.ClientSecret(clientSecret.raw)
+            for
+              clientId <- prompt(_.text("Enter your Monzo client ID"))
+              clientSecret <- prompt(
+                _.password("Enter your Monzo client secret")
               )
+            yield (
+              monzo.ClientId(clientId),
+              monzo.ClientSecret(clientSecret.raw)
+            )
 
           case Some(state) =>
             IO.pure(state.clientId, state.clientSecret)
@@ -443,7 +443,7 @@ def exchangeAuthCode(
         scaComplete <- prompt:
           _.confirm(
             "Have you approved the request in your Monzo app?"
-          ).getOrRaise
+          )
         _ <- IO.raiseUnless(scaComplete):
           Error:
             "Monzo app approval not completed."
