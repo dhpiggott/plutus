@@ -3,7 +3,6 @@ package plutus
 import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
-import cue4s.*
 import porcupine.*
 
 import scala.collection.immutable.SortedMap
@@ -158,12 +157,11 @@ def restoreAccount(
         ):
           Error:
             "Archived accounts have duplicate paths."
-        archivedAccountPath <- IO.blocking:
-          Prompts.sync.use:
-            _.singleChoice(
-              "Choose account to restore",
-              archivedAccountsByPath.keys.toList
-            ).getOrRaise
+        archivedAccountPath <- prompt:
+          _.singleChoice(
+            "Choose account to restore",
+            archivedAccountsByPath.keys.toList
+          )
         archivedAccount = archivedAccountsByPath(archivedAccountPath)
         // Only the writes are transacted, not the prompt above: begin
         // immediate takes SQLite's write lock immediately, and holding that

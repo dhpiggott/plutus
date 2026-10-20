@@ -3,7 +3,6 @@ package plutus
 import cats.effect.*
 import cats.syntax.all.*
 import com.comcast.ip4s.*
-import cue4s.*
 import org.http4s.*
 import org.http4s.client.Client
 import org.http4s.dsl.io.*
@@ -170,11 +169,10 @@ def warnIfRefreshTokenNearExpiry(
           s"Monzo access expired on $expiryDate (unless you've since extended it in-app). Extend it in the Monzo app under $monzoRefreshPermissionsPath, otherwise the next run may require full re-authentication."
         else
           s"Monzo access expires in $daysRemaining day(s), on $expiryDate. Extend it in the Monzo app under $monzoRefreshPermissionsPath."
-      didRefresh <- IO.blocking:
-        Prompts.sync.use:
-          _.confirm(
-            s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
-          ).getOrRaise
+      didRefresh <- prompt:
+        _.confirm(
+          s"Did you just refresh permissions in the Monzo app ($monzoRefreshPermissionsPath)?"
+        )
       updatedState <-
         if didRefresh then
           // Anchor the extension on now, not the existing deadline: after a
@@ -235,16 +233,15 @@ def accessToken(
       for
         (clientId, clientSecret) <- maybeState match
           case None =>
-            IO.blocking:
-              Prompts.sync.use: prompts =>
-                val clientId =
-                  prompts.text("Enter your Monzo client ID").getOrRaise
-                val clientSecret =
-                  prompts.password("Enter your Monzo client secret").getOrRaise
-                (
-                  monzo.ClientId(clientId),
-                  monzo.ClientSecret(clientSecret.raw)
-                )
+            for
+              clientId <- prompt(_.text("Enter your Monzo client ID"))
+              clientSecret <- prompt(
+                _.password("Enter your Monzo client secret")
+              )
+            yield (
+              monzo.ClientId(clientId),
+              monzo.ClientSecret(clientSecret.raw)
+            )
 
           case Some(state) =>
             IO.pure(state.clientId, state.clientSecret)
@@ -443,11 +440,10 @@ def exchangeAuthCode(
           redirectUri = Some(redirectUri),
           code = Some(authorizationCode)
         )
-        scaComplete <- IO.blocking:
-          Prompts.sync.use:
-            _.confirm(
-              "Have you approved the request in your Monzo app?"
-            ).getOrRaise
+        scaComplete <- prompt:
+          _.confirm(
+            "Have you approved the request in your Monzo app?"
+          )
         _ <- IO.raiseUnless(scaComplete):
           Error:
             "Monzo app approval not completed."
