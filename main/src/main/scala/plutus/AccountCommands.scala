@@ -255,13 +255,14 @@ def cleanUpRedundantMirror(
           existingChildren
         ): child =>
           val childPath = s"$existingMirrorPath/${child.name}"
-          // Where the child ends up, spelled out rather than read back after
-          // the move: a dry run doesn't move it, and the path would otherwise
-          // have to be queried twice to say the same thing.
-          val movedChildPath = s"$originalPath/${child.name}"
+          // Named by the parent it moves under, not by a path for the child
+          // there: that path is the original's side of the boundary, which the
+          // child only passes through before the original takes the mirror's
+          // place, so it read as a move in the wrong direction. Where the
+          // child ends up is where it already is.
           IO.unlessA(dryRun)(child.update(parent = original).void) *> warn:
             val verb = if dryRun then "Would move" else "Moved"
-            s"$verb $childPath to $movedChildPath."
+            s"$verb $childPath under $originalPath, which replaces $existingMirrorPath."
         _ <- IO.unlessA(dryRun)(existingMirror.delete)
         _ <- warn:
           val verb = if dryRun then "Would delete" else "Deleted"
