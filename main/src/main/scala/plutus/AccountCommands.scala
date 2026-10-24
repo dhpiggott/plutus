@@ -145,18 +145,38 @@ def restoreAccount(
         archivedAccounts <- archiveSubroot.allChildren
         _ <- IO.raiseWhen(archivedAccounts.isEmpty):
           nothingToRestore
-        archivedAccountsByPath <- (IO
+        archivedAccountsAtPaths <- (IO
           .traverse:
             archivedAccounts
           ): account =>
             account.pathString.map(_ -> account)
           .map:
-            SortedMap.from
-        _ <- IO.raiseUnless(
-          archivedAccountsByPath.size == archivedAccounts.size
-        ):
+            _.groupMap((path, _) => path)((_, account) => account)
+        // The prompt offers paths, so accounts sharing one can't be told apart
+        // there. GnuCash permits same-named siblings, resolveAssetAccount can
+        // create one beside an untagged account at its canonical path (see its
+        // comment), and archive-accounts before d640501 moved a parent in
+        // beside the placeholder mirror an earlier run made for its child.
+        //
+        // Only the duplicated paths are left out, not the whole command
+        // refused, and their descendants stay on offer: if A and B are both at
+        // Archive/Assets/Savings, A's child Archive/Assets/Savings/Old ISA is
+        // still restorable. Restoring it starts from the account, not its path
+        // string — pathInitBelow reads the names of its own ancestors, and the
+        // live Assets/Savings is found or created from those names — so it
+        // never has to work out whether its archived parent was A or B.
+        (unambiguous, duplicated) = archivedAccountsAtPaths.partition:
+          (_, accounts) => accounts.sizeIs == 1
+        _ <- duplicated.toList
+          .sortBy((path, _) => path)
+          .traverse_ : (path, accounts) =>
+            warn:
+              s"${accounts.size} archived accounts are at $path, so it is left out of the choices below — a path can't say which of them to restore. To make it restorable, rename all but one in GnuCash, or move their transactions into one and delete the rest."
+        archivedAccountsByPath = SortedMap.from:
+          unambiguous.view.mapValues(_.head)
+        _ <- IO.raiseWhen(archivedAccountsByPath.isEmpty):
           Error:
-            "Archived accounts have duplicate paths."
+            "No archived account can be restored: every one shares its path with another (see the warnings above for how to resolve that)."
         archivedAccountPath <- prompt:
           _.singleChoice(
             "Choose account to restore",
@@ -230,6 +250,13 @@ def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
 // children of the account we're now archiving/restoring (their original
 // parent) and to delete the newly redundant mirror (because it will be
 // replaced when the original is moved into its place).
+//
+// An account there with transactions of its own is not a mirror, though, but a
+// second account that happens to share the original's path — two same-named
+// siblings archived one after the other, say, where the first is already in
+// the Archive by the time the second arrives. Deleting it would orphan its
+// splits (nothing in the schema stops that), so the run fails instead, rolling
+// back with everything else in its transaction.
 def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
@@ -250,6 +277,11 @@ def cleanUpRedundantMirror(
         // has no children to find one under — but where it sits is only known
         // to the book.
         existingMirrorPath <- existingMirror.pathString
+        existingSplits <- Split.countForAccount(existingMirror.guid)
+        _ <- IO.raiseWhen(existingSplits > 0):
+          Error(
+            s"$existingMirrorPath has transactions of its own ($existingSplits splits), so it is a separate account rather than a mirror for $originalPath, and replacing it would orphan them. Resolve by hand in GnuCash — rename one of the two, or move its transactions into the other and delete it — then run again."
+          )
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren
