@@ -153,11 +153,18 @@ def restoreAccount(
           .map:
             _.groupMap((path, _) => path)((_, account) => account)
         // The prompt offers paths, so accounts sharing one can't be told apart
-        // there — a state GnuCash permits and resolveAssetAccount deliberately
-        // creates (see its comment). Only those accounts are left out, not the
-        // whole command refused: the rest are unambiguous, and restoring one
-        // never depends on which of a duplicated pair is which, since the
-        // mirror it needs is rebuilt from names rather than looked up by path.
+        // there. GnuCash permits same-named siblings, resolveAssetAccount can
+        // create one beside an untagged account at its canonical path (see its
+        // comment), and archive-accounts before d640501 moved a parent in
+        // beside the placeholder mirror an earlier run made for its child.
+        //
+        // Only the duplicated paths are left out, not the whole command
+        // refused, and their descendants stay on offer: if A and B are both at
+        // Archive/Assets/Savings, A's child Archive/Assets/Savings/Old ISA is
+        // still restorable. Restoring it starts from the account, not its path
+        // string — pathInitBelow reads the names of its own ancestors, and the
+        // live Assets/Savings is found or created from those names — so it
+        // never has to work out whether its archived parent was A or B.
         (unambiguous, duplicated) = archivedAccountsAtPaths.partition:
           (_, accounts) => accounts.sizeIs == 1
         _ <- duplicated.toList
