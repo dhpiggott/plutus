@@ -145,18 +145,31 @@ def restoreAccount(
         archivedAccounts <- archiveSubroot.allChildren
         _ <- IO.raiseWhen(archivedAccounts.isEmpty):
           nothingToRestore
-        archivedAccountsByPath <- (IO
+        archivedAccountsAtPaths <- (IO
           .traverse:
             archivedAccounts
           ): account =>
             account.pathString.map(_ -> account)
           .map:
-            SortedMap.from
-        _ <- IO.raiseUnless(
-          archivedAccountsByPath.size == archivedAccounts.size
-        ):
+            _.groupMap((path, _) => path)((_, account) => account)
+        // The prompt offers paths, so accounts sharing one can't be told apart
+        // there — a state GnuCash permits and resolveAssetAccount deliberately
+        // creates (see its comment). Only those accounts are left out, not the
+        // whole command refused: the rest are unambiguous, and restoring one
+        // never depends on which of a duplicated pair is which, since the
+        // mirror it needs is rebuilt from names rather than looked up by path.
+        (unambiguous, duplicated) = archivedAccountsAtPaths.partition:
+          (_, accounts) => accounts.sizeIs == 1
+        _ <- duplicated.toList
+          .sortBy((path, _) => path)
+          .traverse_ : (path, accounts) =>
+            warn:
+              s"${accounts.size} archived accounts are at $path, so it is left out of the choices below — a path can't say which of them to restore. To make it restorable, rename all but one in GnuCash, or move their transactions into one and delete the rest."
+        archivedAccountsByPath = SortedMap.from:
+          unambiguous.view.mapValues(_.head)
+        _ <- IO.raiseWhen(archivedAccountsByPath.isEmpty):
           Error:
-            "Archived accounts have duplicate paths."
+            "No archived account can be restored: every one shares its path with another (see the warnings above for how to resolve that)."
         archivedAccountPath <- prompt:
           _.singleChoice(
             "Choose account to restore",
