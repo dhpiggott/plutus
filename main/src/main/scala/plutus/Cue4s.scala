@@ -12,16 +12,4 @@ import cue4s.*
 // key before it exits.
 def prompt[A](f: SyncPrompts => Completion[A]): IO[A] =
   IO.interruptible:
-    Prompts.sync.use(f) match
-      case Completion.Finished(value) =>
-        value
-
-      // Completion#getOrThrow would rethrow this as CompletionError
-      // .Interrupted, whose message is null — an opaque crash. Raise an Error
-      // with a message so a cancelled prompt is reported like every other
-      // failure.
-      case Completion.Fail(CompletionError.Interrupted) =>
-        throw Error("Cancelled.")
-
-      case Completion.Fail(CompletionError.Error(message)) =>
-        throw Error(message)
+    Prompts.sync.use(f).getOrThrow
