@@ -242,21 +242,13 @@ def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
     frontier(root)
 
 // Handles the case where a mirror already exists at `mirrorParent` with the
-// same name as `original`. This happens when a child was already
-// archived/restored, resulting in the creation of a mirror of the parent
-// account we're now archiving/restoring.
+// same name as `original`. This happens when a descendant was already
+// archived/restored, resulting in the creation of a mirror of the account
+// we're now archiving/restoring — and of every account between the two.
 //
-// The correct handling is to move the children of the existing mirror to be
-// children of the account we're now archiving/restoring (their original
-// parent) and to delete the newly redundant mirror (because it will be
-// replaced when the original is moved into its place).
-//
-// An account there with transactions of its own is not a mirror, though, but a
-// second account that happens to share the original's path — two same-named
-// siblings archived one after the other, say, where the first is already in
-// the Archive by the time the second arrives. Deleting it would orphan its
-// splits (nothing in the schema stops that), so the run fails instead, rolling
-// back with everything else in its transaction.
+// The correct handling is to merge the existing mirror into the original (see
+// mergeMirrorInto) and so leave nothing at the mirror's place for the original
+// to land beside when it is moved there.
 def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
@@ -277,27 +269,75 @@ def cleanUpRedundantMirror(
         // has no children to find one under — but where it sits is only known
         // to the book.
         existingMirrorPath <- existingMirror.pathString
-        existingSplits <- Split.countForAccount(existingMirror.guid)
-        _ <- IO.raiseWhen(existingSplits > 0):
-          Error(
-            s"$existingMirrorPath has transactions of its own ($existingSplits splits), so it is a separate account rather than a mirror for $originalPath, and replacing it would orphan them. Resolve by hand in GnuCash — rename one of the two, or move its transactions into the other and delete it — then run again."
-          )
-        existingChildren <- existingMirror.directChildren
-        _ <- (IO.traverse:
-          existingChildren
-        ): child =>
-          val childPath = s"$existingMirrorPath/${child.name}"
-          // Named by the parent it moves under, not by a path for the child
-          // there: that path is the original's side of the boundary, which the
-          // child only passes through before the original takes the mirror's
-          // place, so it read as a move in the wrong direction. Where the
-          // child ends up is where it already is.
-          IO.unlessA(dryRun)(child.update(parent = original).void) *> warn:
-            val verb = if dryRun then "Would move" else "Moved"
-            s"$verb $childPath under $originalPath, which replaces $existingMirrorPath."
-        _ <- IO.unlessA(dryRun)(existingMirror.delete)
-        _ <- warn:
-          val verb = if dryRun then "Would delete" else "Deleted"
-          s"$verb existing ${mirrorKind.toLowerCase} mirror $existingMirrorPath."
+        _ <- mergeMirrorInto(
+          original,
+          originalPath,
+          existingMirror,
+          existingMirrorPath,
+          mirrorKind,
+          dryRun
+        )
       yield ()
+  yield ()
+
+// Moves each child of `mirror` under `original`, then deletes the emptied
+// mirror. A child the original already has a same-named counterpart for is
+// itself a mirror of that counterpart — the chain an earlier run built down to
+// whatever it archived or restored — so it is merged into the counterpart the
+// same way rather than moved: moving it would put two same-named siblings
+// under the original, which then travel across the boundary with it as a
+// duplicated path. That is the case of hiding a whole tree some of whose
+// leaves were already archived: the mirror chain overlaps the tree at every
+// level between its root and those leaves, not just at the root.
+//
+// A mirror with transactions of its own is not a mirror, though, but a second
+// account that happens to share the original's path — two same-named siblings
+// archived one after the other, say, where the first is already in the
+// Archive by the time the second arrives. Deleting it would orphan its splits
+// (nothing in the schema stops that), so the run fails instead, rolling back
+// with everything else in its transaction.
+def mergeMirrorInto(
+    original: Account,
+    originalPath: String,
+    mirror: Account,
+    mirrorPath: String,
+    mirrorKind: String,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Unit] =
+  for
+    mirrorSplits <- Split.countForAccount(mirror.guid)
+    _ <- IO.raiseWhen(mirrorSplits > 0):
+      Error(
+        s"$mirrorPath has transactions of its own ($mirrorSplits splits), so it is a separate account rather than a mirror for $originalPath, and replacing it would orphan them. Resolve by hand in GnuCash — rename one of the two, or move its transactions into the other and delete it — then run again."
+      )
+    mirrorChildren <- mirror.directChildren
+    _ <- (IO.traverse:
+      mirrorChildren
+    ): child =>
+      val childPath = s"$mirrorPath/${child.name}"
+      original
+        .child(child.name)
+        .flatMap:
+          case Some(counterpart) =>
+            mergeMirrorInto(
+              counterpart,
+              s"$originalPath/${child.name}",
+              child,
+              childPath,
+              mirrorKind,
+              dryRun
+            )
+          case None =>
+            // Named by the parent it moves under, not by a path for the child
+            // there: that path is the original's side of the boundary, which
+            // the child only passes through before the original takes the
+            // mirror's place, so it read as a move in the wrong direction.
+            // Where the child ends up is where it already is.
+            IO.unlessA(dryRun)(child.update(parent = original).void) *> warn:
+              val verb = if dryRun then "Would move" else "Moved"
+              s"$verb $childPath under $originalPath, which replaces $mirrorPath."
+    _ <- IO.unlessA(dryRun)(mirror.delete)
+    _ <- warn:
+      val verb = if dryRun then "Would delete" else "Deleted"
+      s"$verb existing ${mirrorKind.toLowerCase} mirror $mirrorPath."
   yield ()
