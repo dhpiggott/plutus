@@ -190,6 +190,21 @@ val backupTimestamp: DateTimeFormatter =
 def formatBackupTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
 
+// A look at the book from outside withBook, for what a run has to know before
+// it can start: no backup, since nothing is written, and no gnclock, since a
+// read is not what the lock guards — SQLite gives it a consistent snapshot
+// whoever has the book open. The body runs inside withoutCommitting all the
+// same, so a write that slipped in would be rolled back rather than land in a
+// book no backup was taken of.
+def peekBook[A](input: fs2.io.file.Path)(
+    body: Database[IO] => IO[A]
+): IO[A] =
+  requireExistingBook(input) *>
+    Database
+      .open[IO](input.toString)
+      .use: db =>
+        db.withoutCommitting(body(db))
+
 // The two accounts every placement decision hangs off, resolved once per run
 // rather than once per account that asks. The subroot is an IO because the
 // first retired account is what brings it into being: resolving it eagerly

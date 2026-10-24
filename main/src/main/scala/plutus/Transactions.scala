@@ -30,18 +30,12 @@ lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   ).tupled.map: (verbosity, source, sink, dryRun) =>
     sink(source, dryRun)(using verbosity)
 
-// A source that hasn't yet been told whether a successful run should advance
-// the Monzo bookmarks, because that is the sink's answer rather than the
-// command line's: the book dedups on the online_id slot instead, so a run that
-// advanced them would make the next OFX export skip the window it had just
-// filed. The CSV source ignores it — it has no bookmarks to advance and no
-// state store to advance them in.
-//
-// A trait rather than a Boolean => TransactionSource alias, so the two sinks
-// can name the argument they pass: a bare true or false at the call site says
-// nothing about which of them it is.
-trait TransactionSourceFor:
-  def apply(advanceBookmarks: Boolean): TransactionSource
+// A source that hasn't yet been told where its window starts when --since
+// doesn't say, because that is the sink's answer rather than the command
+// line's: the OFX sink resumes from the Monzo bookmarks and advances them,
+// while the book resumes from what it has already filed and leaves them alone.
+// See Resume.
+type TransactionSourceFor = Resume => TransactionSource
 
 lazy val sourceOpts: Opts[TransactionSourceFor] =
   monzoSourceOpts orElse csvSourceOpts
@@ -56,7 +50,7 @@ lazy val monzoSourceOpts: Opts[TransactionSourceFor] =
     sinceOpts,
     beforeOpts
   ).tupled.map: (_, since, before) =>
-    advanceBookmarks => monzoTransactionSource(since, before, advanceBookmarks)
+    resume => monzoTransactionSource(since, before, resume)
 
 // Windowing options on the API call rather than on the command, so they're
 // unparseable alongside --from-csv rather than accepted and ignored: a
@@ -66,7 +60,7 @@ lazy val sinceOpts: Opts[Option[Instant]] =
     .option[Instant](
       "since",
       help =
-        "Timestamp to read transactions from. If not specified defaults to the last recorded transaction ID for each account, unless there is no last recorded transaction for that account, in which case no transactions will be read for it."
+        "Timestamp to read transactions from. If not specified, --to-ofx reads each account from its last exported transaction, and --to-book from the day before the latest transaction already in the book for it; an account with neither is not read."
     )
     .orNone
 
@@ -149,15 +143,7 @@ lazy val sinkOpts: Opts[TransactionSink] = toBookOpts orElse toOfxOpts
 lazy val toBookOpts: Opts[TransactionSink] =
   (toBookPathOpts, ignoreLockOpts).tupled.map: (input, ignoreLock) =>
     (source, dryRun) =>
-      // Never !dryRun: the book dedups on the online_id slot rather than on
-      // bookmarks, so advancing them would make the next OFX run skip the
-      // window this run just filed. See monzoTransactionSource.
-      gnuCashTransactionSink(
-        source(advanceBookmarks = false),
-        input,
-        dryRun,
-        ignoreLock
-      )
+      gnuCashTransactionSink(source, input, dryRun, ignoreLock)
 
 // An optional-argument option (--to-book, or --to-book=PATH), so naming the
 // sink doesn't force a path on a run that wants the default. decline binds an
@@ -178,7 +164,11 @@ lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
 lazy val toOfxOpts: Opts[TransactionSink] =
   toOfxPathOpts.map: output =>
     (source, dryRun) =>
-      ofxTransactionSink(source(advanceBookmarks = !dryRun), output, dryRun)
+      ofxTransactionSink(
+        source(Resume.FromBookmarks(advance = !dryRun)),
+        output,
+        dryRun
+      )
 
 lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
   Opts

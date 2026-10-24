@@ -35,8 +35,12 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 // refresh token is saved even if `use` fails, so it isn't lost. `now` is the
 // run's instant rather than one read here, so the token arithmetic below and
 // whatever the command goes on to stamp agree on when the run happened.
+// `windowStarts` is where each account's window will start for a given state —
+// the --since, or every account's resume point — so that authorisation can
+// tell whether any reaches back past what Strong Customer Authentication
+// allows, and an empty answer can be reported as the run that fetches nothing.
 def withMonzoApi[A](
-    since: Option[Instant],
+    windowStarts: State => List[Instant],
     now: Instant
 )(
     use: (monzo.Api[IO], State) => IO[(state: State, result: A)]
@@ -67,15 +71,10 @@ def withMonzoApi[A](
       // minOption, not min: a state can hold tokens and no bookmarks at all —
       // accessToken writes one on first authorisation, and withMonzoApi's
       // onError persists it if the fetch then fails — and `min` on an empty
-      // collection throws with no message. With no bookmark and no --since
-      // there is no window, so nothing is fetched and no authentication is
-      // needed for one; the warning below says as much.
-      val windowStart = since.orElse:
-        state.lastTransactions.values
-          .map:
-            _.created.value.asInstant
-          .minOption
-      windowStart
+      // collection throws with no message. With nowhere to resume from and
+      // no --since there is no window, so nothing is fetched and no
+      // authentication is needed for one; the warning below says as much.
+      windowStarts(state).minOption
         .exists:
           _.isBefore:
             now
@@ -84,14 +83,13 @@ def withMonzoApi[A](
                   90
               .plus:
                 leeway
-  // The state that reaches here with tokens but no bookmarks fetches nothing
-  // at all (listAllTransactions keeps only the accounts that have one), which
-  // would otherwise look like a successful run against a quiet account.
-  _ <- IO.whenA(
-    since.isEmpty && checkedState.exists(_.lastTransactions.isEmpty)
-  ):
+  // A state that reaches here with tokens but nowhere to resume from fetches
+  // nothing at all (listAllTransactions keeps only the accounts that have
+  // somewhere), which would otherwise look like a successful run against a
+  // quiet account.
+  _ <- IO.whenA(checkedState.exists(windowStarts(_).isEmpty)):
     warn:
-      "No --since given and no last transaction recorded for any account, so there is no window to fetch; specify --since."
+      "No --since given and nowhere to resume from for any account, so there is no window to fetch; specify --since."
   result <- EmberClientBuilder
     .default[IO]
     .build

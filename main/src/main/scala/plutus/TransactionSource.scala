@@ -58,3 +58,20 @@ final case class FetchedAccount(
 // restore-account do with their own. A source with no use for it ignores it.
 trait TransactionSource:
   def use[A](now: Instant)(consume: Fetched => IO[A])(using Verbosity): IO[A]
+
+// Where each account's window starts when --since doesn't say, which is the
+// sink's answer rather than the command line's: the state store's bookmarks
+// record how far OFX export has got, which says nothing about what a book
+// holds. The CSV source ignores it, since a statement is its own window.
+enum Resume:
+  // The bookmarks, advanced past this run's window once `consume` has
+  // returned, or left where they were — the OFX sink advances them unless
+  // it's a dry run, since they are its progress and its dedup.
+  case FromBookmarks(advance: Boolean)
+
+  // Starting points the sink worked out for itself, one per account it knows;
+  // an account missing from the map has none and is not fetched, as one with
+  // no bookmark isn't. The bookmarks are neither read nor advanced: a sink that
+  // keeps its own progress would only be misled by them, and a run that moved
+  // them would make the next OFX export skip a window it never wrote.
+  case FromStarts(starts: Map[monzo.AccountId, Instant])
