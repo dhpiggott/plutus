@@ -243,6 +243,13 @@ def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
 // children of the account we're now archiving/restoring (their original
 // parent) and to delete the newly redundant mirror (because it will be
 // replaced when the original is moved into its place).
+//
+// An account there with transactions of its own is not a mirror, though, but a
+// second account that happens to share the original's path — two same-named
+// siblings archived one after the other, say, where the first is already in
+// the Archive by the time the second arrives. Deleting it would orphan its
+// splits (nothing in the schema stops that), so the run fails instead, rolling
+// back with everything else in its transaction.
 def cleanUpRedundantMirror(
     original: Account,
     originalPath: String,
@@ -263,6 +270,11 @@ def cleanUpRedundantMirror(
         // has no children to find one under — but where it sits is only known
         // to the book.
         existingMirrorPath <- existingMirror.pathString
+        existingSplits <- Split.countForAccount(existingMirror.guid)
+        _ <- IO.raiseWhen(existingSplits > 0):
+          Error(
+            s"$existingMirrorPath has transactions of its own ($existingSplits splits), so it is a separate account rather than a mirror for $originalPath, and replacing it would orphan them. Resolve by hand in GnuCash — rename one of the two, or move its transactions into the other and delete it — then run again."
+          )
         existingChildren <- existingMirror.directChildren
         _ <- (IO.traverse:
           existingChildren

@@ -75,3 +75,14 @@ object Split:
   // Transaction.gnuCashTimestamp.
   val NotReconciled: String = "n"
   val ReconcileEpoch: String = "1970-01-01 00:00:00"
+
+  def countForAccount(accountGuid: String)(using
+      db: Database[IO]
+  ): IO[Long] =
+    db.unique(
+      query = sql"""
+        select count(*) from splits
+        where account_guid = $text
+      """.query(integer),
+      args = accountGuid
+    )
