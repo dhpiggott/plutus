@@ -64,7 +64,7 @@ def withMonzoApi[A](
       // explicitly request it with requireStrongCustomerAuthentication.
       true
 
-    case Some(state) =>
+    case Some(_) =>
       val leeway = Duration.ofSeconds:
         10
       windowStarts.exists:
