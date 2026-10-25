@@ -31,10 +31,11 @@ lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
     sink(source, dryRun)(using verbosity)
 
 // One branch per sink, each with the sources it accepts, rather than a product
-// of every source with every sink, because --since only means something to
-// one of them: the book already knows where each account left off, from what
-// it has filed (see startsFromBook), so a --since on it could only skip rows or
-// re-fetch ones dedup would skip anyway.
+// of every source with every sink, because --since and --before only mean
+// something to one of them: the book already knows where each account left
+// off, from what it has filed (see startsFromBook), so a --since on it could
+// only skip rows or re-fetch ones dedup would skip anyway, and a --before
+// would only leave rows for the next run to fetch.
 lazy val sourceAndSinkOpts: Opts[(TransactionSourceFor, TransactionSink)] =
   (toBookSourceOpts, toBookOpts).tupled orElse
     (toOfxSourceOpts, toOfxOpts).tupled
@@ -50,8 +51,8 @@ lazy val toBookSourceOpts: Opts[TransactionSourceFor] =
   monzoToBookSourceOpts orElse csvSourceOpts
 
 lazy val monzoToBookSourceOpts: Opts[TransactionSourceFor] =
-  (fromMonzoOpts, beforeOpts).tupled.map: (_, before) =>
-    resume => monzoTransactionSource(since = None, before, resume)
+  fromMonzoOpts.map: _ =>
+    resume => monzoTransactionSource(since = None, before = None, resume)
 
 lazy val fromMonzoOpts: Opts[Unit] =
   Opts.flag(

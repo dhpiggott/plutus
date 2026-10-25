@@ -10,7 +10,7 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 ## Commands
 
 ```
-plutus transactions     ( --from-monzo [--before INSTANT]
+plutus transactions     ( --from-monzo
                         | --from-csv ACCOUNT_ID=PATH... [--from-csv-pot ACCOUNT_ID=PATH]... )
                         --to-book[=PATH] [--ignore-lock] [--dry-run] [verbosity]
 plutus transactions     ( --from-monzo [--since INSTANT] [--before INSTANT]
@@ -52,7 +52,7 @@ Everything between the two ends is shared: the same £0-and-declined filter, the
 
 ### Reading from the Monzo API (`--from-monzo`)
 
-By default the fetch ends at the current time and starts where the sink left off. For `--to-ofx`, that is each account's last-exported transaction (a per-account bookmark held in the state store), and an account with no bookmark is not fetched. For `--to-book`, it is the day before the latest transaction already filed in the book for that account, and an account the book doesn't know yet is fetched from 89 days back (see [below](#writing-into-a-gnucash-book---to-book)). `--before` (an ISO-8601 timestamp) moves the end with either sink. `--since` moves the start, and only with `--to-ofx`: the book always knows where each account left off, so it doesn't take one. Neither is accepted alongside `--from-csv`, because a statement is its own window, with nothing to bound.
+By default the fetch ends at the current time and starts where the sink left off. For `--to-ofx`, that is each account's last-exported transaction (a per-account bookmark held in the state store), and an account with no bookmark is not fetched. For `--to-book`, it is the day before the latest transaction already filed in the book for that account, and an account the book doesn't know yet is fetched from 89 days back (see [below](#writing-into-a-gnucash-book---to-book)). With `--to-ofx`, `--since` and `--before` (ISO-8601 timestamps) move the start and the end. The book always knows where each account left off, so `--to-book` takes neither. Neither is accepted alongside `--from-csv`, because a statement is its own window, with nothing to bound.
 
 #### Pot transactions
 
@@ -123,7 +123,7 @@ Monzo's own transaction `category` is authoritative for filing, with a small kin
 
 Re-runs are idempotent: the Monzo transaction ID is written into an `online_id` KVP slot on the asset split (the same ID `--to-ofx` writes as the OFX `FITID`, and where GnuCash's generic importer stores it), and any transaction already carrying that ID is skipped. GnuCash's own import matcher recognises these rows too.
 
-- This sink never reads or advances the state-store bookmarks, which record OFX export progress rather than what the book holds, and it doesn't take `--since`. Each account's fetch starts from the book itself: for every account tagged with a Monzo account ID, the day before the latest transaction filed into it, as a timestamp (the book has only GnuCash's normalised post date, not Monzo's own timestamp, so the start errs early and dedup skips the overlap). An account with no tag, or with nothing filed into it yet, is fetched from 89 days back, which is as far as Monzo allows without signing in again. Bring in anything older with [`--from-csv`](#reading-from-csv-statements---from-csv---from-csv-pot).
+- This sink never reads or advances the state-store bookmarks, which record OFX export progress rather than what the book holds, and it doesn't take `--since` or `--before`. Each account's fetch starts from the book itself: for every account tagged with a Monzo account ID, the day before the latest transaction filed into it, as a timestamp (the book has only GnuCash's normalised post date, not Monzo's own timestamp, so the start errs early and dedup skips the overlap). An account with no tag, or with nothing filed into it yet, is fetched from 89 days back, which is as far as Monzo allows without signing in again. Bring in anything older with [`--from-csv`](#reading-from-csv-statements---from-csv---from-csv-pot).
 - Both splits are written unreconciled; you reconcile them against a statement yourself, as with an OFX import.
 - A missing book fails immediately, before the source is read: SQLite would otherwise create an empty book at a mistyped path and fail obscurely several queries later.
 - A book GnuCash has open is refused, and a real run holds the lock while it writes. See [The GnuCash lock](#the-gnucash-lock).
