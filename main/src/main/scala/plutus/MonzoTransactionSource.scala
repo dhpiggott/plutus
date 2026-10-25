@@ -27,15 +27,13 @@ def monzoTransactionSource(
     val advanceBookmarks = resume match
       case Resume.FromBookmarks(advance) => advance
       case Resume.FromStarts(_)          => false
-    def windowStarts(state: State): List[Instant] = since match
-      case Some(since) => List(since)
-      case None        => resumePoints(resume, state).values.map(_.start).toList
-    withMonzoApi(windowStarts, now): (monzoApi, state) =>
+    def starts(state: State): AccountStarts =
+      accountStarts(since, resume, state, now)
+    withMonzoApi(starts(_).all, now): (monzoApi, state) =>
       for
         byAccount <- listAllTransactions(
           monzoApi,
-          resumePoints(resume, state),
-          since,
+          starts(state),
           before = before.getOrElse(now)
         )
         // Merge before resolving, so this run's own discoveries serve this
@@ -89,6 +87,42 @@ def monzoTransactionSource(
         result = result
       )
 
+// Where each account's window starts: everywhere at --since when there is one,
+// and otherwise at the resume point the sink named for it. An account with no
+// resume point is skipped when resuming from bookmarks, because a bookmark run
+// carries on from the last export and an account it has never exported has
+// nothing to carry on from. When the sink names its own starting points, such
+// an account is read from as far back as Monzo allows without authorising
+// again: 89 days, a day inside the 90 Strong Customer Authentication allows
+// (see withMonzoApi), and also the most a pot's statement will return (see
+// discoverPotAccounts). Anything older can come from a CSV statement.
+def accountStarts(
+    since: Option[Instant],
+    resume: Resume,
+    state: State,
+    now: Instant
+): AccountStarts = since match
+  case Some(since) =>
+    AccountStarts(
+      known = resumePoints(resume, state).view
+        .mapValues(_ => ListTransactionsSince.Timestamp(since))
+        .toMap,
+      otherwise = Some(ListTransactionsSince.Timestamp(since))
+    )
+
+  case None =>
+    resume match
+      case Resume.FromBookmarks(_) =>
+        AccountStarts(known = resumePoints(resume, state), otherwise = None)
+
+      case Resume.FromStarts(_) =>
+        AccountStarts(
+          known = resumePoints(resume, state),
+          otherwise = Some:
+            ListTransactionsSince.Timestamp:
+              now.minus(Duration.ofDays(89))
+        )
+
 // Each account's resume point for a run with no --since, from whichever of the
 // two places the sink named. A bookmark carries the transaction's ID, which
 // Monzo's `since` takes directly; a sink's starting point is only a timestamp.
@@ -104,17 +138,30 @@ def resumePoints(
   case Resume.FromStarts(starts) =>
     starts.view.mapValues(ListTransactionsSince.Timestamp(_)).toMap
 
+// `known` holds the accounts with somewhere to start of their own, which is
+// also how a pot /accounts doesn't list is found when no transfer for it falls
+// in the window; `otherwise` is where every other account starts, if anywhere.
+final case class AccountStarts(
+    known: Map[monzo.AccountId, ListTransactionsSince],
+    otherwise: Option[ListTransactionsSince]
+):
+  def apply(accountId: monzo.AccountId): Option[ListTransactionsSince] =
+    known.get(accountId).orElse(otherwise)
+
+  // Every start the run could use, for withMonzoApi to judge the window by.
+  def all: List[Instant] =
+    (known.values ++ otherwise).map(_.start).toList
+
 // List every main account's transactions, then the pot accounts discovered
-// from their metadata (plus any already resumable), combined into a
+// from their metadata (plus any with a start of their own), combined into a
 // single by-account list — no caller consumes the two phases separately. Every
 // /accounts account appears as a key, keeping an empty transaction list when
-// nothing was fetched for it (nowhere to resume from, or no activity):
+// nothing was fetched for it (nowhere to start, or no activity):
 // pot naming needs every owner present, and consumers treat an empty value as
 // nothing to do. The verbose entity dump lives here, so every sink emits it.
 def listAllTransactions(
     monzoApi: monzo.Api[IO],
-    resumeFrom: Map[monzo.AccountId, ListTransactionsSince],
-    since: Option[Instant],
+    starts: AccountStarts,
     before: Instant
 )(using
     verbosity: Verbosity
@@ -125,18 +172,12 @@ def listAllTransactions(
     .listAccounts()
     .map:
       _.accounts
-  accountsAndSince = since match
-    case Some(since) =>
-      accounts.map: account =>
-        (account, ListTransactionsSince.Timestamp(since))
-
-    case None =>
-      accounts
-        .map: account =>
-          (account, resumeFrom.get(account.id))
-        .collect:
-          case (account, Some(since)) =>
-            (account, since)
+  accountsAndSince = accounts
+    .map: account =>
+      (account, starts(account.id))
+    .collect:
+      case (account, Some(since)) =>
+        (account, since)
   _ <- info:
     "Listing transactions for accounts…"
   accountsAndTransactions <- listTransactionsForAccounts(
@@ -145,10 +186,9 @@ def listAllTransactions(
     before
   )
   potAccountsAndSince = discoverPotAccounts(
-    resumeFrom,
+    starts,
     accounts,
-    accountsAndTransactions,
-    since
+    accountsAndTransactions
   )
   _ <- (IO.whenA(potAccountsAndSince.nonEmpty)):
     info:
@@ -171,7 +211,7 @@ def listAllTransactions(
             .toSet
   _ <- (IO.whenA(newPotAccountIds.nonEmpty)):
     warn:
-      s"Found pot accounts with nowhere to resume from; specify --since to fetch their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
+      s"Found pot accounts with nowhere to resume from; specify --since to export their transactions: ${newPotAccountIds.toList.map(_.value).sorted.mkString(", ")}"
   _ <- log(Verbosity.VERBOSE):
     Json.writeDocumentAsPrettyString:
       Document.array:
@@ -292,36 +332,26 @@ def listTransactionsForAccounts(
 // more than 90 days fails with forbidden.verification_required even right
 // after authorisation, when main accounts would return their full history.
 def discoverPotAccounts(
-    resumeFrom: Map[monzo.AccountId, ListTransactionsSince],
+    starts: AccountStarts,
     accounts: List[monzo.Account],
-    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])],
-    since: Option[Instant]
+    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
 ): List[(monzo.Account, ListTransactionsSince)] =
-  val mainAccountIds = accounts
-    .map:
-      _.id
-    .toSet
-  val resumable = resumeFrom.keySet.diff:
-    mainAccountIds
-  since match
-    case Some(since) =>
-      val discovered = discoveredPotAccountIds(accountsAndTransactions).diff:
-        mainAccountIds
-      resumable
-        .union:
-          discovered
-        .toList
-        .sortBy:
-          _.value
-        .map: accountId =>
-          monzo.Account(accountId) -> ListTransactionsSince.Timestamp(since)
-
-    case None =>
-      resumable.toList
-        .sortBy:
-          _.value
-        .map: accountId =>
-          monzo.Account(accountId) -> resumeFrom(accountId)
+  starts.known.keySet
+    .union:
+      discoveredPotAccountIds(accountsAndTransactions)
+    .diff:
+      accounts
+        .map:
+          _.id
+        .toSet
+    .toList
+    .sortBy:
+      _.value
+    .map: accountId =>
+      (monzo.Account(accountId), starts(accountId))
+    .collect:
+      case (account, Some(since)) =>
+        (account, since)
 
 def discoveredPotAccountIds(
     accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]

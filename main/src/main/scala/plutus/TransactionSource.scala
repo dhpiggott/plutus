@@ -70,8 +70,9 @@ enum Resume:
   case FromBookmarks(advance: Boolean)
 
   // Starting points the sink worked out for itself, one per account it knows;
-  // an account missing from the map has none and is not fetched, as one with
-  // no bookmark isn't. The bookmarks are neither read nor advanced: a sink that
-  // keeps its own progress would only be misled by them, and a run that moved
-  // them would make the next OFX export skip a window it never wrote.
+  // an account missing from the map is new to the sink, so it's read from as
+  // far back as the source can manage unprompted (see accountStarts). The
+  // bookmarks are neither read nor advanced: a sink that keeps its own progress
+  // would only be misled by them, and a run that moved them would make the
+  // next OFX export skip a window it never wrote.
   case FromStarts(starts: Map[monzo.AccountId, Instant])

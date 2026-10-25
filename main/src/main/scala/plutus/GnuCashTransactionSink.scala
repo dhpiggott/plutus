@@ -173,12 +173,13 @@ def gnuCashTransactionSink(
       // Fail fast on a pot the book doesn't know and no recorded link
       // names: it can't be filed into its own account, and a mis-filed row
       // would be permanent — online_id dedup skips it on every later run.
-      // One run whose window spans a transfer for the pot records the link.
+      // One Monzo run whose window spans a transfer for the pot records the
+      // link, whichever sink it writes to and even on a dry run.
       unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
         taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
       _ <- IO.raiseUnless(unnamedPots.isEmpty):
         Error(
-          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
+          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; a --from-monzo run whose window spans a transfer for each records the link(s): --to-book reaches back 89 days for a pot it doesn't know, and --to-ofx --dry-run --since reaches further without writing anything."
         )
       // The same fail-fast for an untyped account, and for the same reason:
       // with no type there is no path to create one at, so an untagged one
@@ -430,9 +431,9 @@ def gnuCashTransactionSink(
     db.transactOrRollBack(dryRun)(run)
 yield ()
 
-// Where each account's window starts when --since doesn't say: from what the
-// book has already filed for it, never from the state store's bookmarks, which
-// record how far OFX export has got. An export that ran ahead of the book would
+// Where each account's window starts: from what the book has already filed for
+// it, never from the state store's bookmarks, which record how far OFX export
+// has got, and never from a --since, which this sink doesn't take. An export that ran ahead of the book would
 // otherwise make this run skip what the book never got, silently, and one that
 // lagged or was never run would fetch too much or nothing at all.
 //

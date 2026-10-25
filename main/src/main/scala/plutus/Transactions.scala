@@ -14,21 +14,30 @@ import java.time.Instant
 // they come from and --to-… where they go, and all four pairs are runs someone
 // wants — including CSV to OFX, which is neither an import nor an export in
 // any sense a user would recognise. Stating both ends is also what lets
-// decline refuse what doesn't exist (two sources, no sink, --since with a CSV)
-// as a usage error rather than as a flag quietly ignored, and what puts the
-// whole matrix in --help: a product of two sums renders as one usage line per
-// pair.
+// decline refuse what doesn't exist (two sources, no sink, --since with a CSV
+// or a book) as a usage error rather than as a flag quietly ignored, and what
+// puts the whole matrix in --help: a sum of products renders as one usage line
+// per pair.
 lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "transactions",
   help = "Copy Monzo transactions into a GnuCash book or an OFX file."
 ):
   (
     verbosityOpts,
-    sourceOpts,
-    sinkOpts,
+    sourceAndSinkOpts,
     transactionsDryRunOpts
-  ).tupled.map: (verbosity, source, sink, dryRun) =>
+  ).tupled.map: (verbosity, sourceAndSink, dryRun) =>
+    val (source, sink) = sourceAndSink
     sink(source, dryRun)(using verbosity)
+
+// One branch per sink, each with the sources it accepts, rather than a product
+// of every source with every sink, because --since only means something to
+// one of them: the book already knows where each account left off, from what
+// it has filed (see startsFromBook), so a --since on it could only skip rows or
+// re-fetch ones dedup would skip anyway.
+lazy val sourceAndSinkOpts: Opts[(TransactionSourceFor, TransactionSink)] =
+  (toBookSourceOpts, toBookOpts).tupled orElse
+    (toOfxSourceOpts, toOfxOpts).tupled
 
 // A source that hasn't yet been told where its window starts when --since
 // doesn't say, because that is the sink's answer rather than the command
@@ -37,19 +46,25 @@ lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
 // See Resume.
 type TransactionSourceFor = Resume => TransactionSource
 
-lazy val sourceOpts: Opts[TransactionSourceFor] =
-  monzoSourceOpts orElse csvSourceOpts
+lazy val toBookSourceOpts: Opts[TransactionSourceFor] =
+  monzoToBookSourceOpts orElse csvSourceOpts
 
-lazy val monzoSourceOpts: Opts[TransactionSourceFor] =
-  (
-    Opts.flag(
-      "from-monzo",
-      help =
-        "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
-    ),
-    sinceOpts,
-    beforeOpts
-  ).tupled.map: (_, since, before) =>
+lazy val monzoToBookSourceOpts: Opts[TransactionSourceFor] =
+  (fromMonzoOpts, beforeOpts).tupled.map: (_, before) =>
+    resume => monzoTransactionSource(since = None, before, resume)
+
+lazy val fromMonzoOpts: Opts[Unit] =
+  Opts.flag(
+    "from-monzo",
+    help =
+      "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
+  )
+
+lazy val toOfxSourceOpts: Opts[TransactionSourceFor] =
+  monzoToOfxSourceOpts orElse csvSourceOpts
+
+lazy val monzoToOfxSourceOpts: Opts[TransactionSourceFor] =
+  (fromMonzoOpts, sinceOpts, beforeOpts).tupled.map: (_, since, before) =>
     resume => monzoTransactionSource(since, before, resume)
 
 // Windowing options on the API call rather than on the command, so they're
@@ -60,7 +75,7 @@ lazy val sinceOpts: Opts[Option[Instant]] =
     .option[Instant](
       "since",
       help =
-        "Timestamp to read transactions from. If not specified, --to-ofx reads each account from its last exported transaction, and --to-book from the day before the latest transaction already in the book for it; an account with neither is not read."
+        "Timestamp to read transactions from. If not specified defaults to each account's last exported transaction; an account with none is not read."
     )
     .orNone
 
@@ -135,8 +150,6 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
 // a context function type rather than a third argument.
 type TransactionSink =
   (TransactionSourceFor, Boolean) => Verbosity ?=> IO[Unit]
-
-lazy val sinkOpts: Opts[TransactionSink] = toBookOpts orElse toOfxOpts
 
 // --ignore-lock nests here, since gnclock is a book concern and means nothing
 // to a run writing an OFX file.
