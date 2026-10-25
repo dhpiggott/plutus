@@ -219,6 +219,11 @@ structure Account {
 
     closed: Closed
 
+    /// When the account was opened, which is where a first run into an empty
+    /// book starts reading its history. Optional because a pot backing account
+    /// is built from transfer metadata rather than decoded, and so has none.
+    created: Created
+
     @jsonUnknown
     unknown: UnknownProperties
 }

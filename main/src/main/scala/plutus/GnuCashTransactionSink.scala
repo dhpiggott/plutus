@@ -174,12 +174,12 @@ def gnuCashTransactionSink(
       // names: it can't be filed into its own account, and a mis-filed row
       // would be permanent — online_id dedup skips it on every later run.
       // One Monzo run whose window spans a transfer for the pot records the
-      // link, whichever sink it writes to and even on a dry run.
+      // link, and a run into the book then gives the pot a tagged account.
       unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
         taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
       _ <- IO.raiseUnless(unnamedPots.isEmpty):
         Error(
-          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; a --from-monzo run whose window spans a transfer for each records the link(s): --to-book reaches back 89 days for a pot it doesn't know, and --to-ofx --dry-run --since reaches further without writing anything."
+          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; run --from-monzo --to-book first, which creates and tags an account for every pot a transfer in its window names — the whole history of every main account, on a book that knows none yet."
         )
       // The same fail-fast for an untyped account, and for the same reason:
       // with no type there is no path to create one at, so an untagged one
@@ -246,20 +246,24 @@ def gnuCashTransactionSink(
         .map(_.toMap)
       // A pot's canonical leaf name is its current Monzo name plus its
       // backing-account ID, so renames propagate and two pots that share a
-      // name still get an account each. Only pots that are material this
-      // run or already known to the book get resolved; the rest are posted
-      // to as-is. `pots` only holds a backing account whose pot some
-      // transfer has named (see State.potIds), and a tagged account can
-      // outlive the state store that named it — so until a window spanning
-      // one of its transfers is fetched there is no name and no deleted
-      // flag to enforce against.
+      // name still get an account each. Every pot with a name gets one,
+      // whether or not this run files anything into it, as every typed
+      // account does: a pot with nothing in this run's window may still have
+      // older rows for a CSV statement to fill in, and that source can only
+      // file into a pot the book already has, since a statement can't name
+      // one. `pots` only holds a backing account whose pot some transfer
+      // has named (see State.potIds), and a tagged account can outlive the
+      // state store that named it — so until a window spanning one of its
+      // transfers is fetched there is no name and no deleted flag to enforce
+      // against, and it is posted to as-is.
       // The run that does fetch one records the link and enforces then.
       potAssets <- allMonzoPotAccountIds
         .traverse: monzoAccountId =>
           pots.get(monzoAccountId) match
-            case Some(pot)
-                if materialMonzoPotAccountIds.contains(monzoAccountId) ||
-                  taggedPots.contains(monzoAccountId) =>
+            // A pot in another currency with nothing to file is left alone
+            // rather than given an account in the book's: foreignPots above
+            // has already failed the run for one with something to file.
+            case Some(pot) if pot.currency.value == currency.mnemonic =>
               resolveAssetAccount(
                 livePath = assetAccounts.pots :+ pot.name.value,
                 retired = pot.deleted.value,
@@ -441,19 +445,19 @@ yield ()
 // calendar day at neutral time — so the start is the UTC midnight before that
 // day's: no instant on a local day that late can be earlier, from any zone
 // GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
-// the online_id dedup then skips, where starting late could miss one. Only
-// tags shaped like a Monzo account ID count: GnuCash's own OFX importer tags
-// other banks' accounts with the same slot, and asking Monzo for one of those
-// would fail the run.
+// the online_id dedup then skips, where starting late could miss one. A tagged
+// account nothing has been filed into maps to None: the book knows it, but not
+// where it left off. Only tags shaped like a Monzo account ID count: GnuCash's
+// own OFX importer tags other banks' accounts with the same slot, and asking
+// Monzo for one of those would fail the run.
 def startsFromBook(using
     db: Database[IO]
-): IO[Map[monzo.AccountId, Instant]] =
+): IO[Map[monzo.AccountId, Option[Instant]]] =
   Split.latestImportedPostDates.map:
     _.collect:
       case (tag, postDate) if tag.startsWith("acc_") =>
-        monzo.AccountId(tag) -> postDate
-          .truncatedTo(ChronoUnit.DAYS)
-          .minus(1, ChronoUnit.DAYS)
+        monzo.AccountId(tag) -> postDate.map:
+          _.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
     .toMap
 
 // The account path a transaction's category leg posts to. Monzo's categories

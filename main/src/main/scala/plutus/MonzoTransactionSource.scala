@@ -91,11 +91,17 @@ def monzoTransactionSource(
 // and otherwise at the resume point the sink named for it. An account with no
 // resume point is skipped when resuming from bookmarks, because a bookmark run
 // carries on from the last export and an account it has never exported has
-// nothing to carry on from. When the sink names its own starting points, such
-// an account is read from as far back as Monzo allows without authorising
-// again: 89 days, a day inside the 90 Strong Customer Authentication allows
-// (see withMonzoApi), and also the most a pot's statement will return (see
-// discoverPotAccounts). Anything older can come from a CSV statement.
+// nothing to carry on from.
+//
+// When the sink names its own starting points, an account it knows without a
+// start, or a pot it has never seen, is read from 89 days back: a day inside
+// the 90 Strong Customer Authentication allows without authorising again (see
+// withMonzoApi), and the most a pot's statement will return at all (see
+// discoverPotAccounts). A main account the sink has never seen is read from
+// its opening if the sink knows no account at all — a first run into a fresh
+// book — because Monzo serves a main account's whole history for five minutes
+// after authorising, which such a run is made to do. A main account opened
+// later gets the 89 days, and anything older comes from a CSV statement.
 def accountStarts(
     since: Option[Instant],
     resume: Resume,
@@ -107,25 +113,33 @@ def accountStarts(
       known = resumePoints(resume, state).view
         .mapValues(_ => ListTransactionsSince.Timestamp(since))
         .toMap,
-      otherwise = Some(ListTransactionsSince.Timestamp(since))
+      otherwise = Some(ListTransactionsSince.Timestamp(since)),
+      newAccountsFromOpening = false
     )
 
   case None =>
     resume match
       case Resume.FromBookmarks(_) =>
-        AccountStarts(known = resumePoints(resume, state), otherwise = None)
-
-      case Resume.FromStarts(_) =>
         AccountStarts(
           known = resumePoints(resume, state),
-          otherwise = Some:
-            ListTransactionsSince.Timestamp:
-              now.minus(Duration.ofDays(89))
+          otherwise = None,
+          newAccountsFromOpening = false
         )
 
-// Each account's resume point for a run with no --since, from whichever of the
-// two places the sink named. A bookmark carries the transaction's ID, which
-// Monzo's `since` takes directly; a sink's starting point is only a timestamp.
+      case Resume.FromStarts(starts) =>
+        val reachable = ListTransactionsSince.Timestamp:
+          now.minus(Duration.ofDays(89))
+        AccountStarts(
+          known = starts.view
+            .mapValues:
+              _.fold(reachable)(ListTransactionsSince.Timestamp(_))
+            .toMap,
+          otherwise = Some(reachable),
+          newAccountsFromOpening = starts.isEmpty
+        )
+
+// The bookmarks as resume points for a run with no --since. A bookmark carries
+// the transaction's ID, which Monzo's `since` takes directly.
 def resumePoints(
     resume: Resume,
     state: State
@@ -136,21 +150,40 @@ def resumePoints(
       .toMap
 
   case Resume.FromStarts(starts) =>
-    starts.view.mapValues(ListTransactionsSince.Timestamp(_)).toMap
+    starts
+      .collect:
+        case (accountId, Some(start)) =>
+          accountId -> ListTransactionsSince.Timestamp(start)
 
 // `known` holds the accounts with somewhere to start of their own, which is
 // also how a pot /accounts doesn't list is found when no transfer for it falls
-// in the window; `otherwise` is where every other account starts, if anywhere.
+// in the window; `otherwise` is where every other account starts, if anywhere,
+// except a main account read from its opening.
 final case class AccountStarts(
     known: Map[monzo.AccountId, ListTransactionsSince],
-    otherwise: Option[ListTransactionsSince]
+    otherwise: Option[ListTransactionsSince],
+    newAccountsFromOpening: Boolean
 ):
-  def apply(accountId: monzo.AccountId): Option[ListTransactionsSince] =
+  def forAccount(account: monzo.Account): Option[ListTransactionsSince] =
+    known
+      .get(account.id)
+      .orElse:
+        account.created
+          .filter(_ => newAccountsFromOpening)
+          .map: created =>
+            ListTransactionsSince.Timestamp(created.value.asInstant)
+      .orElse(otherwise)
+
+  def forPot(accountId: monzo.AccountId): Option[ListTransactionsSince] =
     known.get(accountId).orElse(otherwise)
 
   // Every start the run could use, for withMonzoApi to judge the window by.
+  // An account's opening isn't known until /accounts has answered, which needs
+  // the token this decides how to get, but it is always further back than
+  // Strong Customer Authentication reaches, so the epoch stands in for it.
   def all: List[Instant] =
-    (known.values ++ otherwise).map(_.start).toList
+    (known.values ++ otherwise).map(_.start).toList ++
+      Option.when(newAccountsFromOpening)(Instant.EPOCH)
 
 // List every main account's transactions, then the pot accounts discovered
 // from their metadata (plus any with a start of their own), combined into a
@@ -174,7 +207,7 @@ def listAllTransactions(
       _.accounts
   accountsAndSince = accounts
     .map: account =>
-      (account, starts(account.id))
+      (account, starts.forAccount(account))
     .collect:
       case (account, Some(since)) =>
         (account, since)
@@ -348,7 +381,7 @@ def discoverPotAccounts(
     .sortBy:
       _.value
     .map: accountId =>
-      (monzo.Account(accountId), starts(accountId))
+      (monzo.Account(accountId), starts.forPot(accountId))
     .collect:
       case (account, Some(since)) =>
         (account, since)
