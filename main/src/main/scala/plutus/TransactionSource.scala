@@ -9,18 +9,9 @@ import java.time.Instant
 // behind each pot backing account — name, currency, deleted. Every account
 // appears in byAccount, keeping an empty transaction list when nothing was
 // fetched for it, because pot naming needs every owner present.
-//
-// `incremental` says the window carried on from wherever the last run left off
-// rather than being one the caller named. It's here because it's the one thing
-// about a fetch a sink can't work out for itself and can't ignore: --since
-// belongs to the Monzo source and means nothing to a source reading a file,
-// yet whether the OFX file is a complete statement or a window's worth of new
-// rows decides whether writing it may replace one already there. See
-// ofxTransactionSink.
 type Fetched = (
     byAccount: List[(FetchedAccount, List[monzo.Transaction])],
-    pots: Map[monzo.AccountId, monzo.Pot],
-    incremental: Boolean
+    pots: Map[monzo.AccountId, monzo.Pot]
 )
 
 // The account a source attributes transactions to, stated rather than
@@ -45,35 +36,15 @@ final case class FetchedAccount(
     currency: Option[monzo.Currency]
 )
 
-// Scoped rather than a plain IO[Fetched] because a source can carry a
-// write-back that has to follow the consumer rather than precede it: the Monzo
-// source advances its bookmarks only once the OFX has been written, so a run
-// that fails at the sink leaves its window to be fetched again. A consumer
-// with nothing to gate that way passes IO.pure and does its own work
-// afterwards, outside whatever the source held open.
-//
 // `now` is the run's instant, taken by the command at invocation and handed
 // down rather than read here, so the window a source resolves and the rows a
 // sink stamps carry the one instant — the same thing archive-accounts and
 // restore-account do with their own. A source with no use for it ignores it.
 trait TransactionSource:
-  def use[A](now: Instant)(consume: Fetched => IO[A])(using Verbosity): IO[A]
+  def fetch(now: Instant)(using Verbosity): IO[Fetched]
 
-// Where each account's window starts when --since doesn't say, which is the
-// sink's answer rather than the command line's: the state store's bookmarks
-// record how far OFX export has got, which says nothing about what a book
-// holds. The CSV source ignores it, since a statement is its own window.
-enum Resume:
-  // The bookmarks, advanced past this run's window once `consume` has
-  // returned, or left where they were — the OFX sink advances them unless
-  // it's a dry run, since they are its progress and its dedup.
-  case FromBookmarks(advance: Boolean)
-
-  // Starting points the sink worked out for itself, one per account it knows,
-  // or None for one it knows but has nothing filed for. An account missing
-  // from the map is new to the sink. How far back either kind is read is the
-  // source's call (see accountStarts), since only the source knows how far
-  // back it can reach. The bookmarks are neither read nor advanced: a sink
-  // that keeps its own progress would only be misled by them, and a run that
-  // moved them would make the next OFX export skip a window it never wrote.
-  case FromStarts(starts: Map[monzo.AccountId, Option[Instant]])
+// Where each account a book knows left off: the UTC midnight before the latest
+// transaction filed into it, or None when nothing has been. The Monzo source
+// reads from these when a book is what a run is reconciled against (see
+// MonzoWindow.FromBook); a CSV statement is its own window and ignores them.
+type BookStarts = Map[monzo.AccountId, Option[Instant]]

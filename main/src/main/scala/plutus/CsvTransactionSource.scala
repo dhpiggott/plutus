@@ -41,9 +41,7 @@ def csvTransactionSource(
     accounts: List[(monzo.AccountId, fs2.io.file.Path)],
     potAccounts: List[(monzo.AccountId, fs2.io.file.Path)]
 ): TransactionSource = new TransactionSource:
-  def use[A](now: Instant)(consume: Fetched => IO[A])(using
-      verbosity: Verbosity
-  ): IO[A] =
+  def fetch(now: Instant)(using verbosity: Verbosity): IO[Fetched] =
     val statements =
       accounts.map((accountId, path) =>
         (accountId = accountId, path = path, potBacking = false)
@@ -96,17 +94,10 @@ def csvTransactionSource(
                   transactions.map:
                     Document.encode(_)
               )
-      result <- consume(
-        (
-          byAccount = byAccount,
-          pots = Map.empty[monzo.AccountId, monzo.Pot],
-          // A statement is the whole of an account's history, not a window
-          // carried on from where a previous run stopped, so an OFX file
-          // rendered from one may replace an existing one. See Fetched.
-          incremental = false
-        )
-      )
-    yield result
+    yield (
+      byAccount = byAccount,
+      pots = Map.empty[monzo.AccountId, monzo.Pot]
+    )
 
 // One statement, decoded by header name rather than by column position: the
 // app's export has gained and reordered columns before, and only nine of them

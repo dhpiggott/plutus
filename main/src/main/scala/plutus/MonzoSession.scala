@@ -31,19 +31,18 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 // Authorization header — http4s's default — but prints full bodies, and the
 // token-exchange response body carries the tokens, hence trace only),
 // rotate/obtain an access token, and run `use` against the authenticated API.
-// `use` returns the State to persist alongside its own result, and the rotated
-// refresh token is saved even if `use` fails, so it isn't lost. `now` is the
-// run's instant rather than one read here, so the token arithmetic below and
-// whatever the command goes on to stamp agree on when the run happened.
-// `windowStarts` is where each account's window will start for a given state —
-// the --since, or every account's resume point — so that authorisation can
-// tell whether any reaches back past what Strong Customer Authentication
-// allows, and an empty answer can be reported as the run that fetches nothing.
+// The rotated refresh token is saved before `use` runs, so a fetch that fails
+// doesn't lose it. `now` is the run's instant rather than one read here, so
+// the token arithmetic below and whatever the command goes on to stamp agree
+// on when the run happened.
+// `windowStarts` is where each account's window could start — the --since,
+// or every starting point the book gives — so that authorisation can tell
+// whether any reaches back past what Strong Customer Authentication allows.
 def withMonzoApi[A](
-    windowStarts: State => List[Instant],
+    windowStarts: List[Instant],
     now: Instant
 )(
-    use: (monzo.Api[IO], State) => IO[(state: State, result: A)]
+    use: monzo.Api[IO] => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
   maybeState <- loadState()
   // Remind (and, if confirmed, record) before the computed refresh-token expiry
@@ -68,28 +67,14 @@ def withMonzoApi[A](
     case Some(state) =>
       val leeway = Duration.ofSeconds:
         10
-      // minOption, not min: a state can hold tokens and no bookmarks at all —
-      // accessToken writes one on first authorisation, and withMonzoApi's
-      // onError persists it if the fetch then fails — and `min` on an empty
-      // collection throws with no message. With nowhere to resume from and
-      // no --since there is no window, so nothing is fetched and no
-      // authentication is needed for one; the warning below says as much.
-      windowStarts(state).minOption
-        .exists:
-          _.isBefore:
-            now
-              .minus:
-                Period.ofDays:
-                  90
-              .plus:
-                leeway
-  // A state that reaches here with tokens but nowhere to resume from fetches
-  // nothing at all (listAllTransactions keeps only the accounts that have
-  // somewhere), which would otherwise look like a successful run against a
-  // quiet account.
-  _ <- IO.whenA(checkedState.exists(windowStarts(_).isEmpty)):
-    warn:
-      "No --since given and nowhere to resume from for any account, so there is no window to fetch; specify --since."
+      windowStarts.exists:
+        _.isBefore:
+          now
+            .minus:
+              Period.ofDays:
+                90
+            .plus:
+              leeway
   result <- EmberClientBuilder
     .default[IO]
     .build
@@ -108,7 +93,10 @@ def withMonzoApi[A](
           now,
           requireStrongCustomerAuthentication
         )
-        used <- SimpleRestJsonBuilder:
+        // Saved before the fetch rather than after it, so a refreshed token
+        // survives a `use` that fails after accessToken() has rotated it.
+        _ <- saveState(state)
+        result <- SimpleRestJsonBuilder:
           monzo.Api
         .client:
           client
@@ -118,14 +106,9 @@ def withMonzoApi[A](
           BearerAuthMiddleware:
             accessToken
         .resource
-          .use: monzoApi =>
-            use(monzoApi, state)
-          .onError:
-            // Ensure the refreshed token isn't lost if `use` fails after
-            // accessToken() has already rotated it.
-            case _ => saveState(state)
-        _ <- saveState(used.state)
-      yield used.result
+          .use:
+            use
+      yield result
 yield result
 
 def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
@@ -265,8 +248,7 @@ def accessToken(
                   clientSecret,
                   authorizedAt,
                   refreshToken,
-                  refreshTokenExpiresAt = Some(inferredExpiry),
-                  lastTransactions = Map.empty
+                  refreshTokenExpiresAt = Some(inferredExpiry)
                 )
 
               case Some(state) =>

@@ -9,6 +9,7 @@ import porcupine.*
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 // The file-level safety net around every command that opens the book: refuse a
@@ -204,6 +205,28 @@ def peekBook[A](input: fs2.io.file.Path)(
       .open[IO](input.toString)
       .use: db =>
         db.withoutCommitting(body(db))
+
+// Where each account's window starts when a run is reconciled against a book:
+// from what the book has already filed for it, never from a --since, which
+// such a run doesn't take. Both sinks read it, --to-book to file what is
+// missing and --to-ofx --book to export it.
+//
+// The book has no Monzo `created`, only post_date — the transaction's local
+// calendar day at neutral time — so the start is the UTC midnight before that
+// day's: no instant on a local day that late can be earlier, from any zone
+// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
+// the online_id dedup then skips, where starting late could miss one. A tagged
+// account nothing has been filed into maps to None: the book knows it, but not
+// where it left off. Only tags shaped like a Monzo account ID count: GnuCash's
+// own OFX importer tags other banks' accounts with the same slot, and asking
+// Monzo for one of those would fail the run.
+def startsFromBook(using db: Database[IO]): IO[BookStarts] =
+  Split.latestImportedPostDates.map:
+    _.collect:
+      case (tag, postDate) if tag.startsWith("acc_") =>
+        monzo.AccountId(tag) -> postDate.map:
+          _.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
+    .toMap
 
 // The two accounts every placement decision hangs off, resolved once per run
 // rather than once per account that asks. The subroot is an IO because the

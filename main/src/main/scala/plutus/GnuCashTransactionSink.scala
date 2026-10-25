@@ -7,7 +7,6 @@ import porcupine.*
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import java.time.temporal.ChronoUnit
 
 def gnuCashTransactionSink(
     source: TransactionSourceFor,
@@ -30,10 +29,7 @@ def gnuCashTransactionSink(
   starts <- peekBook(input): db =>
     given Database[IO] = db
     startsFromBook
-  // IO.pure, not the book work: the book is opened after the source has let
-  // go, so nothing it holds open outlives the fetch, and the pot links it
-  // records survive an import that then fails.
-  fetched <- source(Resume.FromStarts(starts)).use(now)(IO.pure)
+  fetched <- source(starts).fetch(now)
   byAccount = fetched.byAccount
   pots = fetched.pots
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
@@ -251,12 +247,10 @@ def gnuCashTransactionSink(
       // account does: a pot with nothing in this run's window may still have
       // older rows for a CSV statement to fill in, and that source can only
       // file into a pot the book already has, since a statement can't name
-      // one. `pots` only holds a backing account whose pot some transfer
-      // has named (see State.potIds), and a tagged account can outlive the
-      // state store that named it — so until a window spanning one of its
-      // transfers is fetched there is no name and no deleted flag to enforce
-      // against, and it is posted to as-is.
-      // The run that does fetch one records the link and enforces then.
+      // one. `pots` only holds a backing account whose pot some transfer in
+      // this run's window names (see potLinks), so a tagged pot with none in
+      // it has no name and no deleted flag to enforce against, and is posted
+      // to as-is until a run whose window spans one of its transfers.
       potAssets <- allMonzoPotAccountIds
         .traverse: monzoAccountId =>
           pots.get(monzoAccountId) match
@@ -434,31 +428,6 @@ def gnuCashTransactionSink(
     // backup.
     db.transactOrRollBack(dryRun)(run)
 yield ()
-
-// Where each account's window starts: from what the book has already filed for
-// it, never from the state store's bookmarks, which record how far OFX export
-// has got, and never from a --since, which this sink doesn't take. An export that ran ahead of the book would
-// otherwise make this run skip what the book never got, silently, and one that
-// lagged or was never run would fetch too much or nothing at all.
-//
-// The book has no Monzo `created`, only post_date — the transaction's local
-// calendar day at neutral time — so the start is the UTC midnight before that
-// day's: no instant on a local day that late can be earlier, from any zone
-// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
-// the online_id dedup then skips, where starting late could miss one. A tagged
-// account nothing has been filed into maps to None: the book knows it, but not
-// where it left off. Only tags shaped like a Monzo account ID count: GnuCash's
-// own OFX importer tags other banks' accounts with the same slot, and asking
-// Monzo for one of those would fail the run.
-def startsFromBook(using
-    db: Database[IO]
-): IO[Map[monzo.AccountId, Option[Instant]]] =
-  Split.latestImportedPostDates.map:
-    _.collect:
-      case (tag, postDate) if tag.startsWith("acc_") =>
-        monzo.AccountId(tag) -> postDate.map:
-          _.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
-    .toMap
 
 // The account path a transaction's category leg posts to. Monzo's categories
 // are authoritative, but not all of them are spending: income files under
