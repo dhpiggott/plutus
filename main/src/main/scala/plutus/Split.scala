@@ -78,6 +78,17 @@ object Split:
   val NotReconciled: String = "n"
   val ReconcileEpoch: String = "1970-01-01 00:00:00"
 
+  def countForAccount(accountGuid: String)(using
+      db: Database[IO]
+  ): IO[Long] =
+    db.unique(
+      query = sql"""
+        select count(*) from splits
+        where account_guid = $text
+      """.query(integer),
+      args = accountGuid
+    )
+
   // The latest post_date among each tagged account's imported splits, keyed by
   // the account's trimmed online_id tag: an account-level online_id names the
   // account a statement belongs to, and a split-level one marks a row imported
