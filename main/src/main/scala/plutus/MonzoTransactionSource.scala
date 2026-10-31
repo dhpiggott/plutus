@@ -41,38 +41,40 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
           .getOrElse(now),
         plan = (accounts = accounts, starts = starts)
       )
-      withMonzoApi(now)(listAccounts): (monzoApi, planned) =>
-        for
-          pots <- listPots(monzoApi, planned.accounts)
-          bookPots = bookPotAccounts(book, pots)
-          byAccount <- listAllTransactions(
-            monzoApi,
-            planned.starts,
-            planned.accounts,
-            bookPots.keySet,
-            before = now
+      withMonzoApi(now = now)(plan = listAccounts)(
+        use = (monzoApi, planned) =>
+          for
+            pots <- listPots(monzoApi, planned.accounts)
+            bookPots = bookPotAccounts(book, pots)
+            byAccount <- listAllTransactions(
+              monzoApi,
+              planned.starts,
+              planned.accounts,
+              bookPots.keySet,
+              before = now
+            )
+            potsByAccount = potsByAccountId(byAccount, pots, bookPots)
+            _ <- warnUnlinkedPots(pots, potsByAccount)
+            // The one reading of the missing-type rule: every sink downstream
+            // takes potBacking's word for it rather than re-deriving it from a
+            // shape only /accounts produces. See FetchedAccount.
+            fetchedAccounts = byAccount.map: (account, transactions) =>
+              FetchedAccount(
+                id = account.id,
+                accountType = account.accountType,
+                closed = account.closed.exists(_.value),
+                potBacking = isPotBacking(account),
+                // /accounts and /transactions never name a currency; a pot's
+                // own details do, and the book sink checks those separately.
+                // See FetchedAccount.
+                currency = None,
+                description = account.description
+              ) -> transactions
+          yield (
+            byAccount = fetchedAccounts,
+            pots = potsByAccount
           )
-          potsByAccount = potsByAccountId(byAccount, pots, bookPots)
-          _ <- warnUnlinkedPots(pots, potsByAccount)
-          // The one reading of the missing-type rule: every sink downstream
-          // takes potBacking's word for it rather than re-deriving it from a
-          // shape only /accounts produces. See FetchedAccount.
-          fetchedAccounts = byAccount.map: (account, transactions) =>
-            FetchedAccount(
-              id = account.id,
-              accountType = account.accountType,
-              closed = account.closed.exists(_.value),
-              potBacking = isPotBacking(account),
-              // /accounts and /transactions never name a currency; a pot's
-              // own details do, and the book sink checks those separately.
-              // See FetchedAccount.
-              currency = None,
-              description = account.description
-            ) -> transactions
-        yield (
-          byAccount = fetchedAccounts,
-          pots = potsByAccount
-        )
+      )
 
 // Where each account's window starts. A main account the book has never seen
 // is read from its opening, because Monzo serves a main account's whole
