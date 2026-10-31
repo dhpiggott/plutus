@@ -101,19 +101,27 @@ final case class Account(
       .stringSlot(objGuid = guid, name = Slot.OnlineId, value = value)
       .insert
 
+  // A pot's account also records which pot it backs (see Slot.PotId). Replaced
+  // rather than added to, so a write that races another run's leaves one slot.
+  def tagPotId(value: String)(using db: Database[IO]): IO[Unit] =
+    Slot.delete(objGuid = guid, name = Slot.PotId) *>
+      Slot.stringSlot(objGuid = guid, name = Slot.PotId, value = value).insert
+
   // description is a plain accounts column, with no KVP slot behind it (unlike
-  // hidden and placeholder), so there is nothing to keep in step here. Null
-  // rather than the empty string, so a cleared account decodes back the same
-  // way as one that never carried a description.
-  def clearDescription(using db: Database[IO]): IO[Account] =
+  // hidden and placeholder), so there is nothing to keep in step here. None
+  // writes null rather than the empty string, so a cleared account decodes
+  // back the same way as one that never carried a description.
+  def updateDescription(description: Option[String])(using
+      db: Database[IO]
+  ): IO[Account] =
     db.execute(
       query = sql"""
         update accounts
-        set description = null
+        set description = ${text.opt}
         where guid = $text
       """.command,
-      args = guid
-    ).as(copy(description = None))
+      args = (description, guid)
+    ).as(copy(description = description))
 
   // Every row rather than db.option, only to say something useful when there
   // is more than one: db.option raises a bare "More than 1 row", and same-named

@@ -28,12 +28,18 @@ type Fetched = (
 // pots it fetches (see Pot.currency) answer for themselves. It's optional
 // rather than defaulted because "the source didn't say" and "the source said
 // GBP" are different things, and only the first may be let through unchecked.
+//
+// description is what the book sink describes the account's asset account
+// with, where the source knows it: /accounts gives one, a statement doesn't.
+// None from a source that can't say is harmless, because only an account with
+// a type has its placement enforced, and a CSV account has none.
 final case class FetchedAccount(
     id: monzo.AccountId,
     accountType: Option[monzo.AccountType],
     closed: Boolean,
     potBacking: Boolean,
-    currency: Option[monzo.Currency]
+    currency: Option[monzo.Currency],
+    description: Option[monzo.Description]
 )
 
 // `now` is the run's instant, taken by the command at invocation and handed
@@ -43,8 +49,15 @@ final case class FetchedAccount(
 trait TransactionSource:
   def fetch(now: Instant)(using Verbosity): IO[Fetched]
 
-// Where each account a book knows left off: the UTC midnight before the latest
-// transaction filed into it, or None when nothing has been. The Monzo source
-// reads from these (see accountStarts); a CSV statement is its own window and
-// ignores them.
-type BookStarts = Map[monzo.AccountId, Option[Instant]]
+// What a book knows about where to read from, asked one ID at a time rather
+// than listed, because a book can't say which of its tags are Monzo's (see
+// monzoTransactionSource). `start` is where an account the book knows left
+// off: the UTC midnight before the latest transaction filed into it, or None
+// when nothing has been; an account the book doesn't know answers None
+// outright. `potAccount` is the backing account of a pot the book already
+// has an account for. The Monzo source reads from these (see accountStarts);
+// a CSV statement is its own window and ignores them.
+final case class BookStarts(
+    start: monzo.AccountId => Option[Option[Instant]],
+    potAccount: monzo.PotId => Option[monzo.AccountId]
+)

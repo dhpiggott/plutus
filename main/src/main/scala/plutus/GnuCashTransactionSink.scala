@@ -234,6 +234,7 @@ def gnuCashTransactionSink(
             // is its own closure: a closed account is archived while the
             // account that replaced it goes on being posted to.
             retired = account.closed,
+            description = account.description.map(_.value),
             monzoAccountId = account.id,
             tagged = taggedByMonzoAccountId(account.id),
             roots = roots,
@@ -247,10 +248,10 @@ def gnuCashTransactionSink(
       // account does: a pot with nothing in this run's window may still have
       // older rows for a CSV statement to fill in, and that source can only
       // file into a pot the book already has, since a statement can't name
-      // one. `pots` only holds a backing account whose pot some transfer in
-      // this run's window names (see potLinks), so a tagged pot with none in
-      // it has no name and no deleted flag to enforce against, and is posted
-      // to as-is until a run whose window spans one of its transfers.
+      // one. `pots` only holds a backing account whose pot a transfer in this
+      // run's window or the book links (see potsByAccountId), so a tagged pot
+      // neither links has no name and no deleted flag to enforce against, and
+      // is posted to as-is until a run whose window spans one of its transfers.
       potAssets <- allMonzoPotAccountIds
         .traverse: monzoAccountId =>
           pots.get(monzoAccountId) match
@@ -258,14 +259,26 @@ def gnuCashTransactionSink(
             // rather than given an account in the book's: foreignPots above
             // has already failed the run for one with something to file.
             case Some(pot) if pot.currency.value == currency.mnemonic =>
-              resolveAssetAccount(
-                livePath = assetAccounts.pots :+ pot.name.value,
-                retired = pot.deleted.value,
-                monzoAccountId = monzoAccountId,
-                tagged = taggedByMonzoAccountId(monzoAccountId),
-                roots = roots,
-                dryRun = dryRun
-              ).map(account => monzoAccountId -> Some(account))
+              for
+                account <- resolveAssetAccount(
+                  livePath = assetAccounts.pots :+ pot.name.value,
+                  retired = pot.deleted.value,
+                  // /pots describes nothing; the name says which pot it is.
+                  description = None,
+                  monzoAccountId = monzoAccountId,
+                  tagged = taggedByMonzoAccountId(monzoAccountId),
+                  roots = roots,
+                  dryRun = dryRun
+                )
+                // The link this run learned from a transfer, kept so a later
+                // run whose window holds none still finds the pot's account
+                // (see bookPotAccounts). Written only when the book doesn't
+                // already say so, since an unchanged book keeps no backup.
+                _ <- IO.unlessA(
+                  dryRun || starts.potAccount(pot.id).contains(monzoAccountId)
+                ):
+                  account.tagPotId(pot.id.value)
+              yield monzoAccountId -> Some(account)
             case _ =>
               IO.pure(monzoAccountId -> taggedPots.get(monzoAccountId))
         .map:

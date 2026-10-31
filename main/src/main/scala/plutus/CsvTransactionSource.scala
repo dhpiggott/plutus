@@ -80,7 +80,8 @@ def csvTransactionSource(
             // the files it was asked to import.
             closed = false,
             potBacking = statement.potBacking,
-            currency = read.currency
+            currency = read.currency,
+            description = None
           ) -> read.transactions
       _ <- log(Verbosity.VERBOSE):
         Json.writeDocumentAsPrettyString:

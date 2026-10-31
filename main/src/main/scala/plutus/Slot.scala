@@ -121,3 +121,29 @@ object Slot:
       """.query(text *: text *: nil),
       args = OnlineId
     )
+
+  // Plutus's own account-level slot, beside the online_id tag on a pot's book
+  // account: the Monzo pot ID that backing account belongs to. Only a transfer
+  // links the two (see discoverPotAccounts), so recording the link here is what
+  // lets a later run find the pot's account from /pots alone. GnuCash keeps a
+  // slot it doesn't recognise, loading and saving it with the account's others.
+  val PotId: String = "monzo_pot_id"
+
+  // Every recorded pot link as (pot ID, the same account's trimmed online_id
+  // tag), so a caller can go from a pot to the backing account it is tagged
+  // with. One scan of slots for the pot IDs, then an index lookup by obj_guid
+  // for each one's tag.
+  def potLinks(using db: Database[IO]): IO[List[(String, String)]] =
+    db.execute(
+      query = sql"""
+        select pot_ids.string_val, trim(account_tags.string_val)
+        from slots as pot_ids
+        join slots as account_tags
+          on account_tags.obj_guid = pot_ids.obj_guid
+          and account_tags.name = $text
+          and account_tags.string_val is not null
+        where pot_ids.name = $text
+          and pot_ids.string_val is not null
+      """.query(text *: text *: nil),
+      args = (OnlineId, PotId)
+    )
