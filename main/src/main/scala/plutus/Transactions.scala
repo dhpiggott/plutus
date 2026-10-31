@@ -5,90 +5,90 @@ import cats.data.ValidatedNel
 import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
-import com.monovore.decline.time.*
-
-import java.time.Instant
 
 // One command for copying transactions, named for what it does rather than for
 // either end of it, because neither end is fixed any more: --from-… says where
 // they come from and --to-… where they go, and all four pairs are runs someone
 // wants — including CSV to OFX, which is neither an import nor an export in
 // any sense a user would recognise. Stating both ends is also what lets
-// decline refuse what doesn't exist (two sources, no sink, --since with a CSV)
-// as a usage error rather than as a flag quietly ignored, and what puts the
-// whole matrix in --help: a product of two sums renders as one usage line per
-// pair.
+// decline refuse what doesn't exist (two sources, no sink, the API to OFX
+// with no book) as a usage error rather than as a flag quietly ignored, and what
+// puts the whole matrix in --help: a sum of products renders as one usage line
+// per pair.
 lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "transactions",
   help = "Copy Monzo transactions into a GnuCash book or an OFX file."
 ):
   (
     verbosityOpts,
-    sourceOpts,
-    sinkOpts,
+    transactionsRunOpts,
     transactionsDryRunOpts
-  ).tupled.map: (verbosity, source, sink, dryRun) =>
-    sink(source, dryRun)(using verbosity)
+  ).tupled.map: (verbosity, run, dryRun) =>
+    run(dryRun)(using verbosity)
 
-// A source that hasn't yet been told whether a successful run should advance
-// the Monzo bookmarks, because that is the sink's answer rather than the
-// command line's: the book dedups on the online_id slot instead, so a run that
-// advanced them would make the next OFX export skip the window it had just
-// filed. The CSV source ignores it — it has no bookmarks to advance and no
-// state store to advance them in.
-//
-// A trait rather than a Boolean => TransactionSource alias, so the two sinks
-// can name the argument they pass: a bare true or false at the call site says
-// nothing about which of them it is.
-trait TransactionSourceFor:
-  def apply(advanceBookmarks: Boolean): TransactionSource
+// What a run is, once its options are parsed: a source wired to a sink, still
+// to be told whether it's a dry run. The sinks aren't peers beyond that — the
+// book sink needs a lock, a backup and a transaction, the OFX sink a path —
+// so this names what they share rather than a trait spanning what they don't.
+// Verbosity stays a context parameter, as everywhere else, so a context
+// function type rather than a second argument.
+type TransactionsRun = Boolean => Verbosity ?=> IO[Unit]
 
-lazy val sourceOpts: Opts[TransactionSourceFor] =
-  monzoSourceOpts orElse csvSourceOpts
+// One branch per way of deciding the window, each with the sources it
+// accepts, rather than a product of every source with every sink. Nothing
+// records where a run left off except a book, so an API run always reconciles
+// against one — --to-book, or --to-ofx with --book — and a CSV run needs one
+// only to write into it.
+lazy val transactionsRunOpts: Opts[TransactionsRun] =
+  toBookRunOpts orElse ofxFromBookRunOpts orElse ofxRunOpts
 
-lazy val monzoSourceOpts: Opts[TransactionSourceFor] =
-  (
-    Opts.flag(
-      "from-monzo",
-      help =
-        "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
-    ),
-    sinceOpts,
-    beforeOpts
-  ).tupled.map: (_, since, before) =>
-    advanceBookmarks => monzoTransactionSource(since, before, advanceBookmarks)
+// --ignore-lock nests here, since gnclock is a book concern and means nothing
+// to a run that only reads one.
+lazy val toBookRunOpts: Opts[TransactionsRun] =
+  (bookSourceOpts, toBookPathOpts, ignoreLockOpts).tupled.map:
+    (source, input, ignoreLock) =>
+      dryRun => gnuCashTransactionSink(source, input, dryRun, ignoreLock)
 
-// Windowing options on the API call rather than on the command, so they're
-// unparseable alongside --from-csv rather than accepted and ignored: a
-// statement is its own window, with nothing to bound.
-lazy val sinceOpts: Opts[Option[Instant]] =
-  Opts
-    .option[Instant](
-      "since",
-      help =
-        "Timestamp to read transactions from. If not specified defaults to the last recorded transaction ID for each account, unless there is no last recorded transaction for that account, in which case no transactions will be read for it."
-    )
-    .orNone
+// The API only, since it has no window of its own to offer; a statement does,
+// and GnuCash's importer already skips what the book holds.
+lazy val ofxFromBookRunOpts: Opts[TransactionsRun] =
+  (monzoFromBookSourceOpts, toOfxPathOpts, bookPathOpts).tupled.map:
+    (source, output, book) =>
+      dryRun => ofxTransactionSinkFromBook(source, book, output, dryRun)
 
-lazy val beforeOpts: Opts[Option[Instant]] =
-  Opts
-    .option[Instant](
-      "before",
-      help =
-        "Timestamp to read transactions to. If not specified defaults to now."
-    )
-    .orNone
+lazy val ofxRunOpts: Opts[TransactionsRun] =
+  (csvSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
+    dryRun => ofxTransactionSink(source, output, dryRun, filed = Set.empty)
+
+// A source that hasn't yet been told where each account starts, because that
+// is the book's answer, read before the fetch. See BookStarts.
+type TransactionSourceFor = BookStarts => TransactionSource
+
+lazy val bookSourceOpts: Opts[TransactionSourceFor] =
+  monzoFromBookSourceOpts orElse csvSourceOpts.map: source =>
+    (_: BookStarts) => source
+
+lazy val monzoFromBookSourceOpts: Opts[TransactionSourceFor] =
+  fromMonzoOpts.map: _ =>
+    starts => monzoTransactionSource(starts)
+
+lazy val fromMonzoOpts: Opts[Unit] =
+  Opts.flag(
+    "from-monzo",
+    help =
+      "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
+  )
 
 // Either option on its own is a run, so the branch is the union of the two
 // products rather than one product of two optional lists: a pot backfill is
 // the whole reason this source exists and needs no main account's statement,
 // while an all-optional branch would match a command line naming no source at
 // all and make `orElse` above ambiguous rather than exclusive.
-lazy val csvSourceOpts: Opts[TransactionSourceFor] =
+lazy val csvSourceOpts: Opts[TransactionSource] =
   ((fromCsvOpts, fromCsvPotOpts.withDefault(Nil)).tupled
     orElse (fromCsvOpts.withDefault(Nil), fromCsvPotOpts).tupled)
     .map: (accounts, potAccounts) =>
-      _ => csvTransactionSource(accounts, potAccounts)
+      csvTransactionSource(accounts, potAccounts)
 
 lazy val fromCsvOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
   Opts
@@ -133,32 +133,6 @@ lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
     .map:
       _.toList
 
-// What a sink is, once its own options are parsed: something that consumes a
-// source and honours --dry-run. The two aren't peers beyond that — the book
-// sink needs a lock, a backup and a transaction, the OFX sink a path and an
-// overwrite rule — so this names what they share rather than a trait spanning
-// what they don't. Verbosity stays a context parameter, as everywhere else, so
-// a context function type rather than a third argument.
-type TransactionSink =
-  (TransactionSourceFor, Boolean) => Verbosity ?=> IO[Unit]
-
-lazy val sinkOpts: Opts[TransactionSink] = toBookOpts orElse toOfxOpts
-
-// --ignore-lock nests here, since gnclock is a book concern and means nothing
-// to a run writing an OFX file.
-lazy val toBookOpts: Opts[TransactionSink] =
-  (toBookPathOpts, ignoreLockOpts).tupled.map: (input, ignoreLock) =>
-    (source, dryRun) =>
-      // Never !dryRun: the book dedups on the online_id slot rather than on
-      // bookmarks, so advancing them would make the next OFX run skip the
-      // window this run just filed. See monzoTransactionSource.
-      gnuCashTransactionSink(
-        source(advanceBookmarks = false),
-        input,
-        dryRun,
-        ignoreLock
-      )
-
 // An optional-argument option (--to-book, or --to-book=PATH), so naming the
 // sink doesn't force a path on a run that wants the default. decline binds an
 // optional argument through the = form only, so the space-separated
@@ -175,11 +149,6 @@ lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
       _.fold(fs2.io.file.Path("Accounts.gnucash")):
         fs2.io.file.Path.fromNioPath
 
-lazy val toOfxOpts: Opts[TransactionSink] =
-  toOfxPathOpts.map: output =>
-    (source, dryRun) =>
-      ofxTransactionSink(source(advanceBookmarks = !dryRun), output, dryRun)
-
 lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
   Opts
     .flagOption[java.nio.file.Path](
@@ -192,13 +161,25 @@ lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
       _.fold(fs2.io.file.Path("monzo.ofx")):
         fs2.io.file.Path.fromNioPath
 
-// One flag for both ends of the run: whichever sink was named writes nothing,
-// and the Monzo source leaves its bookmarks where they were.
+// Same as --to-book's path, but read-only: an OFX run reconciled against a
+// book never writes to it, so it takes no lock and no backup.
+lazy val bookPathOpts: Opts[fs2.io.file.Path] =
+  Opts
+    .flagOption[java.nio.file.Path](
+      "book",
+      metavar = "path",
+      help =
+        "With --from-monzo --to-ofx, start each account where a GnuCash SQLite3 file left off, as --to-book does, and leave out transactions already in it. The book is only read. If no path is given defaults to Accounts.gnucash in the current directory; give one as --book=PATH."
+    )
+    .map:
+      _.fold(fs2.io.file.Path("Accounts.gnucash")):
+        fs2.io.file.Path.fromNioPath
+
 lazy val transactionsDryRunOpts: Opts[Boolean] =
   Opts
     .flag(
       "dry-run",
       help =
-        "Print what would be copied without writing to the book or the OFX file, without taking a backup, and without updating the state file's last-transactions bookmarks."
+        "Print what would be copied without writing to the book or the OFX file, and without taking a backup."
     )
     .orFalse

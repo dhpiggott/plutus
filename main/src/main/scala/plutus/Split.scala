@@ -4,6 +4,8 @@ import cats.effect.*
 import porcupine.*
 import porcupine.Codec.*
 
+import java.time.Instant
+
 /** sqlite> .schema splits CREATE TABLE splits( guid text(32) PRIMARY KEY NOT
   * NULL, tx_guid text(32) NOT NULL, account_guid text(32) NOT NULL, memo
   * text(2048) NOT NULL, action text(2048) NOT NULL, reconcile_state text(1) NOT
@@ -86,3 +88,39 @@ object Split:
       """.query(integer),
       args = accountGuid
     )
+
+  // Every account's trimmed online_id tag, with the latest post_date among the
+  // account's imported splits: an account-level online_id names the account a
+  // statement belongs to, and a split-level one marks a row imported from it
+  // (see Slot.OnlineId), so the pair says how far that statement has been
+  // filed. A tagged account with no imported split comes back with None. One
+  // scan of slots for the tags, then index lookups — GnuCash indexes slots by
+  // obj_guid and splits by account and transaction — rather than a pass over
+  // every split. post_date's "yyyy-MM-dd HH:mm:ss" sorts as it reads, so max()
+  // is the latest; it comes back as epoch seconds rather than as GnuCash's
+  // string, so nothing here parses one.
+  def latestImportedPostDates(using
+      db: Database[IO]
+  ): IO[List[(String, Option[Instant])]] =
+    db.execute(
+      query = sql"""
+        select
+          trim(account_tags.string_val),
+          cast(strftime('%s', max(transactions.post_date)) as integer)
+        from slots as account_tags
+        join accounts on accounts.guid = account_tags.obj_guid
+        left join splits on splits.account_guid = accounts.guid
+        left join slots as split_ids
+          on split_ids.obj_guid = splits.guid
+          and split_ids.name = $text
+        left join transactions
+          on transactions.guid = splits.tx_guid
+          and split_ids.obj_guid is not null
+        where account_tags.name = $text
+          and account_tags.string_val is not null
+        group by trim(account_tags.string_val)
+      """.query(text *: integer.opt *: nil),
+      args = (Slot.OnlineId, Slot.OnlineId)
+    ).map:
+      _.map: (tag, postDate) =>
+        tag -> postDate.map(Instant.ofEpochSecond)

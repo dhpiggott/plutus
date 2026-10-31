@@ -2,66 +2,82 @@ package plutus
 
 import cats.effect.*
 import cats.syntax.all.*
+import porcupine.*
 import smithy4s.xml.*
 
-import java.nio.file.FileAlreadyExistsException
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
-// Writing the OFX inside `use` is what gates the source's bookmarks on it: a
-// failed write leaves the window to be fetched again next run.
+// An OFX run reconciled against a book, for someone who imports through
+// GnuCash's own importer rather than --to-book: each account starts where the
+// book left off, as --to-book's does, and what the book already holds is left
+// out of the file. The book is only read, so a run whose last file hasn't been
+// imported yet just exports those rows again, which the importer's own
+// online_id dedup skips.
+def ofxTransactionSinkFromBook(
+    source: TransactionSourceFor,
+    book: fs2.io.file.Path,
+    output: fs2.io.file.Path,
+    dryRun: Boolean
+)(using verbosity: Verbosity): IO[Unit] = for
+  (starts, onlineIds) <- peekBook(book): db =>
+    given Database[IO] = db
+    (startsFromBook, Slot.onlineIds).tupled
+  _ <- ofxTransactionSink(
+    source(starts),
+    output,
+    dryRun,
+    filed = onlineIds.map((value, _) => value).toSet
+  )
+yield ()
+
+// `filed` holds the transaction IDs to leave out, because a book already has
+// them; a run that names its own window leaves out nothing.
 def ofxTransactionSink(
     source: TransactionSource,
     output: fs2.io.file.Path,
-    dryRun: Boolean
+    dryRun: Boolean,
+    filed: Set[String]
 )(using verbosity: Verbosity): IO[Unit] = for
   // The run's instant, taken here rather than by the source, so a source with
   // no clock of its own still resolves its window against this run's. See
   // TransactionSource.
   now <- IO.realTimeInstant
-  _ <- source.use(now): fetched =>
-    // An account with nothing material would render as an empty OFX statement
-    // block, so drop it.
-    val materialAccountIdsAndTransactions = fetched.byAccount
-      .map: (account, transactions) =>
-        account.id -> materialTransactions(transactions)
-      .filter: (_, transactions) =>
-        transactions.nonEmpty
-    // Fail fast on an account a source says is denominated in anything but
-    // the currency majorUnits divides by: an OFX file has no book behind it
-    // to read a fraction from, so its amounts would be off by whatever that
-    // currency's minor unit is, and silently — the file states no currency.
-    // The book sink makes the same check against the book's own commodity.
-    val foreignAccounts = fetched.byAccount
-      .flatMap: (account, _) =>
-        account.currency
-          .filterNot(_.value == gbpCurrencyCode)
-          .map: currency =>
-            s"${account.id.value} (${currency.value})"
-      .distinct
-    IO.raiseUnless(foreignAccounts.isEmpty)(
-      Error(
-        s"Account(s) not denominated in $gbpCurrencyCode: ${foreignAccounts.sorted.mkString(", ")}."
-      )
-    ) *> (IO.whenA(dryRun):
-      materialAccountIdsAndTransactions.traverse_ : (accountId, transactions) =>
-        info:
-          s"Would write ${transactions.size} transaction(s) for ${accountId.value}.") *> writeOfx(
-      toOfx:
-        materialAccountIdsAndTransactions
-      ,
-      output,
-      // A --since run names the whole of the window it renders, so writing it
-      // over an existing file is what was asked for; a bookmark run would
-      // replace a full export with whatever has happened since it. The source
-      // says which it fetched, because the transactions it hands over don't
-      // say what window asked for them.
-      overwrite = !fetched.incremental,
-      dryRun
-    ).adaptError:
-      case _: FileAlreadyExistsException =>
-        Error:
-          s"Cannot overwrite existing output in from-last-transactions mode. Delete $output or specify --since."
+  fetched <- source.fetch(now)
+  // An account with nothing material would render as an empty OFX statement
+  // block, so drop it.
+  materialAccountIdsAndTransactions = fetched.byAccount
+    .map: (account, transactions) =>
+      account.id -> materialTransactions(transactions).filterNot: transaction =>
+        filed(transaction.id.value)
+    .filter: (_, transactions) =>
+      transactions.nonEmpty
+  // Fail fast on an account a source says is denominated in anything but the
+  // currency majorUnits divides by: an OFX file has no book behind it to read
+  // a fraction from, so its amounts would be off by whatever that currency's
+  // minor unit is, and silently — the file states no currency. The book sink
+  // makes the same check against the book's own commodity.
+  foreignAccounts = fetched.byAccount
+    .flatMap: (account, _) =>
+      account.currency
+        .filterNot(_.value == gbpCurrencyCode)
+        .map: currency =>
+          s"${account.id.value} (${currency.value})"
+    .distinct
+  _ <- IO.raiseUnless(foreignAccounts.isEmpty):
+    Error:
+      s"Account(s) not denominated in $gbpCurrencyCode: ${foreignAccounts.sorted.mkString(", ")}."
+  _ <- IO.whenA(dryRun):
+    materialAccountIdsAndTransactions.traverse_ : (accountId, transactions) =>
+      info:
+        s"Would write ${transactions.size} transaction(s) for ${accountId.value}."
+  _ <- writeOfx(
+    toOfx:
+      materialAccountIdsAndTransactions
+    ,
+    output,
+    dryRun
+  )
 yield ()
 
 val ofxDateTimeFormatter: DateTimeFormatter =
@@ -107,23 +123,18 @@ def toOfx(
                 )
           )
 
-// A dry run reports rather than writes, and checks the one thing that would
-// have stopped the write, so what it prints is a plan that would have
-// succeeded — the same bargain import's dry run strikes with the book.
+// Always over whatever file is already there: a run names the whole of the
+// window it renders, or one a book bounds, and a book-bounded file that was
+// never imported loses nothing by being replaced, since its rows are still
+// missing from the book and so in the next file too.
 def writeOfx(
     content: ofx.Ofx,
     output: fs2.io.file.Path,
-    overwrite: Boolean,
     dryRun: Boolean
 )(using verbosity: Verbosity): IO[Unit] =
   if dryRun then
-    for
-      exists <- fs2.io.file.Files[IO].exists(output)
-      _ <- IO.raiseWhen(exists && !overwrite):
-        FileAlreadyExistsException(output.toString)
-      _ <- info:
-        s"Would write OFX to $output."
-    yield ()
+    info:
+      s"Would write OFX to $output."
   else
     ((fs2.Stream:
       "ENCODING:UTF-8\n"
@@ -153,15 +164,7 @@ def writeOfx(
       .through:
         fs2.io.file
           .Files[IO]
-          .writeUtf8(
-            output,
-            if overwrite then fs2.io.file.Flags.Write
-            else
-              fs2.io.file.Flags(
-                fs2.io.file.Flag.Write,
-                fs2.io.file.Flag.CreateNew
-              )
-          )
+          .writeUtf8(output, fs2.io.file.Flags.Write)
       .compile
       .drain *>
       info:

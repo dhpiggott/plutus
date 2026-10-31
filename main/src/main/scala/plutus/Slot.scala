@@ -55,6 +55,58 @@ final case class Slot(
       args = (objGuid, name, slotType, stringVal, int64Val)
     )
 
+  // This slot's value written over any slot of the same name on the same
+  // object, or the slot added when there is none. slots has no unique key on
+  // (obj_guid, name) for an upsert to conflict on, so it is an update and then
+  // an insert guarded on there still being no such row.
+  def upsert(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        update slots
+        set slot_type = $integer,
+          string_val = ${text.opt},
+          int64_val = ${integer.opt}
+        where obj_guid = $text
+          and name = $text
+      """.command,
+      args = (slotType, stringVal, int64Val, objGuid, name)
+    ) *>
+      db.execute(
+        query = sql"""
+          insert into slots (
+            obj_guid,
+            name,
+            slot_type,
+            string_val,
+            int64_val,
+            double_val,
+            timespec_val,
+            guid_val,
+            numeric_val_num,
+            numeric_val_denom,
+            gdate_val
+          )
+          select
+            $text,
+            $text,
+            $integer,
+            ${text.opt},
+            ${integer.opt},
+            null,
+            null,
+            null,
+            null,
+            null,
+            null
+          where not exists (
+            select 1 from slots
+            where obj_guid = $text
+              and name = $text
+          )
+        """.command,
+        args = (objGuid, name, slotType, stringVal, int64Val, objGuid, name)
+      )
+
 object Slot:
 
   // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
@@ -120,4 +172,30 @@ object Slot:
         where name = $text and string_val is not null
       """.query(text *: text *: nil),
       args = OnlineId
+    )
+
+  // Plutus's own account-level slot, beside the online_id tag on a pot's book
+  // account: the Monzo pot ID that backing account belongs to. Only a transfer
+  // links the two (see discoverPotAccounts), so recording the link here is what
+  // lets a later run find the pot's account from /pots alone. GnuCash keeps a
+  // slot it doesn't recognise, loading and saving it with the account's others.
+  val PotId: String = "monzo_pot_id"
+
+  // Every recorded pot link as (pot ID, the same account's trimmed online_id
+  // tag), so a caller can go from a pot to the backing account it is tagged
+  // with. One scan of slots for the pot IDs, then an index lookup by obj_guid
+  // for each one's tag.
+  def potLinks(using db: Database[IO]): IO[List[(String, String)]] =
+    db.execute(
+      query = sql"""
+        select pot_ids.string_val, trim(account_tags.string_val)
+        from slots as pot_ids
+        join slots as account_tags
+          on account_tags.obj_guid = pot_ids.obj_guid
+          and account_tags.name = $text
+          and account_tags.string_val is not null
+        where pot_ids.name = $text
+          and pot_ids.string_val is not null
+      """.query(text *: text *: nil),
+      args = (OnlineId, PotId)
     )

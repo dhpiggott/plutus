@@ -9,7 +9,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 def gnuCashTransactionSink(
-    source: TransactionSource,
+    source: TransactionSourceFor,
     input: fs2.io.file.Path,
     dryRun: Boolean,
     ignoreLock: Boolean
@@ -23,10 +23,13 @@ def gnuCashTransactionSink(
   // enter_date — so one run stamps one time. Same as archiveAccounts and
   // restoreAccount, which read their own here too.
   now <- IO.realTimeInstant
-  // IO.pure, not the book work: the book is opened after the source has let
-  // go, so nothing it holds open outlives the fetch, and the pot links it
-  // records survive an import that then fails.
-  fetched <- source.use(now)(IO.pure)
+  // Read before the fetch rather than inside withBook, which would hold
+  // gnclock across the network calls and any authorisation prompt. Anything
+  // filed in between only means a longer window, and dedup skips the overlap.
+  starts <- peekBook(input): db =>
+    given Database[IO] = db
+    startsFromBook
+  fetched <- source(starts).fetch(now)
   byAccount = fetched.byAccount
   pots = fetched.pots
   _ <- withBook(input, now, dryRun, ignoreLock): db =>
@@ -166,12 +169,13 @@ def gnuCashTransactionSink(
       // Fail fast on a pot the book doesn't know and no recorded link
       // names: it can't be filed into its own account, and a mis-filed row
       // would be permanent — online_id dedup skips it on every later run.
-      // One run whose window spans a transfer for the pot records the link.
+      // One Monzo run whose window spans a transfer for the pot records the
+      // link, and a run into the book then gives the pot a tagged account.
       unnamedPots = materialMonzoPotAccountIds.filterNot: monzoAccountId =>
         taggedPots.contains(monzoAccountId) || pots.contains(monzoAccountId)
       _ <- IO.raiseUnless(unnamedPots.isEmpty):
         Error(
-          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; re-run with --since spanning a transfer for each to record the link(s)."
+          s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; run --from-monzo --to-book first, which creates and tags an account for every pot a transfer in its window names — the whole history of every main account, on a book that knows none yet."
         )
       // The same fail-fast for an untyped account, and for the same reason:
       // with no type there is no path to create one at, so an untagged one
@@ -230,6 +234,7 @@ def gnuCashTransactionSink(
             // is its own closure: a closed account is archived while the
             // account that replaced it goes on being posted to.
             retired = account.closed,
+            description = account.description.map(_.value),
             monzoAccountId = account.id,
             tagged = taggedByMonzoAccountId(account.id),
             roots = roots,
@@ -238,28 +243,42 @@ def gnuCashTransactionSink(
         .map(_.toMap)
       // A pot's canonical leaf name is its current Monzo name plus its
       // backing-account ID, so renames propagate and two pots that share a
-      // name still get an account each. Only pots that are material this
-      // run or already known to the book get resolved; the rest are posted
-      // to as-is. `pots` only holds a backing account whose pot some
-      // transfer has named (see State.potIds), and a tagged account can
-      // outlive the state store that named it — so until a window spanning
-      // one of its transfers is fetched there is no name and no deleted
-      // flag to enforce against.
-      // The run that does fetch one records the link and enforces then.
+      // name still get an account each. Every pot with a name gets one,
+      // whether or not this run files anything into it, as every typed
+      // account does: a pot with nothing in this run's window may still have
+      // older rows for a CSV statement to fill in, and that source can only
+      // file into a pot the book already has, since a statement can't name
+      // one. `pots` only holds a backing account whose pot a transfer in this
+      // run's window or the book links (see potsByAccountId), so a tagged pot
+      // neither links has no name and no deleted flag to enforce against, and
+      // is posted to as-is until a run whose window spans one of its transfers.
       potAssets <- allMonzoPotAccountIds
         .traverse: monzoAccountId =>
           pots.get(monzoAccountId) match
-            case Some(pot)
-                if materialMonzoPotAccountIds.contains(monzoAccountId) ||
-                  taggedPots.contains(monzoAccountId) =>
-              resolveAssetAccount(
-                livePath = assetAccounts.pots :+ pot.name.value,
-                retired = pot.deleted.value,
-                monzoAccountId = monzoAccountId,
-                tagged = taggedByMonzoAccountId(monzoAccountId),
-                roots = roots,
-                dryRun = dryRun
-              ).map(account => monzoAccountId -> Some(account))
+            // A pot in another currency with nothing to file is left alone
+            // rather than given an account in the book's: foreignPots above
+            // has already failed the run for one with something to file.
+            case Some(pot) if pot.currency.value == currency.mnemonic =>
+              for
+                account <- resolveAssetAccount(
+                  livePath = assetAccounts.pots :+ pot.name.value,
+                  retired = pot.deleted.value,
+                  // /pots describes nothing; the name says which pot it is.
+                  description = None,
+                  monzoAccountId = monzoAccountId,
+                  tagged = taggedByMonzoAccountId(monzoAccountId),
+                  roots = roots,
+                  dryRun = dryRun
+                )
+                // The link this run learned from a transfer, kept so a later
+                // run whose window holds none still finds the pot's account
+                // (see bookPotAccounts). Written only when the book doesn't
+                // already say so, since an unchanged book keeps no backup.
+                _ <- IO.unlessA(
+                  dryRun || starts.potAccount(pot.id).contains(monzoAccountId)
+                ):
+                  account.tagPotId(pot.id.value)
+              yield monzoAccountId -> Some(account)
             case _ =>
               IO.pure(monzoAccountId -> taggedPots.get(monzoAccountId))
         .map:

@@ -219,6 +219,15 @@ structure Account {
 
     closed: Closed
 
+    /// When the account was opened, which is where a first run into an empty
+    /// book starts reading its history. Optional because a pot backing account
+    /// is built from transfer metadata rather than decoded, and so has none.
+    created: Created
+
+    /// What Monzo calls the account, which becomes its book account's
+    /// description. Optional for the same reason as created.
+    description: Description
+
     @jsonUnknown
     unknown: UnknownProperties
 }
@@ -228,6 +237,8 @@ structure Account {
 /// and deleted triggers automatic archiving of the pot's asset account.
 /// Deleted pots are listed too (with their names intact), which is exactly
 /// right: their historical transactions may still fall in an import window.
+/// balance only decides whether a pot nothing links to a backing account is
+/// worth a warning, so it is optional rather than a reason to fail a decode.
 structure Pot {
     @required
     id: PotId
@@ -240,6 +251,8 @@ structure Pot {
 
     @required
     deleted: Deleted
+
+    balance: Amount
 
     @jsonUnknown
     unknown: UnknownProperties

@@ -9,6 +9,7 @@ import porcupine.*
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.util.Locale
 
 // The file-level safety net around every command that opens the book: refuse a
@@ -190,6 +191,47 @@ val backupTimestamp: DateTimeFormatter =
 def formatBackupTimestamp(instant: Instant): String =
   instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
 
+// A look at the book from outside withBook, for what a run has to know before
+// it can start: no backup, since nothing is written, and no gnclock, since a
+// read is not what the lock guards — SQLite gives it a consistent snapshot
+// whoever has the book open. The body runs inside withoutCommitting all the
+// same, so a write that slipped in would be rolled back rather than land in a
+// book no backup was taken of.
+def peekBook[A](input: fs2.io.file.Path)(
+    body: Database[IO] => IO[A]
+): IO[A] =
+  requireExistingBook(input) *>
+    Database
+      .open[IO](input.toString)
+      .use: db =>
+        db.withoutCommitting(body(db))
+
+// Where each account's window starts: from what the book has already filed for
+// it, and which pots it already has an account for. Both sinks read it,
+// --to-book to file what is missing and --to-ofx --book to export it.
+//
+// The book has no Monzo `created`, only post_date — the transaction's local
+// calendar day at neutral time — so the start is the UTC midnight before that
+// day's: no instant on a local day that late can be earlier, from any zone
+// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
+// the online_id dedup then skips, where starting late could miss one. A tagged
+// account nothing has been filed into has no start, the same as one the book
+// doesn't know (see BookStarts). Every tag is kept, other banks' included,
+// since the source only ever asks about IDs Monzo gave it.
+def startsFromBook(using db: Database[IO]): IO[BookStarts] =
+  (Split.latestImportedPostDates, Slot.potLinks).mapN: (postDates, links) =>
+    val starts = postDates
+      .collect:
+        case (tag, Some(postDate)) =>
+          monzo.AccountId(tag) ->
+            postDate.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
+      .toMap
+    val potAccounts = links
+      .map: (potId, tag) =>
+        monzo.PotId(potId) -> monzo.AccountId(tag)
+      .toMap
+    BookStarts(start = starts.get, potAccount = potAccounts.get)
+
 // The two accounts every placement decision hangs off, resolved once per run
 // rather than once per account that asks. The subroot is an IO because the
 // first retired account is what brings it into being: resolving it eagerly
@@ -259,10 +301,11 @@ def archiveSubrootFor(root: Account, dryRun: Boolean)(using
 // to, so move the other's transactions into it and delete the empty one.
 // A fresh child needs no placement enforcing afterwards: it is created at the
 // canonical spot, under the canonical name, hidden iff the Monzo side is
-// retired, and with no description to clear.
+// retired, and with Monzo's description.
 def resolveAssetAccount(
     livePath: List[String],
     retired: Boolean,
+    description: Option[String],
     monzoAccountId: monzo.AccountId,
     tagged: Option[Account],
     roots: BookRoots,
@@ -272,7 +315,14 @@ def resolveAssetAccount(
   for
     account <- tagged match
       case Some(account) =>
-        enforcePlacement(account, canonicalPath, retired, roots, dryRun)
+        enforcePlacement(
+          account,
+          canonicalPath,
+          retired,
+          description,
+          roots,
+          dryRun
+        )
       case None =>
         for
           parent <- parentFor(canonicalPath.init, retired, roots, dryRun)
@@ -287,6 +337,7 @@ def resolveAssetAccount(
             // retirement (see alignHidden), and an account this run is
             // bringing into being has nothing to align against.
             hidden = retired,
+            description = canonicalDescription(description),
             template = None
           )
         yield child
@@ -355,9 +406,9 @@ def canonicalPathString(livePath: List[String], retired: Boolean): String =
 // live, and the same path nested under the Archive subroot once retired (a
 // closed account, a deleted pot); its name is the path's leaf — for pots, the
 // pot's current Monzo name — with the Monzo account ID appended (see
-// assetAccountPath); its description is empty (see alignDescription); and
+// assetAccountPath); its description is Monzo's (see alignDescription); and
 // hidden tracks retirement. All of it is enforced in both directions on every
-// run — un-archiving, un-hiding, renaming and un-describing included — so a
+// run — un-archiving, un-hiding, renaming and re-describing included — so a
 // hand-move lasts only until the next import. A *different* account already
 // occupying the canonical spot fails the run: merging or deleting it could
 // orphan its transactions, so the user resolves that collision by hand.
@@ -365,6 +416,7 @@ def enforcePlacement(
     account: Account,
     livePath: List[String],
     retired: Boolean,
+    description: Option[String],
     roots: BookRoots,
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
@@ -393,7 +445,13 @@ def enforcePlacement(
                   info(s"Moved $accountPath to $targetPath.")
         yield moved
     aligned <- alignHidden(placed, livePath, retired, dryRun)
-    described <- alignDescription(aligned, livePath, retired, dryRun)
+    described <- alignDescription(
+      aligned,
+      livePath,
+      retired,
+      description,
+      dryRun
+    )
   yield described
 
 // Hidden tracks retirement, aligned in both directions. Takes its arguments in
@@ -415,27 +473,38 @@ def alignHidden(
       .flatTap: _ =>
         info(s"${if retired then "Hid" else "Unhid"} $label.")
 
-// The canonical description of a Monzo-backed asset account is none at all:
-// the name already says which Monzo account or pot posts into it, down to the
-// ID that keeps two of a kind apart (see assetAccountPath), so anything here
-// could only restate it. Aligned like hidden, so a description added by hand
-// or carried in by a GUI OFX import doesn't outlive the next run. No
-// description and an empty one both count as aligned, so whichever of the two
-// the book holds is left alone.
+// The canonical description of a Monzo-backed asset account is the one Monzo
+// gives it: /accounts describes a main account, while a pot has none, its name
+// already saying which pot it is. Aligned like hidden, so a description added
+// by hand or carried in by a GUI OFX import doesn't outlive the next run, and
+// one changed on Monzo's side reaches the book. No description and an empty
+// one both count as none, so whichever of the two the book holds is left alone
+// when Monzo has none.
 def alignDescription(
     account: Account,
     livePath: List[String],
     retired: Boolean,
+    description: Option[String],
     dryRun: Boolean
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   val label = canonicalPathString(livePath, retired)
-  if account.description.forall(_.isEmpty) then IO.pure(account)
-  else if dryRun then
-    info(s"Would clear the description of $label.").as(account)
+  val canonical = canonicalDescription(description)
+  if canonicalDescription(account.description) == canonical then
+    IO.pure(account)
   else
-    account.clearDescription
-      .flatTap: _ =>
-        info(s"Cleared the description of $label.")
+    val change = canonical.fold(s"the description of $label"): text =>
+      s"the description of $label to “$text”"
+    if dryRun then
+      info(s"Would ${canonical.fold("clear")(_ => "set")} $change.").as(account)
+    else
+      account
+        .updateDescription(canonical)
+        .flatTap: _ =>
+          info(s"${canonical.fold("Cleared")(_ => "Set")} $change.")
+
+// An empty description is no description, on either side.
+def canonicalDescription(description: Option[String]): Option[String] =
+  description.filter(_.nonEmpty)
 
 // The parent chain on the far side of the live/archive boundary: going in, the
 // live chain mirrored under the Archive subroot; coming back out, the archived
@@ -569,7 +638,8 @@ def createOrRetrieveChild(
           dryRun,
           placeholder,
           hidden,
-          template
+          description = template.flatMap(_.description),
+          template = template
         )
 
 // Create one child, whether or not a sibling of that name already exists —
@@ -581,15 +651,16 @@ def createOrRetrieveChild(
 // by default the parent, so an Expenses child is an EXPENSE account and a
 // Liabilities child a LIABILITY (the literal accounts.account_type values);
 // mirrorParentFor passes the counterpart being mirrored so archived and
-// restored parents match what they mirror. Code and description come from an
-// explicit template only, never from the parent: a mirror is a copy of its
-// counterpart down to those fields, while a fresh asset or category account
-// is born carrying neither, so nothing inherits a description enforcePlacement
-// would then clear. Structural path segments are created as placeholders,
+// restored parents match what they mirror. Code comes from an explicit
+// template only, never from the parent, and so does the description
+// createOrRetrieveChild passes: a mirror is a copy of its counterpart down to
+// those fields, while a fresh category account is born carrying neither. A
+// fresh asset account is born with Monzo's description, the one
+// enforcePlacement would otherwise set a run later. Structural path segments are created as placeholders,
 // leaves that take postings are not; `hidden` is likewise the child's own —
 // never the template's — so a mirror created under the Archive subroot is
 // visible within it, and only an account whose Monzo side is already retired
-// (or the subroot itself) is born hidden. None of the three defaults, so that
+// (or the subroot itself) is born hidden. None of them defaults, so that
 // adding a flag here can't leave a call site silently taking the old one. A
 // dry run inserts nothing but still
 // yields the would-be account, so the rest of the plan can proceed against
@@ -604,6 +675,7 @@ def createChild(
     dryRun: Boolean,
     placeholder: Boolean,
     hidden: Boolean,
+    description: Option[String],
     template: Option[Account]
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   for
@@ -615,7 +687,7 @@ def createChild(
         name = name,
         parentGuid = Some(parent.guid),
         code = template.flatMap(_.code),
-        description = template.flatMap(_.description),
+        description = description,
         hidden = hidden,
         placeholder = placeholder
       )
