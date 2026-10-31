@@ -26,54 +26,29 @@ import scala.concurrent.duration.*
 lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
 // Shared Monzo session scaffolding for every command that talks to the API:
-// load state, decide whether Strong Customer Authentication is required for
-// the window, build the HTTP client (whose trace-level logger redacts the
+// load state, build the HTTP client (whose trace-level logger redacts the
 // Authorization header — http4s's default — but prints full bodies, and the
 // token-exchange response body carries the tokens, hence trace only),
-// rotate/obtain an access token, and run `use` against the authenticated API.
-// The rotated refresh token is saved before `use` runs, so a fetch that fails
+// rotate/obtain an access token, `plan` against the authenticated API,
+// authorise again if the plan's window needs it, and run `use`. Each rotated
+// refresh token is saved as soon as it's issued, so a run that fails later
 // doesn't lose it. `now` is the run's instant rather than one read here, so
 // the token arithmetic below and whatever the command goes on to stamp agree
-// on when the run happened. `windowStarts` is every point an account's window
-// could start from, so that authorisation can tell whether any reaches back
-// past what Strong Customer Authentication allows.
-def withMonzoApi[A](
-    windowStarts: List[Instant],
-    now: Instant
+// on when the run happened.
+//
+// The window is planned with a token in hand rather than before asking for
+// one, because where an account's window starts can depend on what the API
+// says about it — an account's opening date, for one.
+def withMonzoApi[P, A](now: Instant)(
+    plan: monzo.Api[IO] => IO[(windowStarts: List[Instant], plan: P)]
 )(
-    use: monzo.Api[IO] => IO[A]
+    use: (monzo.Api[IO], P) => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
   maybeState <- loadState()
   // Remind (and, if confirmed, record) before the computed refresh-token expiry
   // passes, while there's still a working refresh token to extend in the app.
   checkedState <- maybeState.traverse:
     warnIfRefreshTokenNearExpiry(_, now)
-  // From https://docs.monzo.com/?shell#list-transactions:
-  //
-  // Strong Customer Authentication
-  //
-  // After a user has authenticated, your client can fetch all of their
-  // transactions, and after 5 minutes, it can only sync the last 90 days of
-  // transactions. If you need the user’s entire transaction history, you
-  // should consider fetching and storing it right after authentication.
-  requireStrongCustomerAuthentication = checkedState match
-    case None =>
-      // n/a - there's no refresh token anyway, so we'll need to authenticate
-      // for the first time, and that will happen regardless of whether we
-      // explicitly request it with requireStrongCustomerAuthentication.
-      true
-
-    case Some(_) =>
-      val leeway = Duration.ofSeconds:
-        10
-      windowStarts.exists:
-        _.isBefore:
-          now
-            .minus:
-              Period.ofDays:
-                90
-            .plus:
-              leeway
   result <- EmberClientBuilder
     .default[IO]
     .build
@@ -85,17 +60,10 @@ def withMonzoApi[A](
           trace(_)
       )
     .use: client =>
-      for
-        (state, accessToken) <- accessToken(
-          client,
-          checkedState,
-          now,
-          requireStrongCustomerAuthentication
-        )
-        // Saved before the fetch rather than after it, so a refreshed token
-        // survives a `use` that fails after accessToken() has rotated it.
-        _ <- saveState(state)
-        result <- SimpleRestJsonBuilder:
+      def withApi[B](accessToken: monzo.AccessToken)(
+          body: monzo.Api[IO] => IO[B]
+      ): IO[B] =
+        SimpleRestJsonBuilder:
           monzo.Api
         .client:
           client
@@ -106,9 +74,63 @@ def withMonzoApi[A](
             accessToken
         .resource
           .use:
-            use
+            body
+      for
+        (state, token) <- accessToken(
+          client,
+          checkedState,
+          now,
+          requireStrongCustomerAuthentication = false
+        )
+        _ <- saveState(state)
+        planned <- withApi(token)(plan)
+        (_, windowToken) <-
+          if requiresStrongCustomerAuthentication(
+              planned.windowStarts,
+              state,
+              now
+            )
+          then
+            accessToken(
+              client,
+              Some(state),
+              now,
+              requireStrongCustomerAuthentication = true
+            ).flatTap: (state, _) =>
+              saveState(state)
+          else IO.pure((state, token))
+        result <- withApi(windowToken)(use(_, planned.plan))
       yield result
 yield result
+
+// From https://docs.monzo.com/?shell#list-transactions:
+//
+// Strong Customer Authentication
+//
+// After a user has authenticated, your client can fetch all of their
+// transactions, and after 5 minutes, it can only sync the last 90 days of
+// transactions. If you need the user’s entire transaction history, you
+// should consider fetching and storing it right after authentication.
+//
+// So a window reaching back past 90 days needs an authorisation from the last
+// five minutes. A run that has only just authorised for the first time already
+// has one, and isn't asked again.
+def requiresStrongCustomerAuthentication(
+    windowStarts: List[Instant],
+    state: State,
+    now: Instant
+): Boolean =
+  val leeway = Duration.ofSeconds:
+    10
+  !lessThanFiveMinutesAgo(state.authorizedAt, now) &&
+  windowStarts.exists:
+    _.isBefore:
+      now
+        .minus:
+          Period.ofDays:
+            90
+        .plus:
+          leeway
 
 def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
   maybeBytes <- Keychain.load:

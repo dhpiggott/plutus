@@ -38,7 +38,7 @@ type TransactionsRun = Boolean => Verbosity ?=> IO[Unit]
 // accepts, rather than a product of every source with every sink. Nothing
 // records where a run left off except a book, so an API run always reconciles
 // against one — --to-book, or --to-ofx with --book — and a CSV run needs one
-// only to write into it or to leave out what it already holds.
+// only to write into it.
 lazy val transactionsRunOpts: Opts[TransactionsRun] =
   toBookRunOpts orElse ofxFromBookRunOpts orElse ofxRunOpts
 
@@ -49,13 +49,13 @@ lazy val toBookRunOpts: Opts[TransactionsRun] =
     (source, input, ignoreLock) =>
       dryRun => gnuCashTransactionSink(source, input, dryRun, ignoreLock)
 
+// The API only, since it has no window of its own to offer; a statement does,
+// and GnuCash's importer already skips what the book holds.
 lazy val ofxFromBookRunOpts: Opts[TransactionsRun] =
-  (bookSourceOpts, toOfxPathOpts, bookPathOpts).tupled.map:
+  (monzoFromBookSourceOpts, toOfxPathOpts, bookPathOpts).tupled.map:
     (source, output, book) =>
       dryRun => ofxTransactionSinkFromBook(source, book, output, dryRun)
 
-// A statement is its own window, so CSV to OFX needs no book; the API has no
-// window of its own to offer, so it only reaches OFX through one.
 lazy val ofxRunOpts: Opts[TransactionsRun] =
   (csvSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
     dryRun => ofxTransactionSink(source, output, dryRun, filed = Set.empty)
@@ -169,7 +169,7 @@ lazy val bookPathOpts: Opts[fs2.io.file.Path] =
       "book",
       metavar = "path",
       help =
-        "With --to-ofx, start each account where a GnuCash SQLite3 file left off, as --to-book does, and leave out transactions already in it. The book is only read. If no path is given defaults to Accounts.gnucash in the current directory; give one as --book=PATH."
+        "With --from-monzo --to-ofx, start each account where a GnuCash SQLite3 file left off, as --to-book does, and leave out transactions already in it. The book is only read. If no path is given defaults to Accounts.gnucash in the current directory; give one as --book=PATH."
     )
     .map:
       _.fold(fs2.io.file.Path("Accounts.gnucash")):

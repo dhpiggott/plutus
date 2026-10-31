@@ -13,9 +13,7 @@ It is built as a single binary using Cats Effect, http4s, decline, smithy4s, and
 plutus transactions     ( --from-monzo
                         | --from-csv ACCOUNT_ID=PATH... [--from-csv-pot ACCOUNT_ID=PATH]... )
                         --to-book[=PATH] [--ignore-lock] [--dry-run] [verbosity]
-plutus transactions     ( --from-monzo
-                        | --from-csv ACCOUNT_ID=PATH... [--from-csv-pot ACCOUNT_ID=PATH]... )
-                        --to-ofx[=PATH] --book[=PATH] [--dry-run] [verbosity]
+plutus transactions     --from-monzo --to-ofx[=PATH] --book[=PATH] [--dry-run] [verbosity]
 plutus transactions     --from-csv ACCOUNT_ID=PATH... [--from-csv-pot ACCOUNT_ID=PATH]...
                         --to-ofx[=PATH] [--dry-run] [verbosity]
 plutus archive-accounts [--input PATH] [--ignore-lock] [--dry-run] [verbosity]
@@ -56,7 +54,7 @@ The state store holds only your Monzo credentials. Nothing records how far a run
 
 ### Reading from the Monzo API (`--from-monzo`)
 
-The fetch ends at the current time and each account starts the day before the latest transaction already filed in the book for it. On a first run into a book that holds no Monzo account yet, every main account is fetched from the day it was opened; after that, an account the book doesn't know is fetched from 89 days back (see [below](#writing-into-a-gnucash-book---to-book)). There is no option to move either end: the book always knows where each account left off, and anything older than Monzo will serve comes from a CSV statement.
+The fetch ends at the current time and each account starts the day before the latest transaction already filed in the book for it. A main account the book doesn't know yet is fetched from the day it was opened, asking you to authorise in the Monzo app first if that's more than 90 days ago (see [below](#writing-into-a-gnucash-book---to-book)). A closed one is only fetched that way into a book with no Monzo account at all; otherwise, like a pot the book doesn't know, it's fetched from 89 days back. There is no option to move either end: the book always knows where each account left off, and anything older than Monzo will serve comes from a CSV statement.
 
 #### Pot transactions
 
@@ -110,7 +108,7 @@ Either option is a run on its own — a pot backfill needs no main account's sta
 
 Writes an OFX file at the path given as `--to-ofx=PATH`, or `./monzo.ofx` when `--to-ofx` is given bare. (The path is bound with `=` only: `--to-ofx PATH` is a usage error rather than a path quietly ignored.)
 
-With `--book[=PATH]` (default `./Accounts.gnucash`), the run is reconciled against a GnuCash book for anyone who imports the file through GnuCash's own importer rather than using `--to-book`: each account starts where the book left off, exactly as `--to-book` would, and any transaction the book already holds is left out of the file. The book is only read, with no lock and no backup. If the last file hasn't been imported yet, the next run exports those transactions again, which GnuCash's importer skips by the same `online_id`. A first run against a book with no Monzo accounts reads every main account's whole history, as with `--to-book`. `--book` is required with `--from-monzo`, since nothing else knows where each account left off; with `--from-csv` it's optional, and leaves out what the book already holds.
+With `--book[=PATH]` (default `./Accounts.gnucash`), the run is reconciled against a GnuCash book for anyone who imports the file through GnuCash's own importer rather than using `--to-book`: each account starts where the book left off, exactly as `--to-book` would, and any transaction the book already holds is left out of the file. The book is only read, with no lock and no backup. If the last file hasn't been imported yet, the next run exports those transactions again, which GnuCash's importer skips by the same `online_id`. A main account the book doesn't know is read from the day it was opened, as with `--to-book`. `--book` is required with `--from-monzo`, since nothing else knows where each account left off, and isn't taken with `--from-csv`: a statement is its own window, and GnuCash's importer skips what the book already holds.
 
 The file is always written over whatever is at the path. A CSV run renders the whole of its statements, and a `--book` run's unimported rows are still missing from the book, so they're in the next file too.
 
@@ -128,8 +126,8 @@ Monzo's own transaction `category` is authoritative for filing, with a small kin
 
 Re-runs are idempotent: the Monzo transaction ID is written into an `online_id` KVP slot on the asset split (the same ID `--to-ofx` writes as the OFX `FITID`, and where GnuCash's generic importer stores it), and any transaction already carrying that ID is skipped. GnuCash's own import matcher recognises these rows too.
 
-- Each account's fetch starts from the book itself: for every account tagged with a Monzo account ID, the day before the latest transaction filed into it, as a timestamp (the book has only GnuCash's normalised post date, not Monzo's own timestamp, so the start errs early and dedup skips the overlap). An account with no tag, or with nothing filed into it yet, is fetched from 89 days back, which is as far as Monzo allows without signing in again. Bring in anything older with [`--from-csv`](#reading-from-csv-statements---from-csv---from-csv-pot).
-- **A first run needs nothing else.** Against a book that holds no account tagged with a Monzo account ID — such as one GnuCash has just created — a run asks you to authorise in the Monzo app, even if you've done so before, and then fetches every main account's whole history from the day it was opened, which Monzo allows only in the five minutes after authorising. That history names every pot ever transferred to, so each gets its own account too. Pot statements are still limited to 89 days; older pot transactions come from `--from-csv-pot`. A `--dry-run` first run authorises in the same way, and so will the real run after it if it starts more than five minutes later.
+- Each account's fetch starts from the book itself: for every account tagged with a Monzo account ID, the day before the latest transaction filed into it, as a timestamp (the book has only GnuCash's normalised post date, not Monzo's own timestamp, so the start errs early and dedup skips the overlap). An open main account with no tag is fetched from the day it was opened, as below. A tagged account with nothing filed into it yet, a closed account with no tag, and a pot with no tag are fetched from 89 days back, which is as far as Monzo allows without signing in again. Bring in anything older with [`--from-csv`](#reading-from-csv-statements---from-csv---from-csv-pot).
+- **A main account the book doesn't know is read in full.** Monzo serves anything older than 90 days only in the five minutes after you authorise in the app, so a run that finds such an account opened earlier than that asks you to authorise, even if you've done so before, and then fetches it from the day it was opened. On a first run, against a book that holds no account tagged with a Monzo account ID (such as one GnuCash has just created), that covers every main account, closed ones included. That history names every pot ever transferred to, so each gets its own account too. Pot statements are still limited to 89 days; older pot transactions come from `--from-csv-pot`. A `--dry-run` authorises in the same way, and so will the real run after it if it starts more than five minutes later.
 - Both splits are written unreconciled; you reconcile them against a statement yourself, as with an OFX import.
 - A missing book fails immediately, before the source is read: SQLite would otherwise create an empty book at a mistyped path and fail obscurely several queries later.
 - A book GnuCash has open is refused, and a real run holds the lock while it writes. See [The GnuCash lock](#the-gnucash-lock).
