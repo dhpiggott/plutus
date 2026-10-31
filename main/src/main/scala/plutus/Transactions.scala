@@ -5,17 +5,14 @@ import cats.data.ValidatedNel
 import cats.effect.*
 import cats.syntax.all.*
 import com.monovore.decline.*
-import com.monovore.decline.time.*
-
-import java.time.Instant
 
 // One command for copying transactions, named for what it does rather than for
 // either end of it, because neither end is fixed any more: --from-… says where
 // they come from and --to-… where they go, and all four pairs are runs someone
 // wants — including CSV to OFX, which is neither an import nor an export in
 // any sense a user would recognise. Stating both ends is also what lets
-// decline refuse what doesn't exist (two sources, no sink, --since with a CSV
-// or a book) as a usage error rather than as a flag quietly ignored, and what
+// decline refuse what doesn't exist (two sources, no sink, the API to OFX
+// with no book) as a usage error rather than as a flag quietly ignored, and what
 // puts the whole matrix in --help: a sum of products renders as one usage line
 // per pair.
 lazy val transactionsOpts: Opts[IO[Unit]] = Opts.subcommand(
@@ -39,10 +36,9 @@ type TransactionsRun = Boolean => Verbosity ?=> IO[Unit]
 
 // One branch per way of deciding the window, each with the sources it
 // accepts, rather than a product of every source with every sink. Nothing
-// records where a run left off except a book, so a run either reconciles
-// against one — --to-book, or --to-ofx with --book — or names its own window
-// with --since. On a book, --since could only skip rows or re-fetch ones dedup
-// would skip anyway, and --before would only leave rows for the next run.
+// records where a run left off except a book, so an API run always reconciles
+// against one — --to-book, or --to-ofx with --book — and a CSV run needs one
+// only to write into it or to leave out what it already holds.
 lazy val transactionsRunOpts: Opts[TransactionsRun] =
   toBookRunOpts orElse ofxFromBookRunOpts orElse ofxRunOpts
 
@@ -58,8 +54,10 @@ lazy val ofxFromBookRunOpts: Opts[TransactionsRun] =
     (source, output, book) =>
       dryRun => ofxTransactionSinkFromBook(source, book, output, dryRun)
 
+// A statement is its own window, so CSV to OFX needs no book; the API has no
+// window of its own to offer, so it only reaches OFX through one.
 lazy val ofxRunOpts: Opts[TransactionsRun] =
-  (windowedSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
+  (csvSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
     dryRun => ofxTransactionSink(source, output, dryRun, filed = Set.empty)
 
 // A source that hasn't yet been told where each account starts, because that
@@ -72,7 +70,7 @@ lazy val bookSourceOpts: Opts[TransactionSourceFor] =
 
 lazy val monzoFromBookSourceOpts: Opts[TransactionSourceFor] =
   fromMonzoOpts.map: _ =>
-    starts => monzoTransactionSource(MonzoWindow.FromBook(starts))
+    starts => monzoTransactionSource(starts)
 
 lazy val fromMonzoOpts: Opts[Unit] =
   Opts.flag(
@@ -80,32 +78,6 @@ lazy val fromMonzoOpts: Opts[Unit] =
     help =
       "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
   )
-
-lazy val windowedSourceOpts: Opts[TransactionSource] =
-  monzoBetweenSourceOpts orElse csvSourceOpts
-
-lazy val monzoBetweenSourceOpts: Opts[TransactionSource] =
-  (fromMonzoOpts, sinceOpts, beforeOpts).tupled.map: (_, since, before) =>
-    monzoTransactionSource(MonzoWindow.Between(since, before))
-
-// Windowing options on the API call rather than on the command, so they're
-// unparseable alongside --from-csv rather than accepted and ignored: a
-// statement is its own window, with nothing to bound.
-lazy val sinceOpts: Opts[Instant] =
-  Opts.option[Instant](
-    "since",
-    help =
-      "Timestamp to read transactions from. Required with --to-ofx unless --book is given, which takes each account's start from the book instead."
-  )
-
-lazy val beforeOpts: Opts[Option[Instant]] =
-  Opts
-    .option[Instant](
-      "before",
-      help =
-        "Timestamp to read transactions to. If not specified defaults to now."
-    )
-    .orNone
 
 // Either option on its own is a run, so the branch is the union of the two
 // products rather than one product of two optional lists: a pot backfill is

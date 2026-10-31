@@ -8,23 +8,21 @@ import smithy4s.json.*
 import java.time.Duration
 import java.time.Instant
 
-// Every transaction (main accounts and discovered pots) for the window,
-// grouped by account so a sink can post each account's transactions to the
+// Every transaction (main accounts and discovered pots) from where the book
+// left off with each account (see startsFromBook) to now, grouped by account so a sink can post each account's transactions to the
 // asset account its type maps to (see AssetAccounts), plus each pot backing
 // account's pot, so pots get individual asset accounts, currency-checked and
 // archived when their pot goes.
-def monzoTransactionSource(window: MonzoWindow): TransactionSource =
+def monzoTransactionSource(bookStarts: BookStarts): TransactionSource =
   new TransactionSource:
     def fetch(now: Instant)(using verbosity: Verbosity): IO[Fetched] =
-      val starts = accountStarts(window, now)
+      val starts = accountStarts(bookStarts, now)
       withMonzoApi(starts.all, now): monzoApi =>
         for
           byAccount <- listAllTransactions(
             monzoApi,
             starts,
-            before = window match
-              case MonzoWindow.Between(_, before) => before.getOrElse(now)
-              case MonzoWindow.FromBook(_)        => now
+            before = now
           )
           pots <- potsByAccountId(monzoApi, byAccount, potLinks(byAccount))
           // The one reading of the missing-type rule: every sink downstream
@@ -46,22 +44,7 @@ def monzoTransactionSource(window: MonzoWindow): TransactionSource =
           pots = pots
         )
 
-// The window a run reads: one the command line names, or one per account
-// worked out from a book (see startsFromBook). Nothing about where a run left
-// off is kept anywhere else, so a run that names neither has no window.
-enum MonzoWindow:
-  case Between(since: Instant, before: Option[Instant])
-
-  // One start per account the book knows, or None for one it knows but has
-  // nothing filed for. An account missing from the map is new to the book.
-  // How far back either kind is read is the source's call (see
-  // accountStarts), since only the source knows how far back it can reach.
-  case FromBook(starts: BookStarts)
-
-// Where each account's window starts: everywhere at --since when the command
-// line names one.
-//
-// When a book names the starting points, an account it knows without a
+// Where each account's window starts. An account the book knows without a
 // start, or a pot it has never seen, is read from 89 days back: a day inside
 // the 90 Strong Customer Authentication allows without authorising again (see
 // withMonzoApi), and the most a pot's statement will return at all (see
@@ -70,26 +53,17 @@ enum MonzoWindow:
 // book — because Monzo serves a main account's whole history for five minutes
 // after authorising, which such a run is made to do. A main account opened
 // later gets the 89 days, and anything older comes from a CSV statement.
-def accountStarts(window: MonzoWindow, now: Instant): AccountStarts =
-  window match
-    case MonzoWindow.Between(since, _) =>
-      AccountStarts(
-        known = Map.empty,
-        otherwise = ListTransactionsSince.Timestamp(since),
-        newAccountsFromOpening = false
-      )
-
-    case MonzoWindow.FromBook(starts) =>
-      val reachable = ListTransactionsSince.Timestamp:
-        now.minus(Duration.ofDays(89))
-      AccountStarts(
-        known = starts.view
-          .mapValues:
-            _.fold(reachable)(ListTransactionsSince.Timestamp(_))
-          .toMap,
-        otherwise = reachable,
-        newAccountsFromOpening = starts.isEmpty
-      )
+def accountStarts(bookStarts: BookStarts, now: Instant): AccountStarts =
+  val reachable = ListTransactionsSince.Timestamp:
+    now.minus(Duration.ofDays(89))
+  AccountStarts(
+    known = bookStarts.view
+      .mapValues:
+        _.fold(reachable)(ListTransactionsSince.Timestamp(_))
+      .toMap,
+    otherwise = reachable,
+    newAccountsFromOpening = bookStarts.isEmpty
+  )
 
 // `known` holds the accounts with somewhere to start of their own, which is
 // also how a pot /accounts doesn't list is found when no transfer for it falls

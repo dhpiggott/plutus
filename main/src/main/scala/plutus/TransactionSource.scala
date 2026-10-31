@@ -45,6 +45,6 @@ trait TransactionSource:
 
 // Where each account a book knows left off: the UTC midnight before the latest
 // transaction filed into it, or None when nothing has been. The Monzo source
-// reads from these when a book is what a run is reconciled against (see
-// MonzoWindow.FromBook); a CSV statement is its own window and ignores them.
+// reads from these (see accountStarts); a CSV statement is its own window and
+// ignores them.
 type BookStarts = Map[monzo.AccountId, Option[Instant]]

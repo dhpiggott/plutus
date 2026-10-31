@@ -34,10 +34,9 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 // The rotated refresh token is saved before `use` runs, so a fetch that fails
 // doesn't lose it. `now` is the run's instant rather than one read here, so
 // the token arithmetic below and whatever the command goes on to stamp agree
-// on when the run happened.
-// `windowStarts` is where each account's window could start — the --since,
-// or every starting point the book gives — so that authorisation can tell
-// whether any reaches back past what Strong Customer Authentication allows.
+// on when the run happened. `windowStarts` is every point an account's window
+// could start from, so that authorisation can tell whether any reaches back
+// past what Strong Customer Authentication allows.
 def withMonzoApi[A](
     windowStarts: List[Instant],
     now: Instant

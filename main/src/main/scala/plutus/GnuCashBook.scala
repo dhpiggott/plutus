@@ -206,10 +206,9 @@ def peekBook[A](input: fs2.io.file.Path)(
       .use: db =>
         db.withoutCommitting(body(db))
 
-// Where each account's window starts when a run is reconciled against a book:
-// from what the book has already filed for it, never from a --since, which
-// such a run doesn't take. Both sinks read it, --to-book to file what is
-// missing and --to-ofx --book to export it.
+// Where each account's window starts: from what the book has already filed for
+// it. Both sinks read it, --to-book to file what is missing and --to-ofx --book
+// to export it.
 //
 // The book has no Monzo `created`, only post_date — the transaction's local
 // calendar day at neutral time — so the start is the UTC midnight before that
