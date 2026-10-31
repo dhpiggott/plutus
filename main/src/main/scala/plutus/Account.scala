@@ -101,11 +101,10 @@ final case class Account(
       .stringSlot(objGuid = guid, name = Slot.OnlineId, value = value)
       .insert
 
-  // A pot's account also records which pot it backs (see Slot.PotId). Replaced
-  // rather than added to, so a write that races another run's leaves one slot.
+  // A pot's account also records which pot it backs (see Slot.PotId),
+  // overwriting any link already there rather than adding a second.
   def tagPotId(value: String)(using db: Database[IO]): IO[Unit] =
-    Slot.delete(objGuid = guid, name = Slot.PotId) *>
-      Slot.stringSlot(objGuid = guid, name = Slot.PotId, value = value).insert
+    Slot.stringSlot(objGuid = guid, name = Slot.PotId, value = value).upsert
 
   // description is a plain accounts column, with no KVP slot behind it (unlike
   // hidden and placeholder), so there is nothing to keep in step here. None
