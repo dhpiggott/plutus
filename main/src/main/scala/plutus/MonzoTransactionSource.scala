@@ -33,7 +33,12 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
             _.accounts
         starts = accountStarts(book, accounts, now)
       yield (
-        windowStarts = accounts.map(starts.forAccount(_).start),
+        // An account list with nothing in it reads nothing, so asks for
+        // nothing beyond what any token can do.
+        earliestWindowStart = accounts
+          .map(starts.forAccount(_).start)
+          .minOption
+          .getOrElse(now),
         plan = (accounts = accounts, starts = starts)
       )
       withMonzoApi(now)(listAccounts): (monzoApi, planned) =>

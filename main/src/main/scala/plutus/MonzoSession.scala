@@ -40,7 +40,7 @@ lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 // one, because where an account's window starts can depend on what the API
 // says about it — an account's opening date, for one.
 def withMonzoApi[P, A](now: Instant)(
-    plan: monzo.Api[IO] => IO[(windowStarts: List[Instant], plan: P)]
+    plan: monzo.Api[IO] => IO[(earliestWindowStart: Instant, plan: P)]
 )(
     use: (monzo.Api[IO], P) => IO[A]
 )(using verbosity: Verbosity): IO[A] = for
@@ -86,7 +86,7 @@ def withMonzoApi[P, A](now: Instant)(
         planned <- withApi(token)(plan)
         (_, windowToken) <-
           if requiresStrongCustomerAuthentication(
-              planned.windowStarts,
+              planned.earliestWindowStart,
               state,
               now
             )
@@ -116,21 +116,20 @@ yield result
 // five minutes. A run that has only just authorised for the first time already
 // has one, and isn't asked again.
 def requiresStrongCustomerAuthentication(
-    windowStarts: List[Instant],
+    earliestWindowStart: Instant,
     state: State,
     now: Instant
 ): Boolean =
   val leeway = Duration.ofSeconds:
     10
   !lessThanFiveMinutesAgo(state.authorizedAt, now) &&
-  windowStarts.exists:
-    _.isBefore:
-      now
-        .minus:
-          Period.ofDays:
-            90
-        .plus:
-          leeway
+  earliestWindowStart.isBefore:
+    now
+      .minus:
+        Period.ofDays:
+          90
+      .plus:
+        leeway
 
 def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
   maybeBytes <- Keychain.load:
