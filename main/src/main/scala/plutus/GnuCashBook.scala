@@ -216,12 +216,18 @@ def peekBook[A](input: fs2.io.file.Path)(
 // GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
 // the online_id dedup then skips, where starting late could miss one. A tagged
 // account nothing has been filed into maps to None: the book knows it, but not
-// where it left off. Only tags shaped like a Monzo account ID count: GnuCash's
-// own OFX importer tags other banks' accounts with the same slot, and asking
-// Monzo for one of those would fail the run.
+// where it left off.
 def startsFromBook(using db: Database[IO]): IO[BookStarts] =
   Split.latestImportedPostDates.map:
     _.collect:
+      // GnuCash's own OFX importer tags other banks' accounts with the same
+      // slot, and asking Monzo for one of those would fail the run, so only
+      // Monzo's tags may count. The ID's shape is the only way to tell them
+      // apart here, brittle as that is. Checking each tag against /accounts
+      // would drop pots: a pot's backing account is never listed there, and a
+      // tag /accounts doesn't know is how a run finds a pot the book already
+      // has (see discoverPotAccounts), which keeps one earning only interest
+      // syncing when no transfer for it falls in the window.
       case (tag, postDate) if tag.startsWith("acc_") =>
         monzo.AccountId(tag) -> postDate.map:
           _.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
