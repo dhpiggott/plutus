@@ -97,7 +97,7 @@ def accountStarts(
     book = book,
     reachable = now.minus(Duration.ofDays(89)),
     freshBook = accounts.forall: account =>
-      book.start(account.id).isEmpty
+      book.start(account.id) == BookStart.Unknown
   )
 
 final case class AccountStarts(
@@ -108,15 +108,18 @@ final case class AccountStarts(
   def forAccount(account: monzo.Account): ListTransactionsSince =
     ListTransactionsSince.Timestamp:
       book.start(account.id) match
-        case Some(start) => start.getOrElse(reachable)
-        case None        =>
+        case BookStart.FiledUntil(start) => start
+        case BookStart.NothingFiled      => reachable
+        case BookStart.Unknown           =>
           account.created
             .filter(_ => freshBook || !account.closed.exists(_.value))
             .fold(reachable)(_.value.asInstant)
 
   def forPot(accountId: monzo.AccountId): ListTransactionsSince =
     ListTransactionsSince.Timestamp:
-      book.start(accountId).flatten.getOrElse(reachable)
+      book.start(accountId) match
+        case BookStart.FiledUntil(start) => start
+        case _                           => reachable
 
 // Every pot of every main account, deleted ones included: /pots is listed per
 // owning account, and /accounts lists every main account, closed ones too.

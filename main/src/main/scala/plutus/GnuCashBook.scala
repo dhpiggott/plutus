@@ -215,21 +215,25 @@ def peekBook[A](input: fs2.io.file.Path)(
 // day's: no instant on a local day that late can be earlier, from any zone
 // GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
 // the online_id dedup then skips, where starting late could miss one. A tagged
-// account nothing has been filed into maps to Some(None): the book knows it,
+// account nothing has been filed into is NothingFiled: the book knows it,
 // but not where it left off. Every tag is kept, other banks' included, since
 // the source only ever asks about IDs Monzo gave it (see BookStarts).
 def startsFromBook(using db: Database[IO]): IO[BookStarts] =
   (Split.latestImportedPostDates, Slot.potLinks).mapN: (postDates, links) =>
     val starts = postDates
       .map: (tag, postDate) =>
-        monzo.AccountId(tag) -> postDate.map:
-          _.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
+        monzo.AccountId(tag) -> postDate.fold(BookStart.NothingFiled): latest =>
+          BookStart.FiledUntil:
+            latest.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
       .toMap
     val potAccounts = links
       .map: (potId, tag) =>
         monzo.PotId(potId) -> monzo.AccountId(tag)
       .toMap
-    BookStarts(start = starts.get, potAccount = potAccounts.get)
+    BookStarts(
+      start = starts.getOrElse(_, BookStart.Unknown),
+      potAccount = potAccounts.get
+    )
 
 // The two accounts every placement decision hangs off, resolved once per run
 // rather than once per account that asks. The subroot is an IO because the
