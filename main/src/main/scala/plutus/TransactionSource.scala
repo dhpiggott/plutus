@@ -51,22 +51,16 @@ trait TransactionSource:
 
 // What a book knows about where to read from, asked one ID at a time rather
 // than listed, because a book can't say which of its tags are Monzo's (see
-// monzoTransactionSource). `start` is where an account left off (see
-// BookStart). `potAccount` is the backing account of a pot the book already
-// has an account for. The Monzo source reads from these (see accountStarts);
-// a CSV statement is its own window and ignores them.
+// monzoTransactionSource). `start` is where an account left off: the UTC
+// midnight before the latest transaction filed into it, or None when nothing
+// has been, whether or not the book has an account for it. Those two are one
+// answer because they start alike: a tagged account with nothing filed may
+// have taken transactions since it was tagged, and nothing in the book says
+// when it was last read, so only its opening is safe to read from (see
+// AccountStarts). `potAccount` is the backing account of a pot the book
+// already has an account for. The Monzo source reads from these (see
+// accountStarts); a CSV statement is its own window and ignores them.
 final case class BookStarts(
-    start: monzo.AccountId => BookStart,
+    start: monzo.AccountId => Option[Instant],
     potAccount: monzo.PotId => Option[monzo.AccountId]
 )
-
-// Three answers rather than an optional instant, because the source starts the
-// first two differently (see AccountStarts): an account the book has no tag
-// for may be read from its opening, while one it has tagged with nothing filed
-// yet, which the book sink does for every typed account it sees, is read from
-// as far back as needs no fresh authorisation. FiledUntil holds the UTC
-// midnight before the latest transaction filed into the account.
-enum BookStart:
-  case Unknown
-  case NothingFiled
-  case FiledUntil(start: Instant)

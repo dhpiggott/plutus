@@ -76,18 +76,20 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
           )
       )
 
-// Where each account's window starts. A main account the book has never seen
-// is read from its opening, because Monzo serves a main account's whole
+// Where each account's window starts. A main account with nothing filed in the
+// book is read from its opening, because Monzo serves a main account's whole
 // history for five minutes after authorising, and withMonzoApi asks for that
-// whenever a window reaches back further than 90 days. A closed one is only
-// read that way on a first run into a fresh book, one that knows none of the
-// accounts /accounts lists: one with nothing ever filed in it would otherwise
-// be unknown to the book, and ask for authorisation again, on every run. An
-// account the book knows without a start, a closed account it has never seen,
-// or a pot it has never seen, is read from 89 days back: a day inside the 90
-// Strong Customer Authentication allows without authorising again, and the
-// most a pot's statement will return at all (see discoverPotAccounts).
-// Anything older for those comes from a CSV statement.
+// whenever a window reaches back further than 90 days. That includes one the
+// book has tagged while it was empty: it may have taken transactions since,
+// and nothing records when it was last read, so a later start could miss
+// them. A closed one is only read that way on a first run into a fresh book,
+// one with nothing filed for any account /accounts lists: a closed account
+// nothing was ever filed into would otherwise ask for authorisation again on
+// every run, and takes no new transactions to miss. A closed account outside a
+// first run, or a pot with nothing filed, is read from 89 days back: a day
+// inside the 90 Strong Customer Authentication allows without authorising
+// again, and the most a pot's statement will return at all (see
+// discoverPotAccounts). Anything older for those comes from a CSV statement.
 def accountStarts(
     book: BookStarts,
     accounts: List[monzo.Account],
@@ -97,7 +99,7 @@ def accountStarts(
     book = book,
     reachable = now.minus(Duration.ofDays(89)),
     freshBook = accounts.forall: account =>
-      book.start(account.id) == BookStart.Unknown
+      book.start(account.id).isEmpty
   )
 
 final case class AccountStarts(
@@ -107,19 +109,16 @@ final case class AccountStarts(
 ):
   def forAccount(account: monzo.Account): ListTransactionsSince =
     ListTransactionsSince.Timestamp:
-      book.start(account.id) match
-        case BookStart.FiledUntil(start) => start
-        case BookStart.NothingFiled      => reachable
-        case BookStart.Unknown           =>
+      book
+        .start(account.id)
+        .getOrElse:
           account.created
             .filter(_ => freshBook || !account.closed.exists(_.value))
             .fold(reachable)(_.value.asInstant)
 
   def forPot(accountId: monzo.AccountId): ListTransactionsSince =
     ListTransactionsSince.Timestamp:
-      book.start(accountId) match
-        case BookStart.FiledUntil(start) => start
-        case _                           => reachable
+      book.start(accountId).getOrElse(reachable)
 
 // Every pot of every main account, deleted ones included: /pots is listed per
 // owning account, and /accounts lists every main account, closed ones too.
