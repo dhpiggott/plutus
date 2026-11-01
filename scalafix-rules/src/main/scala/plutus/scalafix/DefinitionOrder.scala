@@ -110,12 +110,43 @@ object DefinitionOrder {
       (open.map(start => (start, text.length)).toList ++ ranges).reverse
     }
 
+    // The lines a `scalafix:ok` comment disables this rule on.
+    private val okLines: List[(Int, Int)] =
+      doc.tokens.toList
+        .collect { case comment: Token.Comment => comment }
+        .filter(isOkComment)
+        .map(comment => (lineStart(comment.start), comment.end))
+
+    private val tokens: Vector[Token] = doc.tokens.toVector
+
+    private val tokenStarts: Array[Int] = tokens.map(_.start).toArray
+
     private def appliesHere(rules: List[String]): Boolean =
       rules.isEmpty || rules.contains("DefinitionOrder")
 
+    private def isOkComment(comment: Token.Comment): Boolean =
+      comment.value.trim.split("[\\s,]+").toList match {
+        case "scalafix:ok" :: rules => appliesHere(rules)
+        case _                      => false
+      }
+
+    // The moves are one atomic patch: each edit only makes sense with all the
+    // others, so if scalafix would drop any part of one, it drops them all.
     def patch: Patch = {
       val edits = scopes(doc.tree).flatMap(editsFor)
-      (edits.map(toPatch) ++ problems).asPatch
+      val patches = edits.map(edit => (edit, toPatch(edit)))
+      val unplaceable = patches.collect { case (edit, None) => edit }
+      unplaceable.foreach { edit =>
+        report(
+          Position.Range(doc.input, edit.start, edit.end),
+          "These definitions are out of order, but there is nowhere beside " +
+            "this point to write them, so they can't be moved automatically."
+        )
+      }
+      val moves =
+        if (unplaceable.nonEmpty) Patch.empty
+        else patches.flatMap(_._2).asPatch.atomic
+      (moves :: problems).asPatch
     }
 
     private def scopes(tree: Tree): List[Scope] = tree match {
@@ -204,6 +235,14 @@ object DefinitionOrder {
               "line of their own, so they can't be moved automatically."
           )
           None
+        case None if suppressedWithin(start, end, anchors.map(_._1)) =>
+          report(
+            Position.Range(doc.input, start, end),
+            "These definitions are out of order, but one that would move " +
+              "holds a scalafix:off range or a scalafix:ok comment, and " +
+              "scalafix won't edit inside those. Move them by hand."
+          )
+          None
         case None
             if anchors.map(_._2) != order.filter(items(_).kept.nonEmpty) =>
           report(
@@ -245,6 +284,20 @@ object DefinitionOrder {
           })
       }
     }
+
+    // Whether a suppressed range overlaps the part of the run the rule would
+    // rewrite: everything from `start` to `end` except the anchors.
+    private def suppressedWithin(
+        start: Int,
+        end: Int,
+        anchors: List[(Int, Int)]
+    ): Boolean =
+      (keptRanges ++ okLines).exists { case (from, to) =>
+        val overlaps = from < end && start < to
+        overlaps && !anchors.exists { case (anchorFrom, anchorTo) =>
+          anchorFrom <= from && to <= anchorTo
+        }
+      }
 
     // The canonical order cut at each kept item, which stays where it is.
     private def splitAt(
@@ -325,31 +378,41 @@ object DefinitionOrder {
     private def lineStart(offset: Int): Int =
       text.lastIndexOf('\n', offset - 1) + 1
 
-    private def toPatch(edit: Edit): Patch =
+    private def toPatch(edit: Edit): Option[Patch] =
       if (edit.start == edit.end) insertAt(edit.start, edit.text)
       else {
-        val tokens = doc.tokens.filter { token =>
-          token.start >= edit.start && token.end <= edit.end
-        }
-        tokens.find(_.start == edit.start) match {
-          case Some(first) =>
-            Patch.removeTokens(tokens.filter(_ != first)) +
-              Patch.replaceToken(first, edit.text)
-          case None => Patch.empty
+        val inside = tokens
+          .drop(firstTokenFrom(edit.start))
+          .takeWhile(_.end <= edit.end)
+          .toList
+        inside.headOption.filter(_.start == edit.start).map { first =>
+          Patch.removeTokens(inside.tail) + Patch.replaceToken(first, edit.text)
         }
       }
 
     // Beside whitespace rather than on the definition there, which may be
     // the first token of a kept range.
-    private def insertAt(offset: Int, insertion: String): Patch = {
-      val whitespace = doc.tokens.filter(_.isInstanceOf[Token.Whitespace])
-      whitespace.find(_.end == offset) match {
-        case Some(before) => Patch.addRight(before, insertion)
-        case None         =>
-          whitespace
-            .find(_.start == offset)
-            .fold(Patch.empty)(Patch.addLeft(_, insertion))
-      }
+    private def insertAt(offset: Int, insertion: String): Option[Patch] = {
+      val index = firstTokenFrom(offset)
+      val nearby = tokens.slice(index - 2, index + 2)
+      val whitespace = nearby.filter(_.isInstanceOf[Token.Whitespace])
+      val before = whitespace.find(_.end == offset)
+      val after = whitespace.find(_.start == offset)
+      before
+        .map(Patch.addRight(_, insertion))
+        .orElse(after.map(Patch.addLeft(_, insertion)))
+    }
+
+    // The index of the first token starting at or after `offset`.
+    private def firstTokenFrom(offset: Int): Int = {
+      @tailrec def search(low: Int, high: Int): Int =
+        if (low >= high) low
+        else {
+          val middle = (low + high) >>> 1
+          if (tokenStarts(middle) < offset) search(middle + 1, high)
+          else search(low, middle)
+        }
+      search(0, tokenStarts.length)
     }
 
     private def canonicalOrder(
@@ -360,23 +423,23 @@ object DefinitionOrder {
       val owners = items.indices
         .flatMap(id => items(id).symbols.map(_ -> id))
         .toMap
-      val mentions = items.indices.toVector.map(mentionsBy(_, items, owners))
+      val (mentions, runs) = items.indices.toVector
+        .map(mentionsBy(_, items, owners))
+        .unzip
       val isField = items.map(item => scope.fieldsFirst && item.isStrict)
       val uses = items.indices.toVector.map { user =>
         mentions(user).filterNot(used => isField(used) && !isField(user))
       }
       val pulls = items.indices.toVector.map { user =>
         val reads =
-          if (items(user).isStrict) strictReads(user, items, mentions) else Nil
+          if (items(user).isStrict) strictReads(user, items, runs) else Nil
         val candidates = (uses(user) ++ reads).distinct
         candidates.filter(used => items(used).isType || reads.contains(used))
       }
       val children = items.indices.toVector.map { user =>
         uses(user).filterNot(pulls(user).contains)
       }
-      val waits = items.indices.toVector.map { used =>
-        items.indices.filter(children(_).contains(used)).toSet
-      }
+      val waits = reverse(children).map(_.toSet)
       val component = stronglyConnected(items.size, pulls, children)
       val walk = new Walk(items, pulls, children, waits, component)
       val phases =
@@ -397,11 +460,14 @@ object DefinitionOrder {
     }
 
     // The strict vals a strict val's initialiser reads, directly or through
-    // the defs it calls, all of which have to be initialised before it.
+    // what it runs, all of which have to be initialised before it. `runs`
+    // leaves out mentions that only name a type, which run nothing, but
+    // follows the rest into a type: constructing a class runs its body, and
+    // touching a companion initialises it.
     private def strictReads(
         start: Int,
         items: Vector[Item],
-        mentions: Vector[List[Int]]
+        runs: Vector[List[Int]]
     ): List[Int] = {
       @tailrec def loop(
           todo: List[Int],
@@ -412,10 +478,9 @@ object DefinitionOrder {
         case id :: rest =>
           if (seen(id) || id == start) loop(rest, seen, found)
           else if (items(id).isStrict) loop(rest, seen + id, id :: found)
-          else if (items(id).isType) loop(rest, seen + id, found)
-          else loop(mentions(id) ++ rest, seen + id, found)
+          else loop(runs(id) ++ rest, seen + id, found)
       }
-      loop(mentions(start), Set.empty, Nil)
+      loop(runs(start), Set.empty, Nil)
     }
 
     // A class and its companion are one item, class first.
@@ -440,6 +505,12 @@ object DefinitionOrder {
               written
                 .sortBy(stat => if (stat.isInstanceOf[Defn.Object]) 1 else 0)
           val names = group.flatMap { case (member, _) => member.names }
+          val symbols = group.flatMap { case (member, _) =>
+            member.names.flatMap { name =>
+              if (hasSyntheticCompanion(member.stat)) withCompanion(name.symbol)
+              else List(name.symbol)
+            }
+          }
           val lead = stats.head
           Item(
             stats = stats,
@@ -451,7 +522,7 @@ object DefinitionOrder {
             ),
             isType = stats.exists(isType),
             isStrict = stats.exists(isStrict),
-            symbols = names.flatMap(name => withCompanion(name.symbol)).toSet
+            symbols = symbols.toSet
           )
         }
 
@@ -460,18 +531,25 @@ object DefinitionOrder {
         start <= stat.pos.start && stat.pos.end <= end
       }
 
-    // The other items an item uses, in the order its body first mentions them.
+    // The other items an item uses, in the order its body first mentions
+    // them; and, of those, the ones it mentions other than as a bare type.
     private def mentionsBy(
         id: Int,
         items: Vector[Item],
         owners: Map[Symbol, Int]
-    ): List[Int] =
-      items(id).stats
+    ): (List[Int], List[Int]) = {
+      val mentioned = items(id).stats
         .flatMap(_.collect { case name: Name => name })
         .sortBy(_.pos.start)
-        .flatMap(name => ownerIn(owners, name.symbol))
-        .filter(_ != id)
-        .distinct
+        .flatMap { name =>
+          val symbol = name.symbol
+          ownerIn(owners, symbol).map(owner => (owner, !symbol.isType))
+        }
+        .filter(_._1 != id)
+      val used = mentioned.map(_._1).distinct
+      val run = mentioned.collect { case (owner, true) => owner }.distinct
+      (used, run)
+    }
 
     private def ownerIn(owners: Map[Symbol, Int], symbol: Symbol): Option[Int] =
       Iterator
@@ -481,10 +559,15 @@ object DefinitionOrder {
         .nextOption()
 
     // A class, trait or enum with no companion written out still has one in
-    // SemanticDB, and it is what `Type(...)` and `Type.Case` resolve to.
+    // SemanticDB, and it is what `Type(...)` and `Type.Case` resolve to. A
+    // type alias has none, and an object of the same name is its own item.
     private def withCompanion(symbol: Symbol): List[Symbol] =
-      if (!symbol.value.endsWith("#")) List(symbol)
-      else List(symbol, Symbol(symbol.value.stripSuffix("#") + "."))
+      List(symbol, Symbol(symbol.value.stripSuffix("#") + "."))
+
+    private def hasSyntheticCompanion(stat: Stat): Boolean = stat match {
+      case _: Defn.Class | _: Defn.Trait | _: Defn.Enum => true
+      case _                                            => false
+    }
 
     private def companionKey(member: Member, index: Int): Either[String, Int] =
       member.stat match {
@@ -593,7 +676,7 @@ object DefinitionOrder {
 
     def visit(id: Int, phase: Set[Int]): Unit =
       if (!placed(id)) {
-        val newlyPlaced = place(id)
+        val newlyPlaced = place(id, phase)
         val next = (id :: newlyPlaced.filter(_ != id)).flatMap(children(_))
         next.distinct.foreach { child =>
           if (phase(child) && isReady(child)) visit(child, phase)
@@ -618,14 +701,25 @@ object DefinitionOrder {
       }
     }
 
-    private def place(id: Int): List[Int] =
+    // A pull from another phase waits for its own: fields come first even
+    // when one names a type defined among the rest.
+    private def place(id: Int, phase: Set[Int]): List[Int] =
       if (placed(id)) Nil
       else {
         placed(id) = true
-        val before = pulls(id).flatMap(place)
+        val before = pulls(id).filter(phase).flatMap(place(_, phase))
         reversed = id :: reversed
         before :+ id
       }
+  }
+
+  // For each item, the items whose edges point at it, in ascending order.
+  private def reverse(edges: Vector[List[Int]]): Vector[List[Int]] = {
+    val from = Array.fill(edges.size)(List.empty[Int])
+    edges.indices.reverse.foreach { id =>
+      edges(id).distinct.foreach(to => from(to) = id :: from(to))
+    }
+    from.toVector
   }
 
   // Tarjan's algorithm over both kinds of edge, each pointing from the item
@@ -635,9 +729,8 @@ object DefinitionOrder {
       pulls: Vector[List[Int]],
       children: Vector[List[Int]]
   ): Vector[Int] = {
-    val below = Vector.tabulate(size) { id =>
-      children(id) ++ (0 until size).filter(pulls(_).contains(id))
-    }
+    val pulledBy = reverse(pulls)
+    val below = Vector.tabulate(size)(id => children(id) ++ pulledBy(id))
     val index = Array.fill(size)(-1)
     val low = Array.fill(size)(0)
     val onStack = Array.fill(size)(false)
