@@ -187,15 +187,11 @@ string Currency
 
 boolean Deleted
 
-/// The archive trigger for main accounts, as Deleted is for pots. Optional so
-/// an account Monzo lists without it still decodes, and is taken as open.
+/// The archive trigger for main accounts, as Deleted is for pots.
 boolean Closed
 
 /// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
-/// a type Monzo adds later can't fail a decode. Optional for the same reason:
-/// an account listed without one is found by its online_id tag alone, as a
-/// CSV account is, and fails the run only if it has something to file and
-/// nothing is tagged for it.
+/// a type Monzo adds later can't fail a decode.
 string AccountType
 
 /// This can be a date-time string or a transaction ID. Ideally we'd model it as
@@ -214,9 +210,11 @@ structure Account {
     @required
     id: AccountId
 
+    @required
     @jsonName("type")
     accountType: AccountType
 
+    @required
     closed: Closed
 
     /// When the account was opened, which is where an account with nothing
@@ -225,8 +223,8 @@ structure Account {
     created: Created
 
     /// What Monzo calls the account, which becomes its book account's
-    /// description. Optional so an account Monzo lists without one still
-    /// decodes, and its book account is left undescribed.
+    /// description.
+    @required
     description: Description
 
     @jsonUnknown

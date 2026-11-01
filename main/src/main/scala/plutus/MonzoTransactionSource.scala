@@ -82,11 +82,11 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
                 case ReadAccount.Main(mainAccount) =>
                   FetchedAccount(
                     id = mainAccount.id,
-                    accountType = mainAccount.accountType,
-                    closed = mainAccount.closed.exists(_.value),
+                    accountType = Some(mainAccount.accountType),
+                    closed = mainAccount.closed.value,
                     potBacking = false,
                     currency = None,
-                    description = mainAccount.description
+                    description = Some(mainAccount.description)
                   )
 
                 case ReadAccount.PotBacking(accountId) =>
@@ -135,7 +135,7 @@ final case class AccountStarts(
     freshBook: Boolean
 ):
   def forAccount(account: monzo.Account): Option[Instant] =
-    Option.when(freshBook || !account.closed.exists(_.value)):
+    Option.when(freshBook || !account.closed.value):
       book
         .start(account.id)
         .getOrElse:
