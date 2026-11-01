@@ -511,6 +511,53 @@ lazy val scalafixRules = project
 
 lazy val scalafixCoreVersion = _root_.scalafix.sbt.BuildInfo.scalafixVersion
 
+// DefinitionOrder's tests, run by scalafix's testkit: each file under
+// scalafix-tests/input is compiled with SemanticDB, run through the rule, and
+// compared with the file of the same name under scalafix-tests/output (or, if
+// there is none, expected to come out unchanged). The fixtures are written to
+// be out of order and to trip warnings, so scalafix, scalafmt (see
+// .scalafmt.conf) and fatal warnings all stay off them.
+lazy val scalafixInput = project
+  .in(file("scalafix-tests/input"))
+  .disablePlugins(ScalafixPlugin)
+  .settings(
+    scalaVersion := scala3Version,
+    scalacOptions ~= (_.filterNot(Set("-Werror", "-Xfatal-warnings")))
+  )
+
+lazy val scalafixOutput = project
+  .in(file("scalafix-tests/output"))
+  .disablePlugins(ScalafixPlugin)
+  .settings(
+    scalaVersion := scala3Version,
+    semanticdbEnabled := false,
+    scalacOptions ~= (_.filterNot(Set("-Werror", "-Xfatal-warnings")))
+  )
+
+lazy val scalafixTests = project
+  .in(file("scalafix-tests/unit"))
+  .enablePlugins(_root_.scalafix.sbt.ScalafixTestkitPlugin)
+  .dependsOn(scalafixRules)
+  .settings(
+    scalaVersion := _root_.scalafix.sbt.BuildInfo.scala213,
+    semanticdbEnabled := false,
+    Compile / scalafix / skip := true,
+    Test / scalafix / skip := true,
+    libraryDependencies +=
+      ("ch.epfl.scala" % "scalafix-testkit" % scalafixCoreVersion % Test)
+        .cross(CrossVersion.full),
+    scalafixTestkitOutputSourceDirectories :=
+      (scalafixOutput / Compile / unmanagedSourceDirectories).value,
+    scalafixTestkitInputSourceDirectories :=
+      (scalafixInput / Compile / unmanagedSourceDirectories).value,
+    scalafixTestkitInputClasspath :=
+      (scalafixInput / Compile / fullClasspath).value,
+    scalafixTestkitInputScalacOptions :=
+      (scalafixInput / Compile / scalacOptions).value,
+    scalafixTestkitInputScalaVersion :=
+      (scalafixInput / Compile / scalaVersion).value
+  )
+
 lazy val scala3Versions = Seq(scala3Version)
 
 lazy val scala3Version = "3.10.0"
