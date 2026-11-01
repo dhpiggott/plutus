@@ -246,18 +246,18 @@ structure Pot {
     @required
     name: Name
 
-    @required
-    currency: Currency
+    balance: Amount
 
     @required
-    deleted: Deleted
+    currency: Currency
 
     /// When the pot was opened, which is where a pot with nothing filed in the
     /// book starts reading its history.
     @required
     created: Created
 
-    balance: Amount
+    @required
+    deleted: Deleted
 
     @jsonUnknown
     unknown: UnknownProperties
