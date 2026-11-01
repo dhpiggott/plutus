@@ -69,7 +69,7 @@ object DefinitionOrder {
 
     private def scopes(tree: Tree): List[List[Stat]] = tree match {
       case source: Source => scopesIn(source.stats)
-      case pkg: Pkg       => scopesIn(pkg.stats)
+      case pkg: Pkg       => scopesIn(pkg.body.stats)
       case _              => Nil
     }
 
@@ -80,10 +80,10 @@ object DefinitionOrder {
 
     private def nested(stat: Stat): List[List[Stat]] = {
       val body = stat match {
-        case defn: Defn.Object         => defn.templ.stats
-        case defn: Defn.Class          => defn.templ.stats
-        case defn: Defn.Trait          => defn.templ.stats
-        case defn: Defn.Enum           => defn.templ.stats
+        case defn: Defn.Object         => defn.templ.body.stats
+        case defn: Defn.Class          => defn.templ.body.stats
+        case defn: Defn.Trait          => defn.templ.body.stats
+        case defn: Defn.Enum           => defn.templ.body.stats
         case defn: Defn.ExtensionGroup => extensionMembers(defn)
         case _                         => Nil
       }
