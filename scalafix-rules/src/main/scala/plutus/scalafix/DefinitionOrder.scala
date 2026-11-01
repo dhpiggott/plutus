@@ -169,7 +169,7 @@ object DefinitionOrder {
     // A class, trait or enum with no companion written out still has one in
     // SemanticDB, and it is what `Type(...)` and `Type.Case` resolve to.
     private def withCompanion(symbol: Symbol): List[Symbol] =
-      if (!symbol.isType) List(symbol)
+      if (!symbol.value.endsWith("#")) List(symbol)
       else List(symbol, Symbol(symbol.value.stripSuffix("#") + "."))
 
     private def companionKey(member: Member): Either[String, Int] =
