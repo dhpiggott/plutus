@@ -90,20 +90,19 @@ object DefinitionOrder {
     // The ranges a `scalafix:off` comment disables this rule for, from that
     // comment to the start of the `scalafix:on` that ends it.
     private val keptRanges: List[(Int, Int)] = {
-      val markers = doc.tokens.toList.collect {
-        case comment: Token.Comment =>
-          comment.value.trim.split("[\\s,]+").toList match {
-            case "scalafix:off" :: rules if appliesHere(rules) =>
-              List((true, comment))
-            case "scalafix:on" :: rules if appliesHere(rules) =>
-              List((false, comment))
-            case _ => Nil
-          }
+      val markers = doc.tokens.toList.collect { case comment: Token.Comment =>
+        comment.value.trim.split("[\\s,]+").toList match {
+          case "scalafix:off" :: rules if appliesHere(rules) =>
+            List((true, comment))
+          case "scalafix:on" :: rules if appliesHere(rules) =>
+            List((false, comment))
+          case _ => Nil
+        }
       }.flatten
       val (ranges, open) = markers.foldLeft(
         (List.empty[(Int, Int)], Option.empty[Int])
       ) {
-        case ((ranges, None), (true, off))      => (ranges, Some(off.start))
+        case ((ranges, None), (true, off))        => (ranges, Some(off.start))
         case ((ranges, Some(start)), (false, on)) =>
           ((start, on.end) :: ranges, None)
         case (state, _) => state
@@ -173,7 +172,7 @@ object DefinitionOrder {
         .flatMap { id =>
           items(id).kept match {
             case Some(_) => List((keptBlockOf(items(id)), Option(id)))
-            case None =>
+            case None    =>
               items(id).stats.map(stat => (blockOf(stat), Option.empty[Int]))
           }
         }
@@ -205,7 +204,8 @@ object DefinitionOrder {
               "line of their own, so they can't be moved automatically."
           )
           None
-        case None if anchors.map(_._2) != order.filter(items(_).kept.nonEmpty) =>
+        case None
+            if anchors.map(_._2) != order.filter(items(_).kept.nonEmpty) =>
           report(
             Position.Range(doc.input, start, end),
             "These definitions are out of order, and putting them in order " +
@@ -226,7 +226,8 @@ object DefinitionOrder {
           Some(segments.zip(groups).zipWithIndex.flatMap {
             case (((from, to), stats), index) =>
               val written = units.collect {
-                case ((unitStart, _), None) if from <= unitStart && unitStart < to =>
+                case ((unitStart, _), None)
+                    if from <= unitStart && unitStart < to =>
                   unitStart
               }
               if (written == stats.map(stat => blockOf(stat)._1))
@@ -234,8 +235,9 @@ object DefinitionOrder {
               else {
                 val body = stats.map(render).mkString(separator)
                 val rendered =
-                  if (body.isEmpty) { if (index == 0 || index == last) "" else separator }
-                  else
+                  if (body.isEmpty) {
+                    if (index == 0 || index == last) "" else separator
+                  } else
                     (if (index == 0) "" else separator) + body +
                       (if (index == last) "" else separator)
                 List(Edit(from, to, rendered))
@@ -245,7 +247,10 @@ object DefinitionOrder {
     }
 
     // The canonical order cut at each kept item, which stays where it is.
-    private def splitAt(order: List[Int], items: Vector[Item]): List[List[Int]] =
+    private def splitAt(
+        order: List[Int],
+        items: Vector[Item]
+    ): List[List[Int]] =
       order
         .foldLeft(List(List.empty[Int])) { (groups, id) =>
           if (items(id).kept.isDefined) Nil :: groups
@@ -340,7 +345,7 @@ object DefinitionOrder {
       val whitespace = doc.tokens.filter(_.isInstanceOf[Token.Whitespace])
       whitespace.find(_.end == offset) match {
         case Some(before) => Patch.addRight(before, insertion)
-        case None =>
+        case None         =>
           whitespace
             .find(_.start == offset)
             .fold(Patch.empty)(Patch.addLeft(_, insertion))
@@ -426,11 +431,14 @@ object DefinitionOrder {
         .toVector
         .sortBy(_.map(_._2).min)
         .map { group =>
-          val written = group.sortBy(_._2).map { case (member, _) => member.stat }
+          val written =
+            group.sortBy(_._2).map { case (member, _) => member.stat }
           val kept = keptRangeOf(written.head)
           val stats =
             if (kept.isDefined) written
-            else written.sortBy(stat => if (stat.isInstanceOf[Defn.Object]) 1 else 0)
+            else
+              written
+                .sortBy(stat => if (stat.isInstanceOf[Defn.Object]) 1 else 0)
           val names = group.flatMap { case (member, _) => member.names }
           val lead = stats.head
           Item(
