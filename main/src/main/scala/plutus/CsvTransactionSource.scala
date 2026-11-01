@@ -27,9 +27,8 @@ import java.time.format.DateTimeParseException
 // A statement has no account-ID column, so each file is paired on the command
 // line with the account it belongs to, and whether that account backs a pot is
 // stated the same way (--from-csv-pot) rather than inferred: the Monzo source
-// recognises a pot backing account by its missing type, which is an artefact
-// of /accounts not listing them and answers nothing for a bare acc_… (see
-// FetchedAccount).
+// knows a pot backing account by where it found the ID, which answers nothing
+// for a bare acc_… (see FetchedAccount).
 //
 // `pots` comes back empty, because /pots is what fills it, and no sink is left
 // guessing by that: a pot whose asset account the book already carries

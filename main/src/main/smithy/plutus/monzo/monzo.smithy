@@ -219,13 +219,13 @@ structure Account {
 
     closed: Closed
 
-    /// When the account was opened, which is where a first run into an empty
-    /// book starts reading its history. Optional because a pot backing account
-    /// is built from transfer metadata rather than decoded, and so has none.
+    /// When the account was opened, which is where an account with nothing
+    /// filed in the book starts reading its history.
+    @required
     created: Created
 
     /// What Monzo calls the account, which becomes its book account's
-    /// description. Optional for the same reason as created.
+    /// description.
     description: Description
 
     @jsonUnknown

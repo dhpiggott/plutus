@@ -72,21 +72,33 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
             )
             potsByAccount = potsByAccountId(byAccount, planned.pots, bookPots)
             _ <- warnUnlinkedPots(planned.pots, potsByAccount)
-            // The one reading of the missing-type rule: every sink downstream
-            // takes potBacking's word for it rather than re-deriving it from a
-            // shape only /accounts produces. See FetchedAccount.
+            // Every sink downstream takes potBacking's word for which accounts
+            // back pots rather than re-deriving it from a shape only /accounts
+            // produces. /accounts and /transactions never name a currency; a
+            // pot's own details do, and the book sink checks those
+            // separately. See FetchedAccount.
             fetchedAccounts = byAccount.map: (account, transactions) =>
-              FetchedAccount(
-                id = account.id,
-                accountType = account.accountType,
-                closed = account.closed.exists(_.value),
-                potBacking = isPotBacking(account),
-                // /accounts and /transactions never name a currency; a pot's
-                // own details do, and the book sink checks those separately.
-                // See FetchedAccount.
-                currency = None,
-                description = account.description
-              ) -> transactions
+              val fetchedAccount = account match
+                case ReadAccount.Main(mainAccount) =>
+                  FetchedAccount(
+                    id = mainAccount.id,
+                    accountType = mainAccount.accountType,
+                    closed = mainAccount.closed.exists(_.value),
+                    potBacking = false,
+                    currency = None,
+                    description = mainAccount.description
+                  )
+
+                case ReadAccount.PotBacking(accountId) =>
+                  FetchedAccount(
+                    id = accountId,
+                    accountType = None,
+                    closed = false,
+                    potBacking = true,
+                    currency = None,
+                    description = None
+                  )
+              fetchedAccount -> transactions
           yield (
             byAccount = fetchedAccounts,
             pots = potsByAccount
@@ -130,7 +142,7 @@ final case class AccountStarts(
       book
         .start(account.id)
         .getOrElse:
-          account.created.fold(reachable)(_.value.asInstant)
+          account.created.value.asInstant
 
   def readsPot(pot: monzo.Pot): Boolean =
     freshBook || !pot.deleted.value
@@ -204,12 +216,12 @@ def listAllTransactions(
     before: Instant
 )(using
     verbosity: Verbosity
-): IO[List[(monzo.Account, List[monzo.Transaction])]] = for
+): IO[List[(ReadAccount, List[monzo.Transaction])]] = for
   accountsAndSince = accounts.flatMap: account =>
     starts
       .forAccount(account)
       .map: start =>
-        (account, ListTransactionsSince.Timestamp(start))
+        (ReadAccount.Main(account), ListTransactionsSince.Timestamp(start))
   _ <- info:
     "Listing transactions for accounts…"
   accountsAndTransactions <- listTransactionsForAccounts(
@@ -236,8 +248,10 @@ def listAllTransactions(
   readIds = (accountsAndTransactions ++ potAccountsAndTransactions)
     .map((account, _) => account.id)
     .toSet
-  bookPotBackings = bookPots.keys.toList.sortBy(_.value).map(monzo.Account(_))
-  unread = (accounts ++ bookPotBackings)
+  bookPotBackings = bookPots.keys.toList
+    .sortBy(_.value)
+    .map(ReadAccount.PotBacking(_))
+  unread = (accounts.map(ReadAccount.Main(_)) ++ bookPotBackings)
     .filterNot(account => readIds.contains(account.id))
     .map(_ -> List.empty[monzo.Transaction])
   _ <- log(Verbosity.VERBOSE):
@@ -246,9 +260,12 @@ def listAllTransactions(
         (accountsAndTransactions ++ potAccountsAndTransactions).map:
           (account, transactions) =>
             Document.obj(
-              "account" -> Document.encode:
-                account
-              ,
+              "account" -> (account match
+                case ReadAccount.Main(mainAccount) =>
+                  Document.encode(mainAccount)
+
+                case ReadAccount.PotBacking(accountId) =>
+                  Document.obj("id" -> Document.DString(accountId.value))),
               "transactions" -> Document.array:
                 transactions.map:
                   Document.encode(_)
@@ -262,7 +279,7 @@ yield accountsAndTransactions ++ potAccountsAndTransactions ++ unread
 // unless the book already carries a tagged account for it, import refuses to
 // run rather than mis-file.
 def potsByAccountId(
-    byAccount: List[(monzo.Account, List[monzo.Transaction])],
+    byAccount: List[(ReadAccount, List[monzo.Transaction])],
     pots: List[monzo.Pot],
     bookPots: Map[monzo.AccountId, monzo.Pot]
 ): Map[monzo.AccountId, monzo.Pot] =
@@ -274,7 +291,7 @@ def potsByAccountId(
     potsById.get(potId).map(accountId -> _)
   val potAccountIds = byAccount
     .collect:
-      case (account, _) if isPotBacking(account) => account.id
+      case (ReadAccount.PotBacking(accountId), _) => accountId
     .toSet
   (bookPots ++ windowPots).filter: (accountId, _) =>
     potAccountIds.contains(accountId)
@@ -285,14 +302,18 @@ def potsByAccountId(
 // window's own transfers are read; a pot with none in it is linked by the book
 // if it is linked at all.
 def potLinks(
-    byAccount: List[(monzo.Account, List[monzo.Transaction])]
+    byAccount: List[(ReadAccount, List[monzo.Transaction])]
 ): Map[monzo.AccountId, monzo.PotId] =
   byAccount
     .flatMap: (account, transactions) =>
       transactions.flatMap: transaction =>
         potId(transaction).flatMap: potId =>
-          if isPotBacking(account) then Some(account.id -> potId)
-          else potAccountId(transaction).map(_ -> potId)
+          account match
+            case ReadAccount.PotBacking(accountId) =>
+              Some(accountId -> potId)
+
+            case ReadAccount.Main(_) =>
+              potAccountId(transaction).map(_ -> potId)
     .toMap
 
 // A live pot holding money that nothing links to a backing account was not
@@ -313,17 +334,25 @@ def warnUnlinkedPots(
       warn:
         s"Pot ${pot.name.value} wasn't read: nothing in the book or in this run's window links it to its backing account. The next run whose window holds a transfer to or from it will link it."
 
-// A pot backing account is constructed from transfer metadata rather than
-// decoded from /accounts, so it never carries a type — this absence *is* the
-// definition of "pot backing account" (see AccountType in the smithy spec).
-def isPotBacking(account: monzo.Account): Boolean =
-  account.accountType.isEmpty
+// An account a run reads: a main account, as /accounts lists it, or a pot's
+// backing account, which /accounts never lists, and which a transfer's
+// metadata and the book name only by ID.
+enum ReadAccount:
+  case Main(account: monzo.Account)
+  case PotBacking(accountId: monzo.AccountId)
+
+  def id: monzo.AccountId = this match
+    case Main(account) =>
+      account.id
+
+    case PotBacking(accountId) =>
+      accountId
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
-    accountsAndSince: List[(monzo.Account, ListTransactionsSince)],
+    accountsAndSince: List[(ReadAccount, ListTransactionsSince)],
     before: Instant
-): IO[List[(monzo.Account, List[monzo.Transaction])]] =
+): IO[List[(ReadAccount, List[monzo.Transaction])]] =
   accountsAndSince
     .parTraverse: (account, since) =>
       listTransactions(
@@ -363,8 +392,8 @@ def discoverPotAccounts(
     bookPots: Map[monzo.AccountId, monzo.Pot],
     earliestWindowStart: Instant,
     accounts: List[monzo.Account],
-    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
-): List[(monzo.Account, ListTransactionsSince)] =
+    accountsAndTransactions: List[(ReadAccount, List[monzo.Transaction])]
+): List[(ReadAccount, ListTransactionsSince)] =
   val potsById = pots
     .map: pot =>
       pot.id -> pot
@@ -391,14 +420,14 @@ def discoverPotAccounts(
         windowPots.get(accountId).orElse(bookPots.get(accountId))
       )
       (
-        monzo.Account(accountId),
+        ReadAccount.PotBacking(accountId),
         ListTransactionsSince.Timestamp:
           if start.isBefore(earliestWindowStart) then earliestWindowStart
           else start
       )
 
 def discoveredPotAccountIds(
-    accountsAndTransactions: List[(monzo.Account, List[monzo.Transaction])]
+    accountsAndTransactions: List[(ReadAccount, List[monzo.Transaction])]
 ): Set[monzo.AccountId] =
   accountsAndTransactions
     .flatMap: (_, transactions) =>

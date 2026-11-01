@@ -16,8 +16,8 @@ type Fetched = (
 
 // The account a source attributes transactions to, stated rather than
 // inferred. potBacking is why this isn't just monzo.Account: the Monzo source
-// recognises a pot backing account by its missing type (see isPotBacking),
-// which is an artefact of /accounts not listing them and answers nothing for a
+// knows a pot backing account because it found the ID in a transfer or the
+// book rather than in /accounts (see ReadAccount), which answers nothing for a
 // source handed a bare acc_… on a command line. A sink that re-derived the
 // rule would file such an account down the pot naming path, and a mis-filed
 // row is permanent — online_id dedup skips it on every later run.
