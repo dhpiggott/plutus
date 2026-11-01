@@ -159,10 +159,18 @@ object DefinitionOrder {
             position = ordered.head.names.head.pos,
             isType = ordered.exists(member => isType(member.stat)),
             stats = ordered.map(_.stat),
-            symbols = ordered.flatMap(_.names.map(_.symbol)).toSet
+            symbols = ordered
+              .flatMap(_.names.flatMap(name => withCompanion(name.symbol)))
+              .toSet
           )
         }
         .sortBy(_.index)
+
+    // A class, trait or enum with no companion written out still has one in
+    // SemanticDB, and it is what `Type(...)` and `Type.Case` resolve to.
+    private def withCompanion(symbol: Symbol): List[Symbol] =
+      if (!symbol.isType) List(symbol)
+      else List(symbol, Symbol(symbol.value.stripSuffix("#") + "."))
 
     private def companionKey(member: Member): Either[String, Int] =
       member.stat match {

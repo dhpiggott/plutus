@@ -8,6 +8,55 @@ import smithy4s.json.*
 import java.time.Duration
 import java.time.Instant
 
+final case class AccountStarts(
+    book: BookStarts,
+    freshBook: Boolean
+):
+  def forAccount(account: monzo.Account): Option[Instant] =
+    Option.when(freshBook || !account.closed.value):
+      book
+        .start(account.id)
+        .getOrElse:
+          account.created.value.asInstant
+
+  def readsPot(pot: monzo.Pot): Boolean =
+    freshBook || !pot.deleted.value
+
+  // A pot's start as far as the plan can know it, which is only for a pot the
+  // book links to its backing account, and on a first run, when every pot the
+  // window names is read from its opening. Any other pot is one a transfer in
+  // the window may yet name, and discoverPotAccounts keeps it inside what the
+  // plan authorised.
+  def forListedPot(pot: monzo.Pot): Option[Instant] =
+    if !readsPot(pot) then None
+    else
+      book.potAccount(pot.id) match
+        case Some(accountId) =>
+          Some(forPot(accountId, pot))
+
+        case None =>
+          Option.when(freshBook)(pot.created.value.asInstant)
+
+  def forPot(accountId: monzo.AccountId, pot: monzo.Pot): Instant =
+    book
+      .start(accountId)
+      .getOrElse:
+        pot.created.value.asInstant
+
+// An account a run reads: a main account, as /accounts lists it, or a pot's
+// backing account, which /accounts never lists, and which a transfer's
+// metadata and the book name only by ID.
+enum ReadAccount:
+  case Main(account: monzo.Account)
+  case PotBacking(accountId: monzo.AccountId)
+
+  def id: monzo.AccountId = this match
+    case Main(account) =>
+      account.id
+
+    case PotBacking(accountId) =>
+      accountId
+
 // Every transaction (main accounts and pots) from where the book left off with
 // each account (see startsFromBook) to now, grouped by account so a sink can
 // post each account's transactions to the asset account its type maps to (see
@@ -130,41 +179,6 @@ def accountStarts(
       book.start(account.id).isEmpty
   )
 
-final case class AccountStarts(
-    book: BookStarts,
-    freshBook: Boolean
-):
-  def forAccount(account: monzo.Account): Option[Instant] =
-    Option.when(freshBook || !account.closed.value):
-      book
-        .start(account.id)
-        .getOrElse:
-          account.created.value.asInstant
-
-  def readsPot(pot: monzo.Pot): Boolean =
-    freshBook || !pot.deleted.value
-
-  // A pot's start as far as the plan can know it, which is only for a pot the
-  // book links to its backing account, and on a first run, when every pot the
-  // window names is read from its opening. Any other pot is one a transfer in
-  // the window may yet name, and discoverPotAccounts keeps it inside what the
-  // plan authorised.
-  def forListedPot(pot: monzo.Pot): Option[Instant] =
-    if !readsPot(pot) then None
-    else
-      book.potAccount(pot.id) match
-        case Some(accountId) =>
-          Some(forPot(accountId, pot))
-
-        case None =>
-          Option.when(freshBook)(pot.created.value.asInstant)
-
-  def forPot(accountId: monzo.AccountId, pot: monzo.Pot): Instant =
-    book
-      .start(accountId)
-      .getOrElse:
-        pot.created.value.asInstant
-
 // Every pot of every main account, deleted ones included: /pots is listed per
 // owning account, and /accounts lists every main account, closed ones too.
 def listPots(
@@ -192,6 +206,17 @@ def bookPotAccounts(
     .flatMap: pot =>
       book.potAccount(pot.id).map(_ -> pot)
     .toMap
+
+enum ListTransactionsSince:
+  case Timestamp(instant: Instant)
+  case IdAndTimestamp(id: monzo.TransactionId, created: monzo.Created)
+
+  def start: Instant = this match
+    case Timestamp(instant) =>
+      instant
+
+    case IdAndTimestamp(_, created) =>
+      created.value.asInstant
 
 // List every main account's transactions, then the pot accounts discovered
 // from their metadata and the ones the book links to a pot, combined into a
@@ -303,26 +328,6 @@ def potsByAccountId(
   (bookPots ++ windowPots).filter: (accountId, _) =>
     potAccountIds.contains(accountId)
 
-// Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
-// account's side carries pot_account_id alongside pot_id, and on the pot's own
-// side the account the leg was fetched from *is* the backing account. Only the
-// window's own transfers are read; a pot with none in it is linked by the book
-// if it is linked at all.
-def potLinks(
-    byAccount: List[(ReadAccount, List[monzo.Transaction])]
-): Map[monzo.AccountId, monzo.PotId] =
-  byAccount
-    .flatMap: (account, transactions) =>
-      transactions.flatMap: transaction =>
-        potId(transaction).flatMap: potId =>
-          account match
-            case ReadAccount.PotBacking(accountId) =>
-              Some(accountId -> potId)
-
-            case ReadAccount.Main(_) =>
-              potAccountId(transaction).map(_ -> potId)
-    .toMap
-
 // A live pot holding money that nothing links to a backing account was not
 // read at all, and would otherwise go unnoticed: no error, just a pot whose
 // interest stops arriving. It happens to a pot whose book account predates
@@ -340,20 +345,6 @@ def warnUnlinkedPots(
     .traverse_ : pot =>
       warn:
         s"Pot ${pot.name.value} wasn't read: nothing in the book or in this run's window links it to its backing account. The next run whose window holds a transfer to or from it will link it."
-
-// An account a run reads: a main account, as /accounts lists it, or a pot's
-// backing account, which /accounts never lists, and which a transfer's
-// metadata and the book name only by ID.
-enum ReadAccount:
-  case Main(account: monzo.Account)
-  case PotBacking(accountId: monzo.AccountId)
-
-  def id: monzo.AccountId = this match
-    case Main(account) =>
-      account.id
-
-    case PotBacking(accountId) =>
-      accountId
 
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
@@ -446,6 +437,26 @@ def discoverPotAccounts(
     )
   (read = readFrom, unidentified = unidentified, clamped = clamped)
 
+// Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
+// account's side carries pot_account_id alongside pot_id, and on the pot's own
+// side the account the leg was fetched from *is* the backing account. Only the
+// window's own transfers are read; a pot with none in it is linked by the book
+// if it is linked at all.
+def potLinks(
+    byAccount: List[(ReadAccount, List[monzo.Transaction])]
+): Map[monzo.AccountId, monzo.PotId] =
+  byAccount
+    .flatMap: (account, transactions) =>
+      transactions.flatMap: transaction =>
+        potId(transaction).flatMap: potId =>
+          account match
+            case ReadAccount.PotBacking(accountId) =>
+              Some(accountId -> potId)
+
+            case ReadAccount.Main(_) =>
+              potAccountId(transaction).map(_ -> potId)
+    .toMap
+
 def discoveredPotAccountIds(
     accountsAndTransactions: List[(ReadAccount, List[monzo.Transaction])]
 ): Set[monzo.AccountId] =
@@ -460,17 +471,6 @@ def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
 
 def potId(transaction: monzo.Transaction): Option[monzo.PotId] =
   transaction.metadata.flatMap(_.potId)
-
-enum ListTransactionsSince:
-  case Timestamp(instant: Instant)
-  case IdAndTimestamp(id: monzo.TransactionId, created: monzo.Created)
-
-  def start: Instant = this match
-    case Timestamp(instant) =>
-      instant
-
-    case IdAndTimestamp(_, created) =>
-      created.value.asInstant
 
 def listTransactions(
     monzoApi: monzo.Api[IO],

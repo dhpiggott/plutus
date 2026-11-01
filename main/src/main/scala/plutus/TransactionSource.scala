@@ -4,16 +4,6 @@ import cats.effect.*
 
 import java.time.Instant
 
-// The one shape every transaction source produces and every sink consumes: a
-// window's transactions grouped by the account they belong to, and the pot
-// behind each pot backing account — name, currency, deleted. Every account
-// appears in byAccount, keeping an empty transaction list when nothing was
-// fetched for it, because pot naming needs every owner present.
-type Fetched = (
-    byAccount: List[(FetchedAccount, List[monzo.Transaction])],
-    pots: Map[monzo.AccountId, monzo.Pot]
-)
-
 // The account a source attributes transactions to, stated rather than
 // inferred. potBacking is why this isn't just monzo.Account: the Monzo source
 // knows a pot backing account because it found the ID in a transfer or the
@@ -40,6 +30,16 @@ final case class FetchedAccount(
     potBacking: Boolean,
     currency: Option[monzo.Currency],
     description: Option[monzo.Description]
+)
+
+// The one shape every transaction source produces and every sink consumes: a
+// window's transactions grouped by the account they belong to, and the pot
+// behind each pot backing account — name, currency, deleted. Every account
+// appears in byAccount, keeping an empty transaction list when nothing was
+// fetched for it, because pot naming needs every owner present.
+type Fetched = (
+    byAccount: List[(FetchedAccount, List[monzo.Transaction])],
+    pots: Map[monzo.AccountId, monzo.Pot]
 )
 
 // `now` is the run's instant, taken by the command at invocation and handed

@@ -80,10 +80,6 @@ def ofxTransactionSink(
   )
 yield ()
 
-val ofxDateTimeFormatter: DateTimeFormatter =
-  DateTimeFormatter.ofPattern:
-    "yyyyMMddHHmmss.SSS"
-
 def toOfx(
     accountsIdsAndTransactions: List[
       (monzo.AccountId, List[monzo.Transaction])
@@ -122,6 +118,10 @@ def toOfx(
                       transaction.notes.value
                 )
           )
+
+val ofxDateTimeFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern:
+    "yyyyMMddHHmmss.SSS"
 
 // Always over whatever file is already there: a run names the whole of the
 // window it renders, or one a book bounds, and a book-bounded file that was

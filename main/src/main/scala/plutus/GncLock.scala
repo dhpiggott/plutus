@@ -5,6 +5,13 @@ import cats.syntax.all.*
 import porcupine.*
 import porcupine.Codec.*
 
+// Its own type because withBook has to tell it from every other failure: those
+// are runs that started and went wrong, and want the copy of the book taken
+// just before them kept as a backup. This one is a run that was never allowed
+// to start, and would otherwise leave behind a backup of a book nothing
+// touched.
+final class BookInUse(message: String) extends Error(message)
+
 object GncLock:
 
   // GnuCash's own cooperative lock, so the CLI and the GUI can't both be
@@ -151,10 +158,3 @@ final case class GncLock(hostname: String, pid: Long):
       """.command,
       args = (hostname, pid)
     )
-
-// Its own type because withBook has to tell it from every other failure: those
-// are runs that started and went wrong, and want the copy of the book taken
-// just before them kept as a backup. This one is a run that was never allowed
-// to start, and would otherwise leave behind a backup of a book nothing
-// touched.
-final class BookInUse(message: String) extends Error(message)

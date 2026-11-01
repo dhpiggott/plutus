@@ -8,36 +8,6 @@ import scala.scalanative.unsigned.*
 
 object Sqlite:
 
-  def open(filename: String): Connection =
-    val fn = (filename + 0.toChar).getBytes
-    val dbPtr = stackalloc[Ptr[sqlite3]]()
-    val flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX
-    try guard(sqlite3_open_v2(fn.at(0), dbPtr, flags, null))
-    catch
-      case t: Throwable =>
-        if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
-        throw t
-    Connection(!dbPtr)
-
-  inline private def guard(rc: CInt): Unit =
-    if rc != SQLITE_OK then
-      throw RuntimeException(fromCString(sqlite3_errstr(rc)))
-
-  inline private def guard(db: Ptr[sqlite3])(rc: CInt): Unit =
-    if rc != SQLITE_OK then
-      throw RuntimeException(fromCString(sqlite3_errmsg(db)))
-
-  final class Connection private[Sqlite] (db: Ptr[sqlite3])
-      extends AutoCloseable:
-    def prepare(sql: String): Statement =
-      val sqlBytes = sql.getBytes
-      val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
-      guard(db):
-        sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
-      Statement(db, !stmtPtr)
-
-    def close(): Unit = guard(sqlite3_close(db))
-
   final class Statement private[Sqlite] (
       db: Ptr[sqlite3],
       stmt: Ptr[sqlite3_stmt]
@@ -104,3 +74,33 @@ object Sqlite:
           throw IllegalStateException(s"Unknown SQLite column type $other")
 
     def close(): Unit = guard(db)(sqlite3_finalize(stmt))
+
+  final class Connection private[Sqlite] (db: Ptr[sqlite3])
+      extends AutoCloseable:
+    def prepare(sql: String): Statement =
+      val sqlBytes = sql.getBytes
+      val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
+      guard(db):
+        sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
+      Statement(db, !stmtPtr)
+
+    def close(): Unit = guard(sqlite3_close(db))
+
+  def open(filename: String): Connection =
+    val fn = (filename + 0.toChar).getBytes
+    val dbPtr = stackalloc[Ptr[sqlite3]]()
+    val flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX
+    try guard(sqlite3_open_v2(fn.at(0), dbPtr, flags, null))
+    catch
+      case t: Throwable =>
+        if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
+        throw t
+    Connection(!dbPtr)
+
+  inline private def guard(rc: CInt): Unit =
+    if rc != SQLITE_OK then
+      throw RuntimeException(fromCString(sqlite3_errstr(rc)))
+
+  inline private def guard(db: Ptr[sqlite3])(rc: CInt): Unit =
+    if rc != SQLITE_OK then
+      throw RuntimeException(fromCString(sqlite3_errmsg(db)))

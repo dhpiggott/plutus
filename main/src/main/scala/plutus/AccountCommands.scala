@@ -24,18 +24,6 @@ lazy val archiveDryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
-// Shared by all three commands rather than spelled out per command like
-// --dry-run above, whose help text differs by what each one would print: this
-// one says the same thing whichever command carries it.
-lazy val ignoreLockOpts: Opts[Boolean] =
-  Opts
-    .flag(
-      "ignore-lock",
-      help =
-        "Open the book even though GnuCash's gnclock table says another process has it open. Only for a lock left behind by a GnuCash that crashed — a live one will overwrite whatever this run writes."
-    )
-    .orFalse
-
 def archiveAccounts(
     input: fs2.io.file.Path,
     dryRun: Boolean,
@@ -115,6 +103,18 @@ lazy val restoreDryRunOpts: Opts[Boolean] =
       "dry-run",
       help =
         "Print what would be restored without writing to the book and without taking a backup."
+    )
+    .orFalse
+
+// Shared by all three commands rather than spelled out per command like
+// --dry-run above, whose help text differs by what each one would print: this
+// one says the same thing whichever command carries it.
+lazy val ignoreLockOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "ignore-lock",
+      help =
+        "Open the book even though GnuCash's gnclock table says another process has it open. Only for a lock left behind by a GnuCash that crashed — a live one will overwrite whatever this run writes."
     )
     .orFalse
 

@@ -29,6 +29,9 @@ object Plutus
         _.as:
           ExitCode.Success
 
+enum Verbosity:
+  case ERROR, WARN, INFO, VERBOSE, TRACE
+
 lazy val verbosityOpts: Opts[Verbosity] =
   errorOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
 
@@ -84,6 +87,3 @@ lazy val traceOpts: Opts[Verbosity] =
     )
     .as:
       Verbosity.TRACE
-
-enum Verbosity:
-  case ERROR, WARN, INFO, VERBOSE, TRACE

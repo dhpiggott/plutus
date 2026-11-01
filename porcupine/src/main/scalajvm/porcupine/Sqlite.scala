@@ -8,68 +8,6 @@ import java.nio.charset.StandardCharsets
 
 object Sqlite:
 
-  def open(filename: String): Connection =
-    val arena = Arena.ofConfined()
-    try
-      val fnBytes = filename.getBytes(StandardCharsets.UTF_8)
-      val fnSeg = arena.allocate(fnBytes.length.toLong + 1L)
-      MemorySegment.copy(fnBytes, 0, fnSeg, JAVA_BYTE, 0L, fnBytes.length)
-      val dbPtr = arena.allocate(ADDRESS)
-      val flags =
-        SQLITE_OPEN_READWRITE() | SQLITE_OPEN_CREATE() | SQLITE_OPEN_NOMUTEX()
-      val rc = sqlite3_open_v2(
-        filename = fnSeg,
-        ppDb = dbPtr,
-        flags = flags,
-        zVfs = MemorySegment.NULL
-      )
-      val db = dbPtr.get(ADDRESS, 0)
-      if rc != SQLITE_OK() && !db.equals(MemorySegment.NULL) then
-        sqlite3_close(db): Unit
-      guard(rc)
-      Connection(db)
-    finally arena.close()
-
-  private def guard(rc: Int): Unit =
-    if rc != SQLITE_OK() then throw RuntimeException(errstr(rc))
-
-  private def guard(db: MemorySegment)(rc: Int): Unit =
-    if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
-
-  // jextract types `const char*` returns as a zero-sized MemorySegment, so
-  // reinterpret widens the bound for getString to scan up to the NUL.
-  private def errstr(rc: Int): String =
-    val msg = sqlite3_errstr(rc)
-    if msg.equals(MemorySegment.NULL) then s"sqlite3 error $rc"
-    else msg.reinterpret(Long.MaxValue).getString(0L)
-
-  private def errmsg(db: MemorySegment): String =
-    val msg = sqlite3_errmsg(db)
-    if msg.equals(MemorySegment.NULL) then "sqlite3 error"
-    else msg.reinterpret(Long.MaxValue).getString(0L)
-
-  final class Connection private[Sqlite] (db: MemorySegment)
-      extends AutoCloseable:
-    def prepare(sql: String): Statement =
-      val arena = Arena.ofConfined()
-      try
-        val sqlBytes = sql.getBytes(StandardCharsets.UTF_8)
-        val sqlSeg = arena.allocate(sqlBytes.length.toLong.max(1L))
-        MemorySegment.copy(sqlBytes, 0, sqlSeg, JAVA_BYTE, 0L, sqlBytes.length)
-        val stmtPtr = arena.allocate(ADDRESS)
-        guard(db):
-          sqlite3_prepare_v2(
-            db = db,
-            zSql = sqlSeg,
-            nByte = sqlBytes.length,
-            ppStmt = stmtPtr,
-            pzTail = MemorySegment.NULL
-          )
-        Statement(db, stmtPtr.get(ADDRESS, 0))
-      finally arena.close()
-
-    def close(): Unit = guard(sqlite3_close(db))
-
   final class Statement private[Sqlite] (db: MemorySegment, stmt: MemorySegment)
       extends AutoCloseable:
     // sqlite3_bind_text/blob receive raw pointers into these segments with the
@@ -144,3 +82,65 @@ object Sqlite:
     def close(): Unit =
       guard(db)(sqlite3_finalize(stmt))
       bindArena.close()
+
+  final class Connection private[Sqlite] (db: MemorySegment)
+      extends AutoCloseable:
+    def prepare(sql: String): Statement =
+      val arena = Arena.ofConfined()
+      try
+        val sqlBytes = sql.getBytes(StandardCharsets.UTF_8)
+        val sqlSeg = arena.allocate(sqlBytes.length.toLong.max(1L))
+        MemorySegment.copy(sqlBytes, 0, sqlSeg, JAVA_BYTE, 0L, sqlBytes.length)
+        val stmtPtr = arena.allocate(ADDRESS)
+        guard(db):
+          sqlite3_prepare_v2(
+            db = db,
+            zSql = sqlSeg,
+            nByte = sqlBytes.length,
+            ppStmt = stmtPtr,
+            pzTail = MemorySegment.NULL
+          )
+        Statement(db, stmtPtr.get(ADDRESS, 0))
+      finally arena.close()
+
+    def close(): Unit = guard(sqlite3_close(db))
+
+  def open(filename: String): Connection =
+    val arena = Arena.ofConfined()
+    try
+      val fnBytes = filename.getBytes(StandardCharsets.UTF_8)
+      val fnSeg = arena.allocate(fnBytes.length.toLong + 1L)
+      MemorySegment.copy(fnBytes, 0, fnSeg, JAVA_BYTE, 0L, fnBytes.length)
+      val dbPtr = arena.allocate(ADDRESS)
+      val flags =
+        SQLITE_OPEN_READWRITE() | SQLITE_OPEN_CREATE() | SQLITE_OPEN_NOMUTEX()
+      val rc = sqlite3_open_v2(
+        filename = fnSeg,
+        ppDb = dbPtr,
+        flags = flags,
+        zVfs = MemorySegment.NULL
+      )
+      val db = dbPtr.get(ADDRESS, 0)
+      if rc != SQLITE_OK() && !db.equals(MemorySegment.NULL) then
+        sqlite3_close(db): Unit
+      guard(rc)
+      Connection(db)
+    finally arena.close()
+
+  private def guard(rc: Int): Unit =
+    if rc != SQLITE_OK() then throw RuntimeException(errstr(rc))
+
+  private def guard(db: MemorySegment)(rc: Int): Unit =
+    if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
+
+  // jextract types `const char*` returns as a zero-sized MemorySegment, so
+  // reinterpret widens the bound for getString to scan up to the NUL.
+  private def errstr(rc: Int): String =
+    val msg = sqlite3_errstr(rc)
+    if msg.equals(MemorySegment.NULL) then s"sqlite3 error $rc"
+    else msg.reinterpret(Long.MaxValue).getString(0L)
+
+  private def errmsg(db: MemorySegment): String =
+    val msg = sqlite3_errmsg(db)
+    if msg.equals(MemorySegment.NULL) then "sqlite3 error"
+    else msg.reinterpret(Long.MaxValue).getString(0L)

@@ -49,6 +49,9 @@ final case class Transaction(
       )
     )
 
+def formatTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(gnuCashTimestamp)
+
 // GnuCash's SQLite backend stores post_date/enter_date (and reconcile_date) as
 // a UTC "yyyy-MM-dd HH:mm:ss" string — confirmed against the book, whose
 // unreconciled splits carry reconcile_date '1970-01-01 00:00:00'. (The column
@@ -58,21 +61,6 @@ final case class Transaction(
 // that output.
 val gnuCashTimestamp: DateTimeFormatter =
   DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-
-def formatTimestamp(instant: Instant): String =
-  instant.atOffset(ZoneOffset.UTC).format(gnuCashTimestamp)
-
-// GnuCash's "neutral time": every transaction it posts is pinned to 10:59:00
-// UTC on its date (NEUTRAL_TIME_STR in libgnucash/engine/gnc-date.h, applied
-// by xaccTransSetDatePostedSecsNormalized, which the register and the OFX
-// importer both go through). The point is that 10:59Z has enough slack either
-// side to render as the same calendar day anywhere from UTC-11 to UTC+12, so a
-// book reads the same wherever it's opened. Writing the real clock time
-// instead would give rows near midnight no slack at all — a 23:30Z purchase
-// would show as the next day east of UTC — and would interleave imported rows
-// with hand-entered ones by an artefact rather than by anything meaningful,
-// since GnuCash's own rows all sit at 10:59.
-val neutralTime: LocalTime = LocalTime.of(10, 59, 0)
 
 // The calendar day is taken in the machine's zone, matching what GnuCash's own
 // normalisation does (it converts to local time and back), so an imported row
@@ -85,3 +73,15 @@ def neutralPostDate(instant: Instant): Instant =
     .localDate(instant)
     .atTime(neutralTime)
     .toInstant(ZoneOffset.UTC)
+
+// GnuCash's "neutral time": every transaction it posts is pinned to 10:59:00
+// UTC on its date (NEUTRAL_TIME_STR in libgnucash/engine/gnc-date.h, applied
+// by xaccTransSetDatePostedSecsNormalized, which the register and the OFX
+// importer both go through). The point is that 10:59Z has enough slack either
+// side to render as the same calendar day anywhere from UTC-11 to UTC+12, so a
+// book reads the same wherever it's opened. Writing the real clock time
+// instead would give rows near midnight no slack at all — a 23:30Z purchase
+// would show as the next day east of UTC — and would interleave imported rows
+// with hand-entered ones by an artefact rather than by anything meaningful,
+// since GnuCash's own rows all sit at 10:59.
+val neutralTime: LocalTime = LocalTime.of(10, 59, 0)

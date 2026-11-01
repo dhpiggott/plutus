@@ -176,7 +176,7 @@ sbt scalafmtCheckAll        # check sources
 sbt scalafmtAll             # apply to sources
 sbt scalafmtSbtCheck        # check build.sbt and project/
 sbt scalafmtSbt             # apply to build.sbt and project/
-sbt scalafixAll             # OrganizeImports (add --check to verify instead of rewrite)
+sbt scalafixAll             # OrganizeImports and DefinitionOrder (add --check to verify instead of rewrite)
 ```
 
 ### Continuous integration
@@ -195,6 +195,7 @@ GitHub Actions runs two workflows. `ci.yml` runs on pushes to `main` and on pull
 | --- | --- | --- |
 | `keychain` | jvm + native | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain. One row per platform under `src/main/scalajvm` and `src/main/scalanative`, reaching it through Java's Foreign Function & Memory API (jextract) and sn-bindgen respectively. |
 | `porcupine` | jvm + native | Inlined Porcupine fork: the cats-effect `Database` interface, on top of a per-platform `object Sqlite` (`Connection` / `Statement` over sqlite3) that sits alongside it under `src/main/scalajvm` and `src/main/scalanative`. |
+| `scalafix-rules` | jvm (Scala 2.13) | The `DefinitionOrder` scalafix rule behind the definition-order convention in `CLAUDE.md`. Every other module runs it through `scalafixAll`. |
 | `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + `Database` into `decline`'s `CommandIOApp`. |
 
 ## Status

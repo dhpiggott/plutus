@@ -15,6 +15,11 @@ def materialTransactions(
   transactions.filterNot: transaction =>
     transaction.amount.value == 0 || transaction.declineReason.isDefined
 
+val gbpCurrencyCode = "GBP"
+
+def majorUnits(minorUnits: BigInt): BigDecimal =
+  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
+
 // Monzo reports an amount in the minor unit of the account's own currency, and
 // OFX wants major units. The OFX sink has no book to read a fraction from — the
 // book sink divides by the book currency's own `fraction` — so the 100 here
@@ -23,11 +28,6 @@ def materialTransactions(
 // beside it is what ofxTransactionSink refuses anything else by, and what the
 // CSV source's own scaling back to minor units rests on.
 val gbpMinorUnitsPerMajorUnit = 100
-
-val gbpCurrencyCode = "GBP"
-
-def majorUnits(minorUnits: BigInt): BigDecimal =
-  BigDecimal(minorUnits) / gbpMinorUnitsPerMajorUnit
 
 // The human-readable payee, preferring the merchant (card spend), then the
 // counterparty (transfers), then Monzo's own description as a last resort. The

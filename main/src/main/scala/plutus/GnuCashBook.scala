@@ -110,18 +110,6 @@ def withBook[A](
         info(s"Nothing changed, so deleted $temporaryBackup.")
 yield resultAndChanged.result
 
-// Refuse a book that isn't there rather than letting SQLite create an empty
-// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
-// otherwise leave a stray zero-table file beside the real book and fail
-// several queries later with a bare NoSuchElementException from Account.root.
-def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .exists(input)
-    .flatMap: exists =>
-      IO.raiseUnless(exists):
-        Error(s"No GnuCash book at $input.")
-
 // A leftover temporary backup is a copy taken by a run that died between
 // taking it and promoting it. That run may well have committed its writes
 // first — withBook commits inside `body`, then reads total_changes(), then
@@ -182,14 +170,14 @@ def promoteBackup(
       CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
     ) *> info(s"Moved $temporaryBackup to $backup.")
 
+def formatBackupTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
+
 // Compact UTC, so backups sort chronologically by name, and no colons, which
 // Finder renders as slashes. The instant is the one the command took at
 // invocation, so every artefact of a run carries the same stamp.
 val backupTimestamp: DateTimeFormatter =
   DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
-
-def formatBackupTimestamp(instant: Instant): String =
-  instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
 
 // A look at the book from outside withBook, for what a run has to know before
 // it can start: no backup, since nothing is written, and no gnclock, since a
@@ -205,6 +193,18 @@ def peekBook[A](input: fs2.io.file.Path)(
       .open[IO](input.toString)
       .use: db =>
         db.withoutCommitting(body(db))
+
+// Refuse a book that isn't there rather than letting SQLite create an empty
+// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
+// otherwise leave a stray zero-table file beside the real book and fail
+// several queries later with a bare NoSuchElementException from Account.root.
+def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .exists(input)
+    .flatMap: exists =>
+      IO.raiseUnless(exists):
+        Error(s"No GnuCash book at $input.")
 
 // Where each account's window starts: from what the book has already filed for
 // it, and which pots it already has an account for. Both sinks read it,
@@ -254,33 +254,6 @@ object BookRoots:
       root <- Account.root
       archiveSubroot <- archiveSubrootFor(root, dryRun).memoize
     yield BookRoots(root, archiveSubroot)
-
-// The Archive subroot's name. Placement, not schema, so it lives here with the
-// rest of what decides where an account belongs rather than on Account.
-val ArchiveName: String = "Archive"
-
-// The Archive subroot, created on demand — or, in a dry run of a book that has
-// never archived anything, the would-be account createOrRetrieveChild yields
-// without inserting, so the rest of the plan can name paths under it. It goes
-// through the same creator as every other structural account precisely so the
-// two runs agree: the subroot used to be created silently by a real run and
-// announced by a dry one.
-def archiveSubrootFor(root: Account, dryRun: Boolean)(using
-    db: Database[IO],
-    verbosity: Verbosity
-): IO[Account] =
-  createOrRetrieveChild(
-    root,
-    canonicalPathString(Nil, retired = false),
-    ArchiveName,
-    dryRun,
-    placeholder = true,
-    // Hidden by definition: everything under it is retired.
-    hidden = true,
-    // A copy of the root account down to its code and description, as every
-    // mirror is a copy of its counterpart.
-    template = Some(root)
-  )
 
 // One resolver for every Monzo-backed asset account. The online_id tag is the
 // only thing it matches on, and identity therefore survives moves and
@@ -348,6 +321,29 @@ def resolveAssetAccount(
       account.tagOnlineId(monzoAccountId.value)
   yield account
 
+// The Archive subroot, created on demand — or, in a dry run of a book that has
+// never archived anything, the would-be account createOrRetrieveChild yields
+// without inserting, so the rest of the plan can name paths under it. It goes
+// through the same creator as every other structural account precisely so the
+// two runs agree: the subroot used to be created silently by a real run and
+// announced by a dry one.
+def archiveSubrootFor(root: Account, dryRun: Boolean)(using
+    db: Database[IO],
+    verbosity: Verbosity
+): IO[Account] =
+  createOrRetrieveChild(
+    root,
+    canonicalPathString(Nil, retired = false),
+    ArchiveName,
+    dryRun,
+    placeholder = true,
+    // Hidden by definition: everything under it is retired.
+    hidden = true,
+    // A copy of the root account down to its code and description, as every
+    // mirror is a copy of its counterpart.
+    template = Some(root)
+  )
+
 // The canonical path of the asset account a Monzo account posts into: the
 // code-defined path with that account's Monzo ID in the leaf name. Several
 // Monzo accounts can share a code-defined path — the map is keyed by type, so
@@ -376,30 +372,6 @@ def assetAccountPath(
 // different canonical names on two machines.
 def monzoAccountIdLabel(monzoAccountId: monzo.AccountId): String =
   monzoAccountId.value.stripPrefix("acc_").toUpperCase(Locale.ROOT)
-
-// A canonical path's parent chain: the live one while the Monzo side is
-// live, its Archive-nested twin once retired.
-//
-// Not boundaryParentFor on both sides, despite its `retired = false` also
-// naming a chain under the root: that one *mirrors an archived chain back out*,
-// and the paths here are code-defined (AssetAccounts.default) with no archived
-// counterpart to mirror. Routing them through it would also force the Archive
-// subroot — creating one in a run whose accounts are all live, which is the
-// laziness BookRoots exists for.
-def parentFor(
-    pathInit: List[String],
-    retired: Boolean,
-    roots: BookRoots,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
-  else liveParentFor(pathInit, roots, dryRun)
-
-// Textual, so a dry run can name targets whose parents don't exist yet.
-def canonicalPathString(livePath: List[String], retired: Boolean): String =
-  val canonical =
-    if retired then ArchiveName :: livePath else livePath
-  ("Root Account" :: canonical).mkString("/")
 
 // Monzo is authoritative for a Monzo-backed asset account's whole placement.
 // Its canonical parent is the code-defined live path while the Monzo side is
@@ -453,6 +425,24 @@ def enforcePlacement(
       dryRun
     )
   yield described
+
+// A canonical path's parent chain: the live one while the Monzo side is
+// live, its Archive-nested twin once retired.
+//
+// Not boundaryParentFor on both sides, despite its `retired = false` also
+// naming a chain under the root: that one *mirrors an archived chain back out*,
+// and the paths here are code-defined (AssetAccounts.default) with no archived
+// counterpart to mirror. Routing them through it would also force the Archive
+// subroot — creating one in a run whose accounts are all live, which is the
+// laziness BookRoots exists for.
+def parentFor(
+    pathInit: List[String],
+    retired: Boolean,
+    roots: BookRoots,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
+  else liveParentFor(pathInit, roots, dryRun)
 
 // Hidden tracks retirement, aligned in both directions. Takes its arguments in
 // the same order as alignDescription, which runs beside it on every enforced
@@ -613,6 +603,16 @@ def liveParentFor(
           (account = child, path = s"${cursor.path}/$segment")
       .map(_.account)
   yield parent
+
+// Textual, so a dry run can name targets whose parents don't exist yet.
+def canonicalPathString(livePath: List[String], retired: Boolean): String =
+  val canonical =
+    if retired then ArchiveName :: livePath else livePath
+  ("Root Account" :: canonical).mkString("/")
+
+// The Archive subroot's name. Placement, not schema, so it lives here with the
+// rest of what decides where an account belongs rather than on Account.
+val ArchiveName: String = "Archive"
 
 // Get-or-create one child, for the paths where sharing is the point: a
 // category leaf several transactions file into, and the structural segments

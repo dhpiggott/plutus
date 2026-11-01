@@ -23,8 +23,6 @@ import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import scala.concurrent.duration.*
 
-lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
-
 // Shared Monzo session scaffolding for every command that talks to the API:
 // load state, build the HTTP client (whose trace-level logger redacts the
 // Authorization header — http4s's default — but prints full bodies, and the
@@ -195,8 +193,6 @@ def warnIfRefreshTokenNearExpiry(
             .as(state)
     yield updatedState
 
-private val stateKeychainAccount = "plutus"
-
 def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
   _ <- Keychain.save(
     account = stateKeychainAccount,
@@ -209,13 +205,7 @@ def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
     "Saved state to Keychain."
 yield ()
 
-extension (timestamp: Timestamp)
-  def asInstant: Instant =
-    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
-
-extension (instant: Instant)
-  def asSmithyTimestamp: Timestamp =
-    Timestamp(instant.getEpochSecond, instant.getNano)
+private val stateKeychainAccount = "plutus"
 
 def accessToken(
     client: Client[IO],
@@ -318,6 +308,8 @@ def accessToken(
                   exchangeAuthCodeAndCreateOrUpdateState
       yield (state, accessToken)
 
+lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
+
 def lessThanFiveMinutesAgo(
     authorizedAt: AuthorizedAt,
     now: Instant
@@ -342,6 +334,14 @@ def inferredRefreshTokenExpiry(state: State): Instant =
         .plus:
           refreshTokenTtl
 
+extension (timestamp: Timestamp)
+  def asInstant: Instant =
+    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
+
+extension (instant: Instant)
+  def asSmithyTimestamp: Timestamp =
+    Timestamp(instant.getEpochSecond, instant.getNano)
+
 // Monzo's token response carries no refresh-token expiry, so we compute one
 // from when access was last granted (recorded in State at authorization) plus
 // the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
@@ -360,11 +360,6 @@ val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
 // point straight at it rather than leaving the user to hunt.
 val monzoRefreshPermissionsPath: String =
   "Settings > Security > Manage apps > Refresh permissions"
-
-lazy val callbackPort: Port = port"8080"
-
-lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
-  s"http://localhost:$callbackPort/oauth/callback"
 
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
@@ -465,8 +460,6 @@ object AuthorizationCodeQueryParamMatcher
 object StateQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.State]("state")
 
-lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
-
 def requestAuthorization(
     clientId: monzo.ClientId
 ): IO[monzo.State] = for
@@ -490,6 +483,13 @@ def requestAuthorization(
             .renderString
         )
 yield state
+
+lazy val monzoAuthUri: Uri = uri"https://auth.monzo.com"
+
+lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
+  s"http://localhost:$callbackPort/oauth/callback"
+
+lazy val callbackPort: Port = port"8080"
 
 object BearerAuthMiddleware:
   def apply(accessToken: monzo.AccessToken): ClientEndpointMiddleware[IO] =
