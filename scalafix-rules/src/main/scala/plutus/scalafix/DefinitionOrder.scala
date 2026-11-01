@@ -14,10 +14,10 @@ import scalafix.v1._
 // body of one object, class, trait, enum or extension block.
 //
 // A term (def, val, object, extension block) sits below every definition in its
-// scope that uses it. A type (class, trait, enum or type alias, with any
-// companion) sits immediately above the first definition in its scope that
-// names it, with nothing in between but other types placed for that same
-// definition.
+// scope that uses it, except in a class, trait or enum body. A type (class,
+// trait, enum or type alias, with any companion) sits immediately above the
+// first definition in its scope that names it, with nothing in between but
+// other types placed for that same definition.
 //
 // Definitions that reach each other through a cycle are left unordered, and so
 // are definitions with no use between them: the depth-first tie-break that
@@ -52,6 +52,8 @@ object DefinitionOrder {
     path.replace('\\', '/')
   }
 
+  private final case class Scope(stats: List[Stat], ordersTerms: Boolean)
+
   private final case class Member(stat: Stat, index: Int, names: List[Name])
 
   private final case class Definition(
@@ -67,31 +69,34 @@ object DefinitionOrder {
 
     def patch: Patch = scopes(doc.tree).map(checkScope).asPatch
 
-    private def scopes(tree: Tree): List[List[Stat]] = tree match {
+    private def scopes(tree: Tree): List[Scope] = tree match {
       case source: Source => scopesIn(source.stats)
       case pkg: Pkg       => scopesIn(pkg.body.stats)
       case _              => Nil
     }
 
-    private def scopesIn(stats: List[Stat]): List[List[Stat]] = {
+    private def scopesIn(stats: List[Stat]): List[Scope] = {
       val (packages, members) = stats.partition(_.isInstanceOf[Pkg])
-      members :: packages.flatMap(scopes) ++ members.flatMap(nested)
+      val scope = Scope(members, ordersTerms = true)
+      scope :: packages.flatMap(scopes) ++ members.flatMap(nested)
     }
 
-    private def nested(stat: Stat): List[List[Stat]] = {
-      val body = stat match {
-        case defn: Defn.Object         => defn.templ.body.stats
-        case defn: Defn.Class          => defn.templ.body.stats
-        case defn: Defn.Trait          => defn.templ.body.stats
-        case defn: Defn.Enum           => defn.templ.body.stats
-        case defn: Defn.ExtensionGroup => extensionMembers(defn)
-        case _                         => Nil
+    // A class, trait or enum body declares its state before the methods that
+    // use it, as Scala code ordinarily does, so only its types are ordered.
+    private def nested(stat: Stat): List[Scope] = {
+      val scope = stat match {
+        case defn: Defn.Object         => Scope(defn.templ.body.stats, true)
+        case defn: Defn.Class          => Scope(defn.templ.body.stats, false)
+        case defn: Defn.Trait          => Scope(defn.templ.body.stats, false)
+        case defn: Defn.Enum           => Scope(defn.templ.body.stats, false)
+        case defn: Defn.ExtensionGroup => Scope(extensionMembers(defn), true)
+        case _                         => Scope(Nil, false)
       }
-      if (body.isEmpty) Nil else body :: body.flatMap(nested)
+      if (scope.stats.isEmpty) Nil else scope :: scope.stats.flatMap(nested)
     }
 
-    private def checkScope(stats: List[Stat]): Patch = {
-      val definitions = definitionsIn(stats)
+    private def checkScope(scope: Scope): Patch = {
+      val definitions = definitionsIn(scope.stats)
       val owners = definitions.flatMap(d => d.symbols.map(_ -> d)).toMap
       val uses = definitions.map(d => d -> usedBy(d, owners)).toMap
       val component = stronglyConnected(definitions, uses)
@@ -108,7 +113,8 @@ object DefinitionOrder {
         usersOf.get(definition).flatMap { users =>
           if (definition.isType)
             checkType(definition, users.head, definitions, firstUserOf)
-          else checkTerm(definition, users)
+          else if (scope.ordersTerms) checkTerm(definition, users)
+          else None
         }
       }.asPatch
     }
