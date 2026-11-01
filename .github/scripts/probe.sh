@@ -9,4 +9,16 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
-sbt --batch --no-colors "mainNative3/run --help"
+status=0
+sbt --batch --no-colors scalafixAll || status=$?
+echo "::group::first scalafixAll exited $status"
+echo "::endgroup::"
+echo "===== DIFF BEGIN ====="
+git --no-pager diff
+echo "===== DIFF END ====="
+git add -A
+sbt --batch --no-colors scalafixAll scalafmtCheckAll compile || status=$?
+echo "===== SECOND PASS DIFF BEGIN ====="
+git --no-pager diff
+echo "===== SECOND PASS DIFF END ====="
+exit "$status"
