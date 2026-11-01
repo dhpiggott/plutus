@@ -15,8 +15,8 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 
-// The CSV statements the Monzo app exports, read as a transaction source: one
-// file per account or pot, and no session at all — no OAuth client, no refresh
+// The pot statements the Monzo app exports as CSV, read as a transaction
+// source: one file per pot, and no session at all — no OAuth client, no refresh
 // token, no state store. That is the point of it rather than a side effect.
 // The API caps a pot's window at 90 days once Strong Customer Authentication
 // has lapsed, so a statement is the only way to reach a pot's older interest,
@@ -25,31 +25,22 @@ import java.time.format.DateTimeParseException
 // an API import of overlapping windows idempotent in both directions.
 //
 // A statement has no account-ID column, so each file is paired on the command
-// line with the account it belongs to, and whether that account backs a pot is
-// stated the same way (--from-csv-pot) rather than inferred: the Monzo source
-// recognises a pot backing account by its missing type, which is an artefact
-// of /accounts not listing them and answers nothing for a bare acc_… (see
+// line (--from-pot-csv) with the pot's backing account ID. Every account this
+// source names backs a pot, which is stated rather than inferred (see
 // FetchedAccount).
 //
 // `pots` comes back empty, because /pots is what fills it, and no sink is left
 // guessing by that: a pot whose asset account the book already carries
 // resolves by its online_id tag with no name needed, and a pot the book has
-// never seen fails the run rather than being mis-filed. Nothing infers closure
-// either — a statement says nothing about whether the account or the pot
-// behind it still exists — so archiving is left to a later API run.
+// never seen fails the run rather than being mis-filed. Nothing infers deletion
+// either — a statement says nothing about whether the pot behind it still
+// exists — so archiving is left to a later API run.
 def csvTransactionSource(
-    accounts: List[(monzo.AccountId, fs2.io.file.Path)],
     potAccounts: List[(monzo.AccountId, fs2.io.file.Path)]
 ): TransactionSource = new TransactionSource:
-  def use[A](now: Instant)(consume: Fetched => IO[A])(using
-      verbosity: Verbosity
-  ): IO[A] =
-    val statements =
-      accounts.map((accountId, path) =>
-        (accountId = accountId, path = path, potBacking = false)
-      ) ++ potAccounts.map((accountId, path) =>
-        (accountId = accountId, path = path, potBacking = true)
-      )
+  def fetch(now: Instant)(using verbosity: Verbosity): IO[Fetched] =
+    val statements = potAccounts.map: (accountId, path) =>
+      (accountId = accountId, path = path)
     for
       // One account, one statement. Two files under one ID would both be read
       // and both filed, and the run's own duplicate check would then fail on
@@ -73,16 +64,14 @@ def csvTransactionSource(
         csvStatement(statement.path).map: read =>
           FetchedAccount(
             id = statement.accountId,
-            // A statement names no type, and the ID alone can't be looked up
-            // without the API. Resolution is by the book's own online_id tags
-            // instead — see gnuCashTransactionSink.
             accountType = None,
-            // Nothing in a statement says the account behind it is closed;
+            // Nothing in a statement says the pot behind it is deleted;
             // absence of one says nothing either, since the run is only given
             // the files it was asked to import.
             closed = false,
-            potBacking = statement.potBacking,
-            currency = read.currency
+            potBacking = true,
+            currency = read.currency,
+            description = None
           ) -> read.transactions
       _ <- log(Verbosity.VERBOSE):
         Json.writeDocumentAsPrettyString:
@@ -96,17 +85,10 @@ def csvTransactionSource(
                   transactions.map:
                     Document.encode(_)
               )
-      result <- consume(
-        (
-          byAccount = byAccount,
-          pots = Map.empty[monzo.AccountId, monzo.Pot],
-          // A statement is the whole of an account's history, not a window
-          // carried on from where a previous run stopped, so an OFX file
-          // rendered from one may replace an existing one. See Fetched.
-          incremental = false
-        )
-      )
-    yield result
+    yield (
+      byAccount = byAccount,
+      pots = Map.empty[monzo.AccountId, monzo.Pot]
+    )
 
 // One statement, decoded by header name rather than by column position: the
 // app's export has gained and reordered columns before, and only nine of them

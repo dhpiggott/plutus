@@ -187,15 +187,11 @@ string Currency
 
 boolean Deleted
 
-/// The archive trigger for main accounts, as Deleted is for pots. Optional
-/// because pot backing accounts are constructed from transfer metadata rather
-/// than decoded from /accounts, so no closed flag is ever seen for them.
+/// The archive trigger for main accounts, as Deleted is for pots.
 boolean Closed
 
 /// uk_retail, uk_retail_joint, … Modelled as an open string (like Category) so
-/// a type Monzo adds later can't fail a decode. Optional because pot backing
-/// accounts are discovered from transaction metadata rather than /accounts, so
-/// no type is ever seen for them — AssetAccounts treats its absence as "pot".
+/// a type Monzo adds later can't fail a decode.
 string AccountType
 
 /// This can be a date-time string or a transaction ID. Ideally we'd model it as
@@ -214,10 +210,22 @@ structure Account {
     @required
     id: AccountId
 
+    @required
     @jsonName("type")
     accountType: AccountType
 
+    @required
     closed: Closed
+
+    /// When the account was opened, which is where an account with nothing
+    /// filed in the book starts reading its history.
+    @required
+    created: Created
+
+    /// What Monzo calls the account, which becomes its book account's
+    /// description.
+    @required
+    description: Description
 
     @jsonUnknown
     unknown: UnknownProperties
@@ -228,6 +236,8 @@ structure Account {
 /// and deleted triggers automatic archiving of the pot's asset account.
 /// Deleted pots are listed too (with their names intact), which is exactly
 /// right: their historical transactions may still fall in an import window.
+/// balance only decides whether a pot nothing links to a backing account is
+/// worth a warning, so it is optional rather than a reason to fail a decode.
 structure Pot {
     @required
     id: PotId
@@ -235,8 +245,15 @@ structure Pot {
     @required
     name: Name
 
+    balance: Amount
+
     @required
     currency: Currency
+
+    /// When the pot was opened, which is where a pot with nothing filed in the
+    /// book starts reading its history.
+    @required
+    created: Created
 
     @required
     deleted: Deleted
