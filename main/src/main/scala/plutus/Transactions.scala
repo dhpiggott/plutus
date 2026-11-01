@@ -79,24 +79,19 @@ lazy val fromMonzoOpts: Opts[Unit] =
       "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
   )
 
-// Either option on its own is a run, so the branch is the union of the two
-// products rather than one product of two optional lists: a pot backfill is
-// the whole reason this source exists and needs no main account's statement,
-// while an all-optional branch would match a command line naming no source at
-// all and make `orElse` above ambiguous rather than exclusive.
+// Pots only: the API reads a main account's whole history after a fresh
+// authorisation, but a pot's statement only 90 days back, so a pot's older
+// interest is the one thing only a statement has.
 lazy val csvSourceOpts: Opts[TransactionSource] =
-  ((fromCsvOpts, fromCsvPotOpts.withDefault(Nil)).tupled
-    orElse (fromCsvOpts.withDefault(Nil), fromCsvPotOpts).tupled)
-    .map: (accounts, potAccounts) =>
-      csvTransactionSource(accounts, potAccounts)
+  fromPotCsvOpts.map(csvTransactionSource)
 
-lazy val fromCsvOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
+lazy val fromPotCsvOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
   Opts
     .options[String](
-      "from-csv",
+      "from-pot-csv",
       metavar = "id=path",
       help =
-        "Read an account's transactions from a CSV statement exported by the Monzo app, given as the Monzo account ID the statement belongs to and the path to it. Repeatable, once per account."
+        "Read a pot's transactions from a CSV statement exported by the Monzo app, given as the pot's backing account ID and the path to the statement. Repeatable, once per pot."
     )
     .mapValidated:
       _.traverse(accountStatement)
@@ -115,23 +110,6 @@ def accountStatement(
     case _ =>
       Validated.invalidNel:
         s"Not an ACCOUNT_ID=PATH pair: $value."
-
-// A separate option rather than a prefix on the one above, because it matches
-// how the app exports — an account statement and a pot statement come from two
-// different screens — and because what it sets has to be stated rather than
-// derived: see FetchedAccount.
-lazy val fromCsvPotOpts: Opts[List[(monzo.AccountId, fs2.io.file.Path)]] =
-  Opts
-    .options[String](
-      "from-csv-pot",
-      metavar = "id=path",
-      help =
-        "Read a pot's transactions from a CSV statement exported by the Monzo app, given as the pot's backing account ID and the path to the statement. Repeatable, once per pot."
-    )
-    .mapValidated:
-      _.traverse(accountStatement)
-    .map:
-      _.toList
 
 // An optional-argument option (--to-book, or --to-book=PATH), so naming the
 // sink doesn't force a path on a run that wants the default. decline binds an

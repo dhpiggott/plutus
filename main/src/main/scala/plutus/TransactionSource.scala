@@ -31,8 +31,8 @@ type Fetched = (
 //
 // description is what the book sink describes the account's asset account
 // with, where the source knows it: /accounts gives one, a statement doesn't.
-// None from a source that can't say is harmless, because only an account with
-// a type has its placement enforced, and a CSV account has none.
+// None from a source that can't say is harmless, because a pot account, which
+// is all a statement names, is described by nothing.
 final case class FetchedAccount(
     id: monzo.AccountId,
     accountType: Option[monzo.AccountType],

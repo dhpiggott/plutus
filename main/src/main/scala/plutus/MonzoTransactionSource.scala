@@ -118,8 +118,8 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
 // is still listed, with nothing in it, so the book sink archives it, but it is
 // not read: it takes no new transactions, and reading one whose last filed
 // transaction is more than 90 days old would ask for authorisation on every
-// run. Whatever it took between the last run and its closure comes from a CSV
-// statement.
+// run. Whatever a closed account took between the last run and its closure
+// is not read at all, and a deleted pot's comes from its CSV statement.
 def accountStarts(
     book: BookStarts,
     accounts: List[monzo.Account]
@@ -237,13 +237,13 @@ def listAllTransactions(
   // needs no fresh authorisation could miss something, so it isn't read.
   _ <- potAccounts.unidentified.traverse_ : accountId =>
     warn:
-      s"The pot behind ${accountId.value} wasn't read: a transfer names it, but no pot Monzo lists matches. Bring its transactions in with --from-csv-pot."
+      s"The pot behind ${accountId.value} wasn't read: a transfer names it, but no pot Monzo lists matches. Bring its transactions in with --from-pot-csv."
   // Only a pot the plan couldn't know about, and so didn't authorise for, is
   // clamped (see discoverPotAccounts); say so rather than miss its earlier
   // rows silently.
   _ <- potAccounts.clamped.traverse_ : clamped =>
     warn:
-      s"The pot behind ${clamped.accountId.value} was only read from ${earliestWindowStart}, not from ${clamped.start}, because this run didn't authorise for further back. Bring anything older in with --from-csv-pot."
+      s"The pot behind ${clamped.accountId.value} was only read from ${earliestWindowStart}, not from ${clamped.start}, because this run didn't authorise for further back. Bring anything older in with --from-pot-csv."
   _ <- (IO.whenA(potAccounts.read.nonEmpty)):
     info:
       "Listing transactions for pot accounts…"

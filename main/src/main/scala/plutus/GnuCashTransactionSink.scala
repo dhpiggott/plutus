@@ -113,17 +113,6 @@ def gnuCashTransactionSink(
         case (account, _) if account.potBacking => account.id
       materialMonzoPotAccountIds = materialByAccount.collect:
         case (account, _) if account.potBacking => account.id
-      // An account a source names without saying what kind it is — a CSV
-      // statement gives an ID and nothing else (see csvTransactionSource).
-      // There's no type to map to a code-defined path, so the book's own tag
-      // is the whole of the resolution below and the account is posted to
-      // exactly where it already sits: a placement enforced from a path
-      // guessed at here would move a joint account under the personal
-      // account's, and would do it on every run.
-      untypedMonzoAccountIds = byAccount.collect:
-        case (account, _)
-            if account.accountType.isEmpty && !account.potBacking =>
-          account.id
       // Every online_id in the book, in one scan: the tags below and the
       // dedup check further down are the run's only two readers of them,
       // and both would otherwise scan an unindexed table that grows with
@@ -139,8 +128,7 @@ def gnuCashTransactionSink(
       // run: nothing in the book says which is meant, and posting into the
       // wrong one would be permanent.
       monzoAccountIds = typedAccountsAndPaths
-        .map((account, _) => account.id) ++ allMonzoPotAccountIds ++
-        untypedMonzoAccountIds
+        .map((account, _) => account.id) ++ allMonzoPotAccountIds
       taggedGuids = onlineIds
         .filter: (value, _) =>
           monzoAccountIds.exists(_.value == value)
@@ -176,21 +164,6 @@ def gnuCashTransactionSink(
       _ <- IO.raiseUnless(unnamedPots.isEmpty):
         Error(
           s"Nothing identifies the pot(s) behind ${unnamedPots.map(_.value).mkString(", ")} — no tagged account in the book and no recorded pot link; run --from-monzo --to-book first, which creates and tags an account for every pot a transfer in its window names — the whole history of every main account, on a book that knows none yet."
-        )
-      // The same fail-fast for an untyped account, and for the same reason:
-      // with no type there is no path to create one at, so an untagged one
-      // can only be guessed at, and a guess is permanent — online_id dedup
-      // skips a mis-filed row on every later run. The remedy differs because
-      // the API knows the type: one run from --from-monzo creates the account
-      // and tags it, and every CSV run afterwards finds it.
-      untaggedAccounts = materialByAccount.collect:
-        case (account, _)
-            if untypedMonzoAccountIds.contains(account.id) &&
-              taggedByMonzoAccountId(account.id).isEmpty =>
-          account.id.value
-      _ <- IO.raiseUnless(untaggedAccounts.isEmpty):
-        Error(
-          s"No account in the book is tagged with the Monzo account ID(s) ${untaggedAccounts.sorted.mkString(", ")}, and a CSV statement doesn't say what kind of account they are; run once with --from-monzo to create and tag them, or tag an existing account by hand."
         )
       currency <- Commodity.gbp
       // Fail fast on a pot denominated in anything but the book's currency:
@@ -285,14 +258,7 @@ def gnuCashTransactionSink(
           _.collect:
             case (monzoAccountId, Some(account)) => monzoAccountId -> account
           .toMap
-      // Resolved by tag alone: untaggedAccounts above has already failed the
-      // run for any that's material and untagged, and an untyped account
-      // with no material transactions needs no asset account at all.
-      untypedAssets = untypedMonzoAccountIds
-        .flatMap: monzoAccountId =>
-          taggedByMonzoAccountId(monzoAccountId).map(monzoAccountId -> _)
-        .toMap
-      assets = typedAssets ++ potAssets ++ untypedAssets
+      assets = typedAssets ++ potAssets
       // One book account per Monzo account, checked rather than assumed.
       // Resolution never adopts an account it found by location, so two
       // Monzo accounts can only land on one book account if the book itself
