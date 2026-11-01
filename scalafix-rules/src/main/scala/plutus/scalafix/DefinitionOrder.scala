@@ -543,7 +543,8 @@ object DefinitionOrder {
         .sortBy(_.pos.start)
         .flatMap { name =>
           val symbol = name.symbol
-          ownerIn(owners, symbol).map(owner => (owner, !symbol.isType))
+          val runs = !symbol.value.endsWith("#")
+          ownerIn(owners, symbol).map(owner => (owner, runs))
         }
         .filter(_._1 != id)
       val used = mentioned.map(_._1).distinct
