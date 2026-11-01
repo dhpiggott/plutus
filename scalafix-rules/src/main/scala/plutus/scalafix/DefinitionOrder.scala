@@ -7,6 +7,7 @@ import metaconfig.ConfDecoder
 import metaconfig.Configured
 import metaconfig.generic.Surface
 import scalafix.lint.Diagnostic
+import scalafix.lint.LintSeverity
 import scalafix.v1._
 
 // Puts the definitions of each scope in one canonical order, worked out from
@@ -30,6 +31,11 @@ import scalafix.v1._
 // and `scalafixAll --check` fails on it. A comment directly above a definition
 // moves with it; a scope it can't rewrite safely, such as one with a comment
 // standing apart from any definition, is reported instead.
+//
+// Definitions between `// scalafix:off DefinitionOrder` and
+// `// scalafix:on DefinitionOrder` keep their written order, as one item that
+// the rest of the scope is ordered around. Scalafix drops any patch touching
+// that range, so the rule never edits inside it, only on either side.
 class DefinitionOrder(config: DefinitionOrderConfig)
     extends SemanticRule("DefinitionOrder") {
 
@@ -68,6 +74,7 @@ object DefinitionOrder {
 
   private final case class Item(
       stats: List[Stat],
+      kept: Option[(Int, Int)],
       key: (Boolean, String, String),
       isType: Boolean,
       isStrict: Boolean,
@@ -79,6 +86,33 @@ object DefinitionOrder {
     private val text: String = doc.input.text
 
     private var problems = List.empty[Patch]
+
+    // The ranges a `scalafix:off` comment disables this rule for, from that
+    // comment to the start of the `scalafix:on` that ends it.
+    private val keptRanges: List[(Int, Int)] = {
+      val markers = doc.tokens.toList.collect {
+        case comment: Token.Comment =>
+          comment.value.trim.split("[\\s,]+").toList match {
+            case "scalafix:off" :: rules if appliesHere(rules) =>
+              List((true, comment))
+            case "scalafix:on" :: rules if appliesHere(rules) =>
+              List((false, comment))
+            case _ => Nil
+          }
+      }.flatten
+      val (ranges, open) = markers.foldLeft(
+        (List.empty[(Int, Int)], Option.empty[Int])
+      ) {
+        case ((ranges, None), (true, off))      => (ranges, Some(off.start))
+        case ((ranges, Some(start)), (false, on)) =>
+          ((start, on.end) :: ranges, None)
+        case (state, _) => state
+      }
+      (open.map(start => (start, text.length)).toList ++ ranges).reverse
+    }
+
+    private def appliesHere(rules: List[String]): Boolean =
+      rules.isEmpty || rules.contains("DefinitionOrder")
 
     def patch: Patch = {
       val edits = scopes(doc.tree).flatMap(editsFor)
@@ -100,10 +134,15 @@ object DefinitionOrder {
       val members = scope.stats.flatMap { stat =>
         definedNames(stat).map(Member(stat, _))
       }
-      lazy val nestedEdits = members.flatMap(member => editsWithin(member.stat))
-      val order = canonicalOrder(scope, members)
-      if (order.map(_.pos.start) == members.map(_.stat.pos.start)) nestedEdits
-      else reordered(members, order).fold(nestedEdits)(List(_))
+      val (items, order) = canonicalOrder(scope, members)
+      items.filter(_.kept.isDefined).foreach { item =>
+        problems = Patch.lint(KeptAsWritten(item.stats.head.pos)) :: problems
+      }
+      lazy val nestedEdits =
+        items.filter(_.kept.isEmpty).flatMap(_.stats).flatMap(editsWithin)
+      val canonical = order.flatMap(items(_).stats).map(_.pos.start)
+      if (canonical == members.map(_.stat.pos.start)) nestedEdits.toList
+      else reordered(items, order).getOrElse(nestedEdits.toList)
     }
 
     private def editsWithin(stat: Stat): List[Edit] =
@@ -123,17 +162,29 @@ object DefinitionOrder {
 
     // The whole run of definitions, rewritten in the canonical order with one
     // blank line between them. Only whitespace may separate them: anything
-    // else between two definitions has nowhere to go once they move.
+    // else between two definitions has nowhere to go once they move. A kept
+    // range stays exactly where it is, and what falls between kept ranges is
+    // rewritten around them.
     private def reordered(
-        members: List[Member],
-        order: List[Stat]
-    ): Option[Edit] = {
-      val blocks = members.map(member => blockOf(member.stat))
+        items: Vector[Item],
+        order: List[Int]
+    ): Option[List[Edit]] = {
+      val units = items.indices.toList
+        .flatMap { id =>
+          items(id).kept match {
+            case Some(_) => List((keptBlockOf(items(id)), Option(id)))
+            case None =>
+              items(id).stats.map(stat => (blockOf(stat), Option.empty[Int]))
+          }
+        }
+        .sortBy { case ((start, _), _) => start }
+      val blocks = units.map(_._1)
       val gaps = blocks.zip(blocks.drop(1)).map { case ((_, end), (start, _)) =>
         (end, start)
       }
       val (start, end) = (blocks.head._1, blocks.last._2)
       val indent = text.substring(lineStart(start), start)
+      val anchors = units.collect { case (block, Some(id)) => (block, id) }
       val blocked = gaps.find { case (from, to) =>
         from > to || text.substring(from, to).trim.nonEmpty
       }
@@ -154,11 +205,75 @@ object DefinitionOrder {
               "line of their own, so they can't be moved automatically."
           )
           None
+        case None if anchors.map(_._2) != order.filter(items(_).kept.nonEmpty) =>
+          report(
+            Position.Range(doc.input, start, end),
+            "These definitions are out of order, and putting them in order " +
+              "would move one scalafix:off range past another, which the " +
+              "rule leaves in place. Move the ranges by hand."
+          )
+          None
         case None =>
-          val rendered = order.map(render).mkString("\n\n" + indent)
-          Some(Edit(start, end, rendered))
+          val separator = "\n\n" + indent
+          val bounds = start :: anchors.flatMap { case ((from, to), _) =>
+            List(from, to)
+          } ++ List(end)
+          val segments = bounds.grouped(2).toList.collect {
+            case List(from, to) => (from, to)
+          }
+          val groups = splitAt(order, items).map(_.flatMap(items(_).stats))
+          val last = segments.size - 1
+          Some(segments.zip(groups).zipWithIndex.flatMap {
+            case (((from, to), stats), index) =>
+              val written = units.collect {
+                case ((unitStart, _), None) if from <= unitStart && unitStart < to =>
+                  unitStart
+              }
+              if (written == stats.map(stat => blockOf(stat)._1))
+                stats.flatMap(editsWithin)
+              else {
+                val body = stats.map(render).mkString(separator)
+                val rendered =
+                  if (body.isEmpty) { if (index == 0 || index == last) "" else separator }
+                  else
+                    (if (index == 0) "" else separator) + body +
+                      (if (index == last) "" else separator)
+                List(Edit(from, to, rendered))
+              }
+          })
       }
     }
+
+    // The canonical order cut at each kept item, which stays where it is.
+    private def splitAt(order: List[Int], items: Vector[Item]): List[List[Int]] =
+      order
+        .foldLeft(List(List.empty[Int])) { (groups, id) =>
+          if (items(id).kept.isDefined) Nil :: groups
+          else (id :: groups.head) :: groups.tail
+        }
+        .map(_.reverse)
+        .reverse
+
+    // A kept item's block runs from its `scalafix:off` comment to the end of
+    // its `scalafix:on` one, when those sit directly against it, so that
+    // nothing the rule writes lands inside the range.
+    private def keptBlockOf(item: Item): (Int, Int) = {
+      val (rangeStart, rangeEnd) = item.kept.getOrElse((0, 0))
+      val (first, _) = blockOf(item.stats.head)
+      val (_, last) = blockOf(item.stats.last)
+      val start =
+        if (rangeStart < first && onlyComments(rangeStart, first)) rangeStart
+        else first
+      val end =
+        if (last < rangeEnd && onlyComments(last, rangeEnd)) rangeEnd
+        else last
+      (start, end)
+    }
+
+    private def onlyComments(from: Int, to: Int): Boolean =
+      text.substring(from, to).split('\n').forall { line =>
+        line.trim.isEmpty || line.trim.startsWith("//")
+      }
 
     private def report(position: Position, message: String): Unit =
       problems = Patch.lint(Misplaced(position, message)) :: problems
@@ -205,22 +320,37 @@ object DefinitionOrder {
     private def lineStart(offset: Int): Int =
       text.lastIndexOf('\n', offset - 1) + 1
 
-    private def toPatch(edit: Edit): Patch = {
-      val tokens = doc.tokens.filter { token =>
-        token.start >= edit.start && token.end <= edit.end
+    private def toPatch(edit: Edit): Patch =
+      if (edit.start == edit.end) insertAt(edit.start, edit.text)
+      else {
+        val tokens = doc.tokens.filter { token =>
+          token.start >= edit.start && token.end <= edit.end
+        }
+        tokens.find(_.start == edit.start) match {
+          case Some(first) =>
+            Patch.removeTokens(tokens.filter(_ != first)) +
+              Patch.replaceToken(first, edit.text)
+          case None => Patch.empty
+        }
       }
-      tokens.find(_.start == edit.start) match {
-        case Some(first) =>
-          Patch.removeTokens(tokens.filter(_ != first)) +
-            Patch.replaceToken(first, edit.text)
-        case None => Patch.empty
+
+    // Beside whitespace rather than on the definition there, which may be
+    // the first token of a kept range.
+    private def insertAt(offset: Int, insertion: String): Patch = {
+      val whitespace = doc.tokens.filter(_.isInstanceOf[Token.Whitespace])
+      whitespace.find(_.end == offset) match {
+        case Some(before) => Patch.addRight(before, insertion)
+        case None =>
+          whitespace
+            .find(_.start == offset)
+            .fold(Patch.empty)(Patch.addLeft(_, insertion))
       }
     }
 
     private def canonicalOrder(
         scope: Scope,
         members: List[Member]
-    ): List[Stat] = {
+    ): (Vector[Item], List[Int]) = {
       val items = itemsOf(members)
       val owners = items.indices
         .flatMap(id => items(id).symbols.map(_ -> id))
@@ -258,7 +388,7 @@ object DefinitionOrder {
           .foreach(walk.visit(_, ids))
         walk.finish(ids)
       }
-      walk.order.flatMap(items(_).stats)
+      (items, walk.order)
     }
 
     // The strict vals a strict val's initialiser reads, directly or through
@@ -286,19 +416,26 @@ object DefinitionOrder {
     // A class and its companion are one item, class first.
     private def itemsOf(members: List[Member]): Vector[Item] =
       members.zipWithIndex
-        .groupBy { case (member, index) => companionKey(member, index) }
+        .groupBy { case (member, index) =>
+          keptRangeOf(member.stat) match {
+            case Some(range) => Right(-1 - keptRanges.indexOf(range))
+            case None        => companionKey(member, index)
+          }
+        }
         .values
         .toVector
         .sortBy(_.map(_._2).min)
         .map { group =>
-          val stats = group
-            .sortBy(_._2)
-            .map { case (member, _) => member.stat }
-            .sortBy(stat => if (stat.isInstanceOf[Defn.Object]) 1 else 0)
+          val written = group.sortBy(_._2).map { case (member, _) => member.stat }
+          val kept = keptRangeOf(written.head)
+          val stats =
+            if (kept.isDefined) written
+            else written.sortBy(stat => if (stat.isInstanceOf[Defn.Object]) 1 else 0)
           val names = group.flatMap { case (member, _) => member.names }
           val lead = stats.head
           Item(
             stats = stats,
+            kept = kept,
             key = (
               isPrivate(lead),
               names.head.value,
@@ -309,6 +446,11 @@ object DefinitionOrder {
             symbols = names.flatMap(name => withCompanion(name.symbol)).toSet
           )
         }
+
+    private def keptRangeOf(stat: Stat): Option[(Int, Int)] =
+      keptRanges.find { case (start, end) =>
+        start <= stat.pos.start && stat.pos.end <= end
+      }
 
     // The other items an item uses, in the order its body first mentions them.
     private def mentionsBy(
@@ -535,3 +677,12 @@ object DefinitionOrderConfig {
 
 final case class Misplaced(position: Position, message: String)
     extends Diagnostic
+
+// Reported inside every kept range, where scalafix suppresses it. That is what
+// tells scalafix the `scalafix:off` comment was needed, rather than warning
+// that it suppressed nothing.
+final case class KeptAsWritten(position: Position) extends Diagnostic {
+  override def message: String =
+    "Kept in its written order by a scalafix:off comment."
+  override def severity: LintSeverity = LintSeverity.Info
+}
