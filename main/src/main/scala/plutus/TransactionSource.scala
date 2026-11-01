@@ -4,6 +4,22 @@ import cats.effect.*
 
 import java.time.Instant
 
+// What a book knows about where to read from, asked one ID at a time rather
+// than listed, because a book can't say which of its tags are Monzo's (see
+// monzoTransactionSource). `start` is where an account left off: the UTC
+// midnight before the latest transaction filed into it, or None when nothing
+// has been, whether or not the book has an account for it. Those two are one
+// answer because they start alike: a tagged account with nothing filed may
+// have taken transactions since it was tagged, and nothing in the book says
+// when it was last read, so only its opening is safe to read from (see
+// AccountStarts). `potAccount` is the backing account of a pot the book
+// already has an account for. The Monzo source reads from these (see
+// accountStarts); a CSV statement is its own window and ignores them.
+final case class BookStarts(
+    start: monzo.AccountId => Option[Instant],
+    potAccount: monzo.PotId => Option[monzo.AccountId]
+)
+
 // The account a source attributes transactions to, stated rather than
 // inferred. potBacking is why this isn't just monzo.Account: the Monzo source
 // knows a pot backing account because it found the ID in a transfer or the
@@ -48,19 +64,3 @@ type Fetched = (
 // restore-account do with their own. A source with no use for it ignores it.
 trait TransactionSource:
   def fetch(now: Instant)(using Verbosity): IO[Fetched]
-
-// What a book knows about where to read from, asked one ID at a time rather
-// than listed, because a book can't say which of its tags are Monzo's (see
-// monzoTransactionSource). `start` is where an account left off: the UTC
-// midnight before the latest transaction filed into it, or None when nothing
-// has been, whether or not the book has an account for it. Those two are one
-// answer because they start alike: a tagged account with nothing filed may
-// have taken transactions since it was tagged, and nothing in the book says
-// when it was last read, so only its opening is safe to read from (see
-// AccountStarts). `potAccount` is the backing account of a pot the book
-// already has an account for. The Monzo source reads from these (see
-// accountStarts); a CSV statement is its own window and ignores them.
-final case class BookStarts(
-    start: monzo.AccountId => Option[Instant],
-    potAccount: monzo.PotId => Option[monzo.AccountId]
-)

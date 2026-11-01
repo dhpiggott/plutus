@@ -7,14 +7,14 @@ def error(message: => String)(using verbosity: Verbosity): IO[Unit] =
     fansi.Color.Red:
       message
 
-def warn(message: => String)(using verbosity: Verbosity): IO[Unit] =
-  log(Verbosity.WARN):
-    fansi.Color.Yellow:
-      message
-
 def info(message: => String)(using verbosity: Verbosity): IO[Unit] =
   log(Verbosity.INFO):
     fansi.Color.Green:
+      message
+
+def trace(message: => String)(using verbosity: Verbosity): IO[Unit] =
+  log(Verbosity.TRACE):
+    fansi.Color.White:
       message
 
 def verbose(message: => String)(using verbosity: Verbosity): IO[Unit] =
@@ -22,9 +22,9 @@ def verbose(message: => String)(using verbosity: Verbosity): IO[Unit] =
     fansi.Color.Blue:
       message
 
-def trace(message: => String)(using verbosity: Verbosity): IO[Unit] =
-  log(Verbosity.TRACE):
-    fansi.Color.White:
+def warn(message: => String)(using verbosity: Verbosity): IO[Unit] =
+  log(Verbosity.WARN):
+    fansi.Color.Yellow:
       message
 
 // By name the whole way down, so a message costs nothing below its level: the

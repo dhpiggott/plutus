@@ -109,25 +109,6 @@ final case class Slot(
 
 object Slot:
 
-  // GnuCash encodes a true boolean flag as a STRING slot whose value is "true";
-  // false is the slot's absence (set_kvp_boolean_path(false) removes it). So a
-  // false flag has no Slot to insert at all.
-  def stringSlot(objGuid: String, name: String, value: String): Slot =
-    Slot(
-      objGuid,
-      name,
-      SlotTypeString,
-      stringVal = Some(value),
-      int64Val = None
-    )
-
-  // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
-  // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
-  // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
-  // set_kvp_string_path). The other type tags (INT64=1, DOUBLE=2, NUMERIC=3,
-  // GUID=5, TIME64=6, GLIST=8, FRAME=9, GDATE=10) are unused.
-  val SlotTypeString: Long = 4
-
   def delete(objGuid: String, name: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""
@@ -199,3 +180,22 @@ object Slot:
   // lets a later run find the pot's account from /pots alone. GnuCash keeps a
   // slot it doesn't recognise, loading and saving it with the account's others.
   val PotId: String = "monzo_pot_id"
+
+  // GnuCash encodes a true boolean flag as a STRING slot whose value is "true";
+  // false is the slot's absence (set_kvp_boolean_path(false) removes it). So a
+  // false flag has no Slot to insert at all.
+  def stringSlot(objGuid: String, name: String, value: String): Slot =
+    Slot(
+      objGuid,
+      name,
+      SlotTypeString,
+      stringVal = Some(value),
+      int64Val = None
+    )
+
+  // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
+  // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
+  // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
+  // set_kvp_string_path). The other type tags (INT64=1, DOUBLE=2, NUMERIC=3,
+  // GUID=5, TIME64=6, GLIST=8, FRAME=9, GDATE=10) are unused.
+  val SlotTypeString: Long = 4

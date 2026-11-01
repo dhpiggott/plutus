@@ -12,6 +12,35 @@ import porcupine.Codec.*
 // touched.
 final class BookInUse(message: String) extends Error(message)
 
+/** sqlite> .schema gnclock CREATE TABLE gnclock ( Hostname varchar(255), PID
+  * int );
+  */
+// Both columns are nullable there, but GnuCash writes both and so do we, so
+// they are modelled as required: a NULL fails the decode, which refuses the run
+// rather than reading a lock it can't understand as an absent one.
+final case class GncLock(hostname: String, pid: Long):
+
+  def delete(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        delete from gnclock
+        where Hostname = $text
+          and PID = $integer
+      """.command,
+      args = (hostname, pid)
+    )
+
+  def holder: String = s"$hostname (PID $pid)"
+
+  def insert(using db: Database[IO]): IO[Unit] =
+    db.execute(
+      query = sql"""
+        insert into gnclock (Hostname, PID)
+        values ($text, $integer)
+      """.command,
+      args = (hostname, pid)
+    )
+
 object GncLock:
 
   // GnuCash's own cooperative lock, so the CLI and the GUI can't both be
@@ -129,32 +158,3 @@ object GncLock:
       .delay(java.net.InetAddress.getLocalHost.getHostName)
       .handleError(_ => "unknown")
       .map(GncLock(_, Host.pid))
-
-/** sqlite> .schema gnclock CREATE TABLE gnclock ( Hostname varchar(255), PID
-  * int );
-  */
-// Both columns are nullable there, but GnuCash writes both and so do we, so
-// they are modelled as required: a NULL fails the decode, which refuses the run
-// rather than reading a lock it can't understand as an absent one.
-final case class GncLock(hostname: String, pid: Long):
-
-  def holder: String = s"$hostname (PID $pid)"
-
-  def insert(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        insert into gnclock (Hostname, PID)
-        values ($text, $integer)
-      """.command,
-      args = (hostname, pid)
-    )
-
-  def delete(using db: Database[IO]): IO[Unit] =
-    db.execute(
-      query = sql"""
-        delete from gnclock
-        where Hostname = $text
-          and PID = $integer
-      """.command,
-      args = (hostname, pid)
-    )

@@ -23,6 +23,15 @@ import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import scala.concurrent.duration.*
 
+given authorizationCodeQueryParamDecoder
+    : QueryParamDecoder[monzo.AuthorizationCode] =
+  QueryParamDecoder[String].map:
+    monzo.AuthorizationCode(_)
+
+given stateQueryParamDecoder: QueryParamDecoder[monzo.State] =
+  QueryParamDecoder[String].map:
+    monzo.State(_)
+
 // Shared Monzo session scaffolding for every command that talks to the API:
 // load state, build the HTTP client (whose trace-level logger redacts the
 // Authorization header — http4s's default — but prints full bodies, and the
@@ -101,34 +110,6 @@ def withMonzoApi[P, A](now: Instant)(
       yield result
 yield result
 
-// From https://docs.monzo.com/?shell#list-transactions:
-//
-// Strong Customer Authentication
-//
-// After a user has authenticated, your client can fetch all of their
-// transactions, and after 5 minutes, it can only sync the last 90 days of
-// transactions. If you need the user’s entire transaction history, you
-// should consider fetching and storing it right after authentication.
-//
-// So a window reaching back past 90 days needs an authorisation from the last
-// five minutes. A run that has only just authorised for the first time already
-// has one, and isn't asked again.
-def requiresStrongCustomerAuthentication(
-    earliestWindowStart: Instant,
-    state: State,
-    now: Instant
-): Boolean =
-  val leeway = Duration.ofSeconds:
-    10
-  !lessThanFiveMinutesAgo(state.authorizedAt, now) &&
-  earliestWindowStart.isBefore:
-    now
-      .minus:
-        Period.ofDays:
-          90
-      .plus:
-        leeway
-
 def loadState()(using verbosity: Verbosity): IO[Option[State]] = for
   maybeBytes <- Keychain.load:
     stateKeychainAccount
@@ -193,6 +174,25 @@ def warnIfRefreshTokenNearExpiry(
             .as(state)
     yield updatedState
 
+def inferredRefreshTokenExpiry(state: State): Instant =
+  state.refreshTokenExpiresAt
+    .map:
+      _.value.asInstant
+    .getOrElse:
+      state.authorizedAt.value.asInstant
+        .plus:
+          refreshTokenTtl
+
+// Start reminding at the half-life, leaving ~45 days to act before access
+// would lapse.
+val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
+  45
+
+// Where the extend-access feature lives in the Monzo app, so the reminder can
+// point straight at it rather than leaving the user to hunt.
+val monzoRefreshPermissionsPath: String =
+  "Settings > Security > Manage apps > Refresh permissions"
+
 def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
   _ <- Keychain.save(
     account = stateKeychainAccount,
@@ -206,6 +206,26 @@ def saveState(state: State)(using verbosity: Verbosity): IO[Unit] = for
 yield ()
 
 private val stateKeychainAccount = "plutus"
+
+object BearerAuthMiddleware:
+  def apply(accessToken: monzo.AccessToken): ClientEndpointMiddleware[IO] =
+    new ClientEndpointMiddleware.Simple[IO]:
+      override def prepareWithHints(
+          serviceHints: Hints,
+          endpointHints: Hints
+      ): Client[IO] => Client[IO] =
+        if serviceHints.has[smithy.api.HttpBearerAuth] && !endpointHints
+            .get[smithy.api.Auth]
+            .exists:
+              _.value.isEmpty
+        then
+          client =>
+            Client[IO]: request =>
+              client.run:
+                request.withHeaders:
+                  Authorization:
+                    Credentials.Token(AuthScheme.Bearer, accessToken.value)
+        else identity
 
 def accessToken(
     client: Client[IO],
@@ -310,57 +330,6 @@ def accessToken(
 
 lazy val monzoApiUri: Uri = uri"https://api.monzo.com"
 
-def lessThanFiveMinutesAgo(
-    authorizedAt: AuthorizedAt,
-    now: Instant
-): Boolean =
-  val fiveMinutesAgo = now.minus:
-    Duration.ofMinutes:
-      5
-  val leeway = Duration.ofSeconds:
-    10
-  authorizedAt.value.asInstant
-    .plus:
-      leeway
-    .isAfter:
-      fiveMinutesAgo
-
-def inferredRefreshTokenExpiry(state: State): Instant =
-  state.refreshTokenExpiresAt
-    .map:
-      _.value.asInstant
-    .getOrElse:
-      state.authorizedAt.value.asInstant
-        .plus:
-          refreshTokenTtl
-
-extension (timestamp: Timestamp)
-  def asInstant: Instant =
-    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)
-
-extension (instant: Instant)
-  def asSmithyTimestamp: Timestamp =
-    Timestamp(instant.getEpochSecond, instant.getNano)
-
-// Monzo's token response carries no refresh-token expiry, so we compute one
-// from when access was last granted (recorded in State at authorization) plus
-// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
-// it survives across runs. A user can extend access from the Monzo app, which
-// we can't observe — hence the confirm-then-record handshake in
-// warnIfRefreshTokenNearExpiry.
-val refreshTokenTtl: Period = Period.ofDays:
-  90
-
-// Start reminding at the half-life, leaving ~45 days to act before access
-// would lapse.
-val refreshTokenExpiryWarningWindow: Period = Period.ofDays:
-  45
-
-// Where the extend-access feature lives in the Monzo app, so the reminder can
-// point straight at it rather than leaving the user to hunt.
-val monzoRefreshPermissionsPath: String =
-  "Settings > Security > Manage apps > Refresh permissions"
-
 def exchangeAuthCode(
     monzoTokenApi: monzo.TokenApi[IO],
     clientId: monzo.ClientId,
@@ -445,15 +414,6 @@ def exchangeAuthCode(
       yield createAccessTokenOutput
 yield createAccessTokenOutput
 
-given authorizationCodeQueryParamDecoder
-    : QueryParamDecoder[monzo.AuthorizationCode] =
-  QueryParamDecoder[String].map:
-    monzo.AuthorizationCode(_)
-
-given stateQueryParamDecoder: QueryParamDecoder[monzo.State] =
-  QueryParamDecoder[String].map:
-    monzo.State(_)
-
 object AuthorizationCodeQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.AuthorizationCode]("code")
 
@@ -491,22 +451,62 @@ lazy val redirectUri: monzo.RedirectUri = monzo.RedirectUri:
 
 lazy val callbackPort: Port = port"8080"
 
-object BearerAuthMiddleware:
-  def apply(accessToken: monzo.AccessToken): ClientEndpointMiddleware[IO] =
-    new ClientEndpointMiddleware.Simple[IO]:
-      override def prepareWithHints(
-          serviceHints: Hints,
-          endpointHints: Hints
-      ): Client[IO] => Client[IO] =
-        if serviceHints.has[smithy.api.HttpBearerAuth] && !endpointHints
-            .get[smithy.api.Auth]
-            .exists:
-              _.value.isEmpty
-        then
-          client =>
-            Client[IO]: request =>
-              client.run:
-                request.withHeaders:
-                  Authorization:
-                    Credentials.Token(AuthScheme.Bearer, accessToken.value)
-        else identity
+extension (instant: Instant)
+  def asSmithyTimestamp: Timestamp =
+    Timestamp(instant.getEpochSecond, instant.getNano)
+
+// Monzo's token response carries no refresh-token expiry, so we compute one
+// from when access was last granted (recorded in State at authorization) plus
+// the 90-day lifetime Monzo states on its Manage apps screen, persisting it so
+// it survives across runs. A user can extend access from the Monzo app, which
+// we can't observe — hence the confirm-then-record handshake in
+// warnIfRefreshTokenNearExpiry.
+val refreshTokenTtl: Period = Period.ofDays:
+  90
+
+// From https://docs.monzo.com/?shell#list-transactions:
+//
+// Strong Customer Authentication
+//
+// After a user has authenticated, your client can fetch all of their
+// transactions, and after 5 minutes, it can only sync the last 90 days of
+// transactions. If you need the user’s entire transaction history, you
+// should consider fetching and storing it right after authentication.
+//
+// So a window reaching back past 90 days needs an authorisation from the last
+// five minutes. A run that has only just authorised for the first time already
+// has one, and isn't asked again.
+def requiresStrongCustomerAuthentication(
+    earliestWindowStart: Instant,
+    state: State,
+    now: Instant
+): Boolean =
+  val leeway = Duration.ofSeconds:
+    10
+  !lessThanFiveMinutesAgo(state.authorizedAt, now) &&
+  earliestWindowStart.isBefore:
+    now
+      .minus:
+        Period.ofDays:
+          90
+      .plus:
+        leeway
+
+def lessThanFiveMinutesAgo(
+    authorizedAt: AuthorizedAt,
+    now: Instant
+): Boolean =
+  val fiveMinutesAgo = now.minus:
+    Duration.ofMinutes:
+      5
+  val leeway = Duration.ofSeconds:
+    10
+  authorizedAt.value.asInstant
+    .plus:
+      leeway
+    .isAfter:
+      fiveMinutesAgo
+
+extension (timestamp: Timestamp)
+  def asInstant: Instant =
+    Instant.ofEpochSecond(timestamp.epochSecond, timestamp.nano)

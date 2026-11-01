@@ -17,13 +17,20 @@ object Sqlite:
     // sqlite saved would dangle as soon as the bind call returned.
     private var bindArena: Arena = Arena.ofConfined()
 
-    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
+    def bindBlob(i: Int, value: Array[Byte]): Unit =
+      val seg = bindArena.allocate(value.length.toLong.max(1L))
+      MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
+      guard(db)(
+        sqlite3_bind_blob(stmt, i, seg, value.length, MemorySegment.NULL)
+      )
+
+    def bindDouble(i: Int, value: Double): Unit =
+      guard(db)(sqlite3_bind_double(stmt, i, value))
 
     def bindLong(i: Int, value: Long): Unit =
       guard(db)(sqlite3_bind_int64(stmt, i, value))
 
-    def bindDouble(i: Int, value: Double): Unit =
-      guard(db)(sqlite3_bind_double(stmt, i, value))
+    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
 
     def bindText(i: Int, value: String): Unit =
       val bytes = value.getBytes(StandardCharsets.UTF_8)
@@ -33,27 +40,9 @@ object Sqlite:
         sqlite3_bind_text(stmt, i, seg, bytes.length, MemorySegment.NULL)
       )
 
-    def bindBlob(i: Int, value: Array[Byte]): Unit =
-      val seg = bindArena.allocate(value.length.toLong.max(1L))
-      MemorySegment.copy(value, 0, seg, JAVA_BYTE, 0L, value.length)
-      guard(db)(
-        sqlite3_bind_blob(stmt, i, seg, value.length, MemorySegment.NULL)
-      )
-
-    def step(): Boolean =
-      sqlite3_step(stmt) match
-        case rc if rc == SQLITE_ROW()  => true
-        case rc if rc == SQLITE_DONE() => false
-        case other                     =>
-          guard(db)(other)
-          false
-
-    def reset(): Unit =
-      guard(db)(sqlite3_reset(stmt))
+    def close(): Unit =
+      guard(db)(sqlite3_finalize(stmt))
       bindArena.close()
-      bindArena = Arena.ofConfined()
-
-    def columnCount: Int = sqlite3_column_count(stmt)
 
     def column(i: Int): Long | Double | String | Array[Byte] | Null =
       sqlite3_column_type(stmt, i) match
@@ -79,12 +68,25 @@ object Sqlite:
         case other =>
           throw IllegalStateException(s"Unknown SQLite column type $other")
 
-    def close(): Unit =
-      guard(db)(sqlite3_finalize(stmt))
+    def columnCount: Int = sqlite3_column_count(stmt)
+
+    def reset(): Unit =
+      guard(db)(sqlite3_reset(stmt))
       bindArena.close()
+      bindArena = Arena.ofConfined()
+
+    def step(): Boolean =
+      sqlite3_step(stmt) match
+        case rc if rc == SQLITE_ROW()  => true
+        case rc if rc == SQLITE_DONE() => false
+        case other                     =>
+          guard(db)(other)
+          false
 
   final class Connection private[Sqlite] (db: MemorySegment)
       extends AutoCloseable:
+    def close(): Unit = guard(sqlite3_close(db))
+
     def prepare(sql: String): Statement =
       val arena = Arena.ofConfined()
       try
@@ -102,8 +104,6 @@ object Sqlite:
           )
         Statement(db, stmtPtr.get(ADDRESS, 0))
       finally arena.close()
-
-    def close(): Unit = guard(sqlite3_close(db))
 
   def open(filename: String): Connection =
     val arena = Arena.ofConfined()
@@ -130,15 +130,15 @@ object Sqlite:
   private def guard(rc: Int): Unit =
     if rc != SQLITE_OK() then throw RuntimeException(errstr(rc))
 
-  private def guard(db: MemorySegment)(rc: Int): Unit =
-    if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
-
   // jextract types `const char*` returns as a zero-sized MemorySegment, so
   // reinterpret widens the bound for getString to scan up to the NUL.
   private def errstr(rc: Int): String =
     val msg = sqlite3_errstr(rc)
     if msg.equals(MemorySegment.NULL) then s"sqlite3 error $rc"
     else msg.reinterpret(Long.MaxValue).getString(0L)
+
+  private def guard(db: MemorySegment)(rc: Int): Unit =
+    if rc != SQLITE_OK() then throw RuntimeException(errmsg(db))
 
   private def errmsg(db: MemorySegment): String =
     val msg = sqlite3_errmsg(db)

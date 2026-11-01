@@ -11,13 +11,13 @@ import java.time.ZoneId
 // the respective rows' sources.
 object Host:
 
-  // The PID this run announces in the book's gnclock row. Scala Native's
-  // javalib has no ProcessHandle — the gap only shows up at nativeLink, not at
-  // compile.
-  def pid: Long = ProcessHandle.current.pid
-
   // An instant's calendar date in the machine's zone, which post dates are
   // taken in (see neutralPostDate). On Scala Native java.time always answers in
   // UTC; see that row's Host.scala.
   def localDate(instant: Instant): LocalDate =
     LocalDate.ofInstant(instant, ZoneId.systemDefault)
+
+  // The PID this run announces in the book's gnclock row. Scala Native's
+  // javalib has no ProcessHandle — the gap only shows up at nativeLink, not at
+  // compile.
+  def pid: Long = ProcessHandle.current.pid

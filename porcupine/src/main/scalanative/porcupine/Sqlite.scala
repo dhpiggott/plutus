@@ -17,20 +17,6 @@ object Sqlite:
     // outlive the statement's last `step()`; `reset()` clears them.
     private var bindRefs: List[Array[Byte]] = Nil
 
-    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
-
-    def bindLong(i: Int, value: Long): Unit =
-      guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(value)))
-
-    def bindDouble(i: Int, value: Double): Unit =
-      guard(db)(sqlite3_bind_double(stmt, i, value))
-
-    def bindText(i: Int, value: String): Unit =
-      val b = value.getBytes
-      bindRefs = b :: bindRefs
-      guard(db):
-        sqlite3_bind_text(stmt, i, b.at(0), b.length, null)
-
     def bindBlob(i: Int, value: Array[Byte]): Unit =
       bindRefs = value :: bindRefs
       guard(db):
@@ -42,19 +28,21 @@ object Sqlite:
           null
         )
 
-    def step(): Boolean =
-      sqlite3_step(stmt) match
-        case SQLITE_ROW  => true
-        case SQLITE_DONE => false
-        case other       =>
-          guard(db)(other)
-          false
+    def bindDouble(i: Int, value: Double): Unit =
+      guard(db)(sqlite3_bind_double(stmt, i, value))
 
-    def reset(): Unit =
-      bindRefs = Nil
-      guard(db)(sqlite3_reset(stmt))
+    def bindLong(i: Int, value: Long): Unit =
+      guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(value)))
 
-    def columnCount: Int = sqlite3_column_count(stmt)
+    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
+
+    def bindText(i: Int, value: String): Unit =
+      val b = value.getBytes
+      bindRefs = b :: bindRefs
+      guard(db):
+        sqlite3_bind_text(stmt, i, b.at(0), b.length, null)
+
+    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
 
     def column(i: Int): Long | Double | String | Array[Byte] | Null =
       sqlite3_column_type(stmt, i) match
@@ -73,18 +61,30 @@ object Sqlite:
         case other =>
           throw IllegalStateException(s"Unknown SQLite column type $other")
 
-    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
+    def columnCount: Int = sqlite3_column_count(stmt)
+
+    def reset(): Unit =
+      bindRefs = Nil
+      guard(db)(sqlite3_reset(stmt))
+
+    def step(): Boolean =
+      sqlite3_step(stmt) match
+        case SQLITE_ROW  => true
+        case SQLITE_DONE => false
+        case other       =>
+          guard(db)(other)
+          false
 
   final class Connection private[Sqlite] (db: Ptr[sqlite3])
       extends AutoCloseable:
+    def close(): Unit = guard(sqlite3_close(db))
+
     def prepare(sql: String): Statement =
       val sqlBytes = sql.getBytes
       val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
       guard(db):
         sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
       Statement(db, !stmtPtr)
-
-    def close(): Unit = guard(sqlite3_close(db))
 
   def open(filename: String): Connection =
     val fn = (filename + 0.toChar).getBytes

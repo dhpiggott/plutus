@@ -12,173 +12,6 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.util.Locale
 
-// The file-level safety net around every command that opens the book: refuse a
-// path that isn't there, copy the book aside before a real run, and afterwards
-// keep that copy as <input>.<yyyyMMddTHHmmssZ>.bak if the run changed anything
-// (or failed) and delete it if it didn't.
-//
-// Whether a run will write anything isn't knowable until the book is open — an
-// import with nothing to file can still create, move, rename, un-hide or tag
-// an asset account — so the copy is taken before we know, under a temporary
-// name, and promoted only once SQLite's own total_changes() says something
-// changed. A run that changes nothing therefore leaves no artefact behind, and
-// no run's backup overwrites another's: the name carries the run's own
-// timestamp, so every backup is kept and each undoes exactly the run it
-// precedes. Nothing prunes them — see the README.
-//
-// The temporary name carries that timestamp too, so promoting is only dropping
-// the .tmp. That is what lets a run that died before promoting be finished off
-// rather than overwritten (promoteAbandonedBackups), and under the dead run's
-// own stamp rather than this one's.
-//
-// `body` picks its own transaction boundary (db.transactOrRollBack) rather
-// than being wrapped here, because restore-account has to keep its interactive
-// prompt outside the write lock. What is enforced here either way is that a
-// dry run leaves the book untouched: total_changes() counts rolled-back rows
-// too, so a write that slipped past a dryRun guard is caught and reported
-// rather than passing the plan off as complete.
-//
-// The copy is taken before the book is opened and so before GncLock has had a
-// chance to refuse the run, which costs a wasted copy on a book somebody else
-// has open. The alternative — look at the lock first, then copy, then take it
-// — would put the whole duration of that copy between the look and the take,
-// which is exactly the window the lock exists to close.
-def withBook[A](
-    input: fs2.io.file.Path,
-    now: Instant,
-    dryRun: Boolean,
-    ignoreLock: Boolean
-)(
-    body: Database[IO] => IO[A]
-)(using verbosity: Verbosity): IO[A] = for
-  _ <- requireExistingBook(input)
-  backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
-  temporaryBackup = fs2.io.file.Path(s"$backup.tmp")
-  _ <- IO.unlessA(dryRun):
-    for
-      _ <- promoteAbandonedBackups(input)
-      _ <- fs2.io.file.Files[IO].copy(input, temporaryBackup)
-      _ <- info(s"Copied $input to $temporaryBackup.")
-    yield ()
-  resultAndChanged <- Database
-    .open[IO](input.toString)
-    .use: db =>
-      given Database[IO] = db
-      GncLock
-        .hold(input, dryRun, ignoreLock)
-        .surround:
-          for
-            // Counted from after the lock was taken rather than from the
-            // connection's own zero: our gnclock row is a row change like any
-            // other, and a run that inserted one and changed nothing else would
-            // otherwise look like a run that changed the book — and keep a
-            // backup identical to it, aging out the one that could undo the
-            // last run that did write.
-            before <- db.rowsChanged
-            result <- body(db)
-            after <- db.rowsChanged
-          yield (result = result, changed = after - before)
-    .onError:
-      // Nothing ran, so the copy is of a book this run never touched — and
-      // keeping it would age out the backup that could undo the last run that
-      // did write, the same way an unchanged run's copy would.
-      case _: BookInUse =>
-        IO.unlessA(dryRun):
-          fs2.io.file.Files[IO].delete(temporaryBackup) *>
-            info(s"Nothing ran, so deleted $temporaryBackup.")
-      // Keep the snapshot: the transaction rolls the book back, but a run that
-      // failed is exactly when you want the copy that predates it.
-      case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
-  _ <-
-    if dryRun then
-      // The rollback has already undone them, so the book is intact and this
-      // is a report about the code rather than about the book: a dry run
-      // reaching any write at all means a dryRun guard is missing, and the
-      // next real run would write whatever that path writes without anyone
-      // having seen it in the plan.
-      IO.raiseWhen(resultAndChanged.changed > 0):
-        Error(
-          s"Dry run attempted ${resultAndChanged.changed} row change(s), which were rolled back; the book is unchanged. This is a bug — please report it."
-        )
-    // The book is untouched when nothing changed, so its backup would be a
-    // copy of a file that already exists, aging out the one that could undo
-    // the last run that did write.
-    else if resultAndChanged.changed > 0 then
-      promoteBackup(temporaryBackup, backup)
-    else
-      fs2.io.file.Files[IO].delete(temporaryBackup) *>
-        info(s"Nothing changed, so deleted $temporaryBackup.")
-yield resultAndChanged.result
-
-// A leftover temporary backup is a copy taken by a run that died between
-// taking it and promoting it. That run may well have committed its writes
-// first — withBook commits inside `body`, then reads total_changes(), then
-// closes the book, then promotes — and from the outside the two cases are
-// indistinguishable, so the copy is treated as the one thing that could undo
-// it and is kept rather than discarded. Nothing is lost by keeping a redundant
-// one: it is a valid snapshot either way, just of a book that didn't change.
-//
-// Matching is by name, on this book only, so a temporary backup of another
-// book in the same directory is left alone.
-def promoteAbandonedBackups(
-    input: fs2.io.file.Path
-)(using verbosity: Verbosity): IO[Unit] =
-  fs2.Stream
-    .eval(bookDirectory(input))
-    .flatMap(fs2.io.file.Files[IO].list)
-    .filter: path =>
-      val fileName = path.fileName.toString
-      fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
-        ".bak.tmp"
-      )
-    .evalMap: abandoned =>
-      warn(
-        s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
-      ) *> promoteBackup(
-        abandoned,
-        // The filter guarantees the suffix, and the rest of the name is the
-        // dead run's own timestamped backup name.
-        fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
-      )
-    .compile
-    .drain
-
-// --input defaults to a bare Accounts.gnucash, so an input with no parent is
-// the ordinary case rather than a degenerate one: the name resolves in the
-// working directory, so that is where this book's backups are. Asking for it
-// by name rather than scanning "." keeps the logged path unambiguous.
-def bookDirectory(input: fs2.io.file.Path): IO[fs2.io.file.Path] =
-  input.parent.fold(fs2.io.file.Files[IO].currentWorkingDirectory)(IO.pure)
-
-// AtomicMove, so the promotion either happens or doesn't: the backup never
-// appears under its final name half-formed, and never vanishes without
-// arriving. Both paths sit beside the book, so the rename stays within one
-// filesystem, which is what lets it be atomic. ReplaceExisting rides along so
-// a second run inside the same second can't fail here, after its writes have
-// already been committed — the JVM ignores it in favour of ATOMIC_MOVE, whose
-// rename(2) replaces the target regardless, while Scala Native's Files.move
-// reads it and ignores ATOMIC_MOVE (it renames either way).
-def promoteBackup(
-    temporaryBackup: fs2.io.file.Path,
-    backup: fs2.io.file.Path
-)(using verbosity: Verbosity): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .move(
-      temporaryBackup,
-      backup,
-      CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
-    ) *> info(s"Moved $temporaryBackup to $backup.")
-
-def formatBackupTimestamp(instant: Instant): String =
-  instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
-
-// Compact UTC, so backups sort chronologically by name, and no colons, which
-// Finder renders as slashes. The instant is the one the command took at
-// invocation, so every artefact of a run carries the same stamp.
-val backupTimestamp: DateTimeFormatter =
-  DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
-
 // A look at the book from outside withBook, for what a run has to know before
 // it can start: no backup, since nothing is written, and no gnclock, since a
 // read is not what the lock guards — SQLite gives it a consistent snapshot
@@ -193,44 +26,6 @@ def peekBook[A](input: fs2.io.file.Path)(
       .open[IO](input.toString)
       .use: db =>
         db.withoutCommitting(body(db))
-
-// Refuse a book that isn't there rather than letting SQLite create an empty
-// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
-// otherwise leave a stray zero-table file beside the real book and fail
-// several queries later with a bare NoSuchElementException from Account.root.
-def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
-  fs2.io.file
-    .Files[IO]
-    .exists(input)
-    .flatMap: exists =>
-      IO.raiseUnless(exists):
-        Error(s"No GnuCash book at $input.")
-
-// Where each account's window starts: from what the book has already filed for
-// it, and which pots it already has an account for. Both sinks read it,
-// --to-book to file what is missing and --to-ofx --book to export it.
-//
-// The book has no Monzo `created`, only post_date — the transaction's local
-// calendar day at neutral time — so the start is the UTC midnight before that
-// day's: no instant on a local day that late can be earlier, from any zone
-// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
-// the online_id dedup then skips, where starting late could miss one. A tagged
-// account nothing has been filed into has no start, the same as one the book
-// doesn't know (see BookStarts). Every tag is kept, other banks' included,
-// since the source only ever asks about IDs Monzo gave it.
-def startsFromBook(using db: Database[IO]): IO[BookStarts] =
-  (Split.latestImportedPostDates, Slot.potLinks).mapN: (postDates, links) =>
-    val starts = postDates
-      .collect:
-        case (tag, Some(postDate)) =>
-          monzo.AccountId(tag) ->
-            postDate.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
-      .toMap
-    val potAccounts = links
-      .map: (potId, tag) =>
-        monzo.PotId(potId) -> monzo.AccountId(tag)
-      .toMap
-    BookStarts(start = starts.get, potAccount = potAccounts.get)
 
 // The two accounts every placement decision hangs off, resolved once per run
 // rather than once per account that asks. The subroot is an IO because the
@@ -320,29 +115,6 @@ def resolveAssetAccount(
       // carries is this call site's business.
       account.tagOnlineId(monzoAccountId.value)
   yield account
-
-// The Archive subroot, created on demand — or, in a dry run of a book that has
-// never archived anything, the would-be account createOrRetrieveChild yields
-// without inserting, so the rest of the plan can name paths under it. It goes
-// through the same creator as every other structural account precisely so the
-// two runs agree: the subroot used to be created silently by a real run and
-// announced by a dry one.
-def archiveSubrootFor(root: Account, dryRun: Boolean)(using
-    db: Database[IO],
-    verbosity: Verbosity
-): IO[Account] =
-  createOrRetrieveChild(
-    root,
-    canonicalPathString(Nil, retired = false),
-    ArchiveName,
-    dryRun,
-    placeholder = true,
-    // Hidden by definition: everything under it is retired.
-    hidden = true,
-    // A copy of the root account down to its code and description, as every
-    // mirror is a copy of its counterpart.
-    template = Some(root)
-  )
 
 // The canonical path of the asset account a Monzo account posts into: the
 // code-defined path with that account's Monzo ID in the leaf name. Several
@@ -443,58 +215,6 @@ def parentFor(
 )(using db: Database[IO], verbosity: Verbosity): IO[Account] =
   if retired then boundaryParentFor(pathInit, retired = true, roots, dryRun)
   else liveParentFor(pathInit, roots, dryRun)
-
-// Hidden tracks retirement, aligned in both directions. Takes its arguments in
-// the same order as alignDescription, which runs beside it on every enforced
-// account.
-def alignHidden(
-    account: Account,
-    livePath: List[String],
-    retired: Boolean,
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired)
-  if account.hidden == retired then IO.pure(account)
-  else if dryRun then
-    info(s"Would ${if retired then "hide" else "unhide"} $label.").as(account)
-  else
-    account
-      .updateHidden(retired)
-      .flatTap: _ =>
-        info(s"${if retired then "Hid" else "Unhid"} $label.")
-
-// The canonical description of a Monzo-backed asset account is the one Monzo
-// gives it: /accounts describes a main account, while a pot has none, its name
-// already saying which pot it is. Aligned like hidden, so a description added
-// by hand or carried in by a GUI OFX import doesn't outlive the next run, and
-// one changed on Monzo's side reaches the book. No description and an empty
-// one both count as none, so whichever of the two the book holds is left alone
-// when Monzo has none.
-def alignDescription(
-    account: Account,
-    livePath: List[String],
-    retired: Boolean,
-    description: Option[String],
-    dryRun: Boolean
-)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
-  val label = canonicalPathString(livePath, retired)
-  val canonical = canonicalDescription(description)
-  if canonicalDescription(account.description) == canonical then
-    IO.pure(account)
-  else
-    val change = canonical.fold(s"the description of $label"): text =>
-      s"the description of $label to “$text”"
-    if dryRun then
-      info(s"Would ${canonical.fold("clear")(_ => "set")} $change.").as(account)
-    else
-      account
-        .updateDescription(canonical)
-        .flatTap: _ =>
-          info(s"${canonical.fold("Cleared")(_ => "Set")} $change.")
-
-// An empty description is no description, on either side.
-def canonicalDescription(description: Option[String]): Option[String] =
-  description.filter(_.nonEmpty)
 
 // The parent chain on the far side of the live/archive boundary: going in, the
 // live chain mirrored under the Archive subroot; coming back out, the archived
@@ -604,15 +324,80 @@ def liveParentFor(
       .map(_.account)
   yield parent
 
-// Textual, so a dry run can name targets whose parents don't exist yet.
-def canonicalPathString(livePath: List[String], retired: Boolean): String =
-  val canonical =
-    if retired then ArchiveName :: livePath else livePath
-  ("Root Account" :: canonical).mkString("/")
+// Hidden tracks retirement, aligned in both directions. Takes its arguments in
+// the same order as alignDescription, which runs beside it on every enforced
+// account.
+def alignHidden(
+    account: Account,
+    livePath: List[String],
+    retired: Boolean,
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  if account.hidden == retired then IO.pure(account)
+  else if dryRun then
+    info(s"Would ${if retired then "hide" else "unhide"} $label.").as(account)
+  else
+    account
+      .updateHidden(retired)
+      .flatTap: _ =>
+        info(s"${if retired then "Hid" else "Unhid"} $label.")
 
-// The Archive subroot's name. Placement, not schema, so it lives here with the
-// rest of what decides where an account belongs rather than on Account.
-val ArchiveName: String = "Archive"
+// The canonical description of a Monzo-backed asset account is the one Monzo
+// gives it: /accounts describes a main account, while a pot has none, its name
+// already saying which pot it is. Aligned like hidden, so a description added
+// by hand or carried in by a GUI OFX import doesn't outlive the next run, and
+// one changed on Monzo's side reaches the book. No description and an empty
+// one both count as none, so whichever of the two the book holds is left alone
+// when Monzo has none.
+def alignDescription(
+    account: Account,
+    livePath: List[String],
+    retired: Boolean,
+    description: Option[String],
+    dryRun: Boolean
+)(using db: Database[IO], verbosity: Verbosity): IO[Account] =
+  val label = canonicalPathString(livePath, retired)
+  val canonical = canonicalDescription(description)
+  if canonicalDescription(account.description) == canonical then
+    IO.pure(account)
+  else
+    val change = canonical.fold(s"the description of $label"): text =>
+      s"the description of $label to “$text”"
+    if dryRun then
+      info(s"Would ${canonical.fold("clear")(_ => "set")} $change.").as(account)
+    else
+      account
+        .updateDescription(canonical)
+        .flatTap: _ =>
+          info(s"${canonical.fold("Cleared")(_ => "Set")} $change.")
+
+// An empty description is no description, on either side.
+def canonicalDescription(description: Option[String]): Option[String] =
+  description.filter(_.nonEmpty)
+
+// The Archive subroot, created on demand — or, in a dry run of a book that has
+// never archived anything, the would-be account createOrRetrieveChild yields
+// without inserting, so the rest of the plan can name paths under it. It goes
+// through the same creator as every other structural account precisely so the
+// two runs agree: the subroot used to be created silently by a real run and
+// announced by a dry one.
+def archiveSubrootFor(root: Account, dryRun: Boolean)(using
+    db: Database[IO],
+    verbosity: Verbosity
+): IO[Account] =
+  createOrRetrieveChild(
+    root,
+    canonicalPathString(Nil, retired = false),
+    ArchiveName,
+    dryRun,
+    placeholder = true,
+    // Hidden by definition: everything under it is retired.
+    hidden = true,
+    // A copy of the root account down to its code and description, as every
+    // mirror is a copy of its counterpart.
+    template = Some(root)
+  )
 
 // Get-or-create one child, for the paths where sharing is the point: a
 // category leaf several transactions file into, and the structural segments
@@ -696,3 +481,218 @@ def createChild(
       val verb = if dryRun then "Would create" else "Created"
       s"$verb account $parentPath/$name."
   yield child
+
+// Textual, so a dry run can name targets whose parents don't exist yet.
+def canonicalPathString(livePath: List[String], retired: Boolean): String =
+  val canonical =
+    if retired then ArchiveName :: livePath else livePath
+  ("Root Account" :: canonical).mkString("/")
+
+// The Archive subroot's name. Placement, not schema, so it lives here with the
+// rest of what decides where an account belongs rather than on Account.
+val ArchiveName: String = "Archive"
+
+// Where each account's window starts: from what the book has already filed for
+// it, and which pots it already has an account for. Both sinks read it,
+// --to-book to file what is missing and --to-ofx --book to export it.
+//
+// The book has no Monzo `created`, only post_date — the transaction's local
+// calendar day at neutral time — so the start is the UTC midnight before that
+// day's: no instant on a local day that late can be earlier, from any zone
+// GnuCash's neutral time serves. Starting early costs only a re-fetch of rows
+// the online_id dedup then skips, where starting late could miss one. A tagged
+// account nothing has been filed into has no start, the same as one the book
+// doesn't know (see BookStarts). Every tag is kept, other banks' included,
+// since the source only ever asks about IDs Monzo gave it.
+def startsFromBook(using db: Database[IO]): IO[BookStarts] =
+  (Split.latestImportedPostDates, Slot.potLinks).mapN: (postDates, links) =>
+    val starts = postDates
+      .collect:
+        case (tag, Some(postDate)) =>
+          monzo.AccountId(tag) ->
+            postDate.truncatedTo(ChronoUnit.DAYS).minus(1, ChronoUnit.DAYS)
+      .toMap
+    val potAccounts = links
+      .map: (potId, tag) =>
+        monzo.PotId(potId) -> monzo.AccountId(tag)
+      .toMap
+    BookStarts(start = starts.get, potAccount = potAccounts.get)
+
+// The file-level safety net around every command that opens the book: refuse a
+// path that isn't there, copy the book aside before a real run, and afterwards
+// keep that copy as <input>.<yyyyMMddTHHmmssZ>.bak if the run changed anything
+// (or failed) and delete it if it didn't.
+//
+// Whether a run will write anything isn't knowable until the book is open — an
+// import with nothing to file can still create, move, rename, un-hide or tag
+// an asset account — so the copy is taken before we know, under a temporary
+// name, and promoted only once SQLite's own total_changes() says something
+// changed. A run that changes nothing therefore leaves no artefact behind, and
+// no run's backup overwrites another's: the name carries the run's own
+// timestamp, so every backup is kept and each undoes exactly the run it
+// precedes. Nothing prunes them — see the README.
+//
+// The temporary name carries that timestamp too, so promoting is only dropping
+// the .tmp. That is what lets a run that died before promoting be finished off
+// rather than overwritten (promoteAbandonedBackups), and under the dead run's
+// own stamp rather than this one's.
+//
+// `body` picks its own transaction boundary (db.transactOrRollBack) rather
+// than being wrapped here, because restore-account has to keep its interactive
+// prompt outside the write lock. What is enforced here either way is that a
+// dry run leaves the book untouched: total_changes() counts rolled-back rows
+// too, so a write that slipped past a dryRun guard is caught and reported
+// rather than passing the plan off as complete.
+//
+// The copy is taken before the book is opened and so before GncLock has had a
+// chance to refuse the run, which costs a wasted copy on a book somebody else
+// has open. The alternative — look at the lock first, then copy, then take it
+// — would put the whole duration of that copy between the look and the take,
+// which is exactly the window the lock exists to close.
+def withBook[A](
+    input: fs2.io.file.Path,
+    now: Instant,
+    dryRun: Boolean,
+    ignoreLock: Boolean
+)(
+    body: Database[IO] => IO[A]
+)(using verbosity: Verbosity): IO[A] = for
+  _ <- requireExistingBook(input)
+  backup = fs2.io.file.Path(s"$input.${formatBackupTimestamp(now)}.bak")
+  temporaryBackup = fs2.io.file.Path(s"$backup.tmp")
+  _ <- IO.unlessA(dryRun):
+    for
+      _ <- promoteAbandonedBackups(input)
+      _ <- fs2.io.file.Files[IO].copy(input, temporaryBackup)
+      _ <- info(s"Copied $input to $temporaryBackup.")
+    yield ()
+  resultAndChanged <- Database
+    .open[IO](input.toString)
+    .use: db =>
+      given Database[IO] = db
+      GncLock
+        .hold(input, dryRun, ignoreLock)
+        .surround:
+          for
+            // Counted from after the lock was taken rather than from the
+            // connection's own zero: our gnclock row is a row change like any
+            // other, and a run that inserted one and changed nothing else would
+            // otherwise look like a run that changed the book — and keep a
+            // backup identical to it, aging out the one that could undo the
+            // last run that did write.
+            before <- db.rowsChanged
+            result <- body(db)
+            after <- db.rowsChanged
+          yield (result = result, changed = after - before)
+    .onError:
+      // Nothing ran, so the copy is of a book this run never touched — and
+      // keeping it would age out the backup that could undo the last run that
+      // did write, the same way an unchanged run's copy would.
+      case _: BookInUse =>
+        IO.unlessA(dryRun):
+          fs2.io.file.Files[IO].delete(temporaryBackup) *>
+            info(s"Nothing ran, so deleted $temporaryBackup.")
+      // Keep the snapshot: the transaction rolls the book back, but a run that
+      // failed is exactly when you want the copy that predates it.
+      case _ => IO.unlessA(dryRun)(promoteBackup(temporaryBackup, backup))
+  _ <-
+    if dryRun then
+      // The rollback has already undone them, so the book is intact and this
+      // is a report about the code rather than about the book: a dry run
+      // reaching any write at all means a dryRun guard is missing, and the
+      // next real run would write whatever that path writes without anyone
+      // having seen it in the plan.
+      IO.raiseWhen(resultAndChanged.changed > 0):
+        Error(
+          s"Dry run attempted ${resultAndChanged.changed} row change(s), which were rolled back; the book is unchanged. This is a bug — please report it."
+        )
+    // The book is untouched when nothing changed, so its backup would be a
+    // copy of a file that already exists, aging out the one that could undo
+    // the last run that did write.
+    else if resultAndChanged.changed > 0 then
+      promoteBackup(temporaryBackup, backup)
+    else
+      fs2.io.file.Files[IO].delete(temporaryBackup) *>
+        info(s"Nothing changed, so deleted $temporaryBackup.")
+yield resultAndChanged.result
+
+// Refuse a book that isn't there rather than letting SQLite create an empty
+// one: porcupine opens with SQLITE_OPEN_CREATE, so a mistyped --input would
+// otherwise leave a stray zero-table file beside the real book and fail
+// several queries later with a bare NoSuchElementException from Account.root.
+def requireExistingBook(input: fs2.io.file.Path): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .exists(input)
+    .flatMap: exists =>
+      IO.raiseUnless(exists):
+        Error(s"No GnuCash book at $input.")
+
+def formatBackupTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(backupTimestamp)
+
+// Compact UTC, so backups sort chronologically by name, and no colons, which
+// Finder renders as slashes. The instant is the one the command took at
+// invocation, so every artefact of a run carries the same stamp.
+val backupTimestamp: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'")
+
+// A leftover temporary backup is a copy taken by a run that died between
+// taking it and promoting it. That run may well have committed its writes
+// first — withBook commits inside `body`, then reads total_changes(), then
+// closes the book, then promotes — and from the outside the two cases are
+// indistinguishable, so the copy is treated as the one thing that could undo
+// it and is kept rather than discarded. Nothing is lost by keeping a redundant
+// one: it is a valid snapshot either way, just of a book that didn't change.
+//
+// Matching is by name, on this book only, so a temporary backup of another
+// book in the same directory is left alone.
+def promoteAbandonedBackups(
+    input: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.Stream
+    .eval(bookDirectory(input))
+    .flatMap(fs2.io.file.Files[IO].list)
+    .filter: path =>
+      val fileName = path.fileName.toString
+      fileName.startsWith(s"${input.fileName}.") && fileName.endsWith(
+        ".bak.tmp"
+      )
+    .evalMap: abandoned =>
+      warn(
+        s"$abandoned was left by a run that didn't finish, so keeping it as a backup of the book as it was before that run."
+      ) *> promoteBackup(
+        abandoned,
+        // The filter guarantees the suffix, and the rest of the name is the
+        // dead run's own timestamped backup name.
+        fs2.io.file.Path(abandoned.toString.stripSuffix(".tmp"))
+      )
+    .compile
+    .drain
+
+// --input defaults to a bare Accounts.gnucash, so an input with no parent is
+// the ordinary case rather than a degenerate one: the name resolves in the
+// working directory, so that is where this book's backups are. Asking for it
+// by name rather than scanning "." keeps the logged path unambiguous.
+def bookDirectory(input: fs2.io.file.Path): IO[fs2.io.file.Path] =
+  input.parent.fold(fs2.io.file.Files[IO].currentWorkingDirectory)(IO.pure)
+
+// AtomicMove, so the promotion either happens or doesn't: the backup never
+// appears under its final name half-formed, and never vanishes without
+// arriving. Both paths sit beside the book, so the rename stays within one
+// filesystem, which is what lets it be atomic. ReplaceExisting rides along so
+// a second run inside the same second can't fail here, after its writes have
+// already been committed — the JVM ignores it in favour of ATOMIC_MOVE, whose
+// rename(2) replaces the target regardless, while Scala Native's Files.move
+// reads it and ignores ATOMIC_MOVE (it renames either way).
+def promoteBackup(
+    temporaryBackup: fs2.io.file.Path,
+    backup: fs2.io.file.Path
+)(using verbosity: Verbosity): IO[Unit] =
+  fs2.io.file
+    .Files[IO]
+    .move(
+      temporaryBackup,
+      backup,
+      CopyFlags(CopyFlag.AtomicMove, CopyFlag.ReplaceExisting)
+    ) *> info(s"Moved $temporaryBackup to $backup.")

@@ -12,8 +12,6 @@ import scala.scalanative.unsafe.*
 // forwarder and no extra link flags.
 object Host:
 
-  def pid: Long = unistd.getpid().toLong
-
   // libc rather than java.time, which can't answer this on Scala Native:
   // scala-java-time hard-codes ZoneId.systemDefault to UTC there, whatever TZ
   // or /etc/localtime say. Its zone data is a separate artifact,
@@ -28,3 +26,5 @@ object Host:
     if time.localtime_r(seconds, local) == null then
       throw IllegalArgumentException(s"localtime_r can't convert $instant")
     LocalDate.of(local.tm_year + 1900, local.tm_mon + 1, local.tm_mday)
+
+  def pid: Long = unistd.getpid().toLong

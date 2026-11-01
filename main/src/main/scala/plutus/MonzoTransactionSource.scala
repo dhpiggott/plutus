@@ -19,9 +19,6 @@ final case class AccountStarts(
         .getOrElse:
           account.created.value.asInstant
 
-  def readsPot(pot: monzo.Pot): Boolean =
-    freshBook || !pot.deleted.value
-
   // A pot's start as far as the plan can know it, which is only for a pot the
   // book links to its backing account, and on a first run, when every pot the
   // window names is read from its opening. Any other pot is one a transfer in
@@ -36,6 +33,9 @@ final case class AccountStarts(
 
         case None =>
           Option.when(freshBook)(pot.created.value.asInstant)
+
+  def readsPot(pot: monzo.Pot): Boolean =
+    freshBook || !pot.deleted.value
 
   def forPot(accountId: monzo.AccountId, pot: monzo.Pot): Instant =
     book
@@ -154,6 +154,20 @@ def monzoTransactionSource(book: BookStarts): TransactionSource =
           )
       )
 
+// Every pot of every main account, deleted ones included: /pots is listed per
+// owning account, and /accounts lists every main account, closed ones too.
+def listPots(
+    monzoApi: monzo.Api[IO],
+    accounts: List[monzo.Account]
+)(using verbosity: Verbosity): IO[List[monzo.Pot]] = for
+  _ <- info:
+    "Listing pots…"
+  pots <- accounts.parTraverse: account =>
+    monzoApi
+      .listPots(account.id)
+      .map(_.pots)
+yield pots.flatten
+
 // Where each account's window starts, or None for one that isn't read. Main
 // accounts and pots with nothing filed in the book are read from their
 // opening, because Monzo serves a main account's whole history for five
@@ -178,20 +192,6 @@ def accountStarts(
     freshBook = accounts.forall: account =>
       book.start(account.id).isEmpty
   )
-
-// Every pot of every main account, deleted ones included: /pots is listed per
-// owning account, and /accounts lists every main account, closed ones too.
-def listPots(
-    monzoApi: monzo.Api[IO],
-    accounts: List[monzo.Account]
-)(using verbosity: Verbosity): IO[List[monzo.Pot]] = for
-  _ <- info:
-    "Listing pots…"
-  pots <- accounts.parTraverse: account =>
-    monzoApi
-      .listPots(account.id)
-      .map(_.pots)
-yield pots.flatten
 
 // The pots the book already has an account for, keyed by that account's
 // backing-account ID. This is how a pot with no transfer in the window, such
@@ -304,48 +304,6 @@ def listAllTransactions(
             )
 yield accountsAndTransactions ++ potAccountsAndTransactions ++ unread
 
-// Pot backing accounts carry no pot details of their own, but /pots lists
-// every pot keyed by pot ID, and two things link a backing account to one: a
-// transfer in the window (potLinks) and the book. Where both do, they agree,
-// and the window's is taken. A backing account neither links stays unnamed;
-// unless the book already carries a tagged account for it, import refuses to
-// run rather than mis-file.
-def potsByAccountId(
-    byAccount: List[(ReadAccount, List[monzo.Transaction])],
-    pots: List[monzo.Pot],
-    bookPots: Map[monzo.AccountId, monzo.Pot]
-): Map[monzo.AccountId, monzo.Pot] =
-  val potsById = pots
-    .map: pot =>
-      pot.id -> pot
-    .toMap
-  val windowPots = potLinks(byAccount).flatMap: (accountId, potId) =>
-    potsById.get(potId).map(accountId -> _)
-  val potAccountIds = byAccount
-    .collect:
-      case (ReadAccount.PotBacking(accountId), _) => accountId
-    .toSet
-  (bookPots ++ windowPots).filter: (accountId, _) =>
-    potAccountIds.contains(accountId)
-
-// A live pot holding money that nothing links to a backing account was not
-// read at all, and would otherwise go unnoticed: no error, just a pot whose
-// interest stops arriving. It happens to a pot whose book account predates
-// the book recording pot links, until its next transfer falls in a run's
-// window. An empty pot is left out, since there is nothing in it to miss.
-def warnUnlinkedPots(
-    pots: List[monzo.Pot],
-    linked: Map[monzo.AccountId, monzo.Pot]
-)(using verbosity: Verbosity): IO[Unit] =
-  val linkedIds = linked.values.map(_.id).toSet
-  pots
-    .filter: pot =>
-      !pot.deleted.value && pot.balance.exists(_.value.signum != 0) &&
-        !linkedIds.contains(pot.id)
-    .traverse_ : pot =>
-      warn:
-        s"Pot ${pot.name.value} wasn't read: nothing in the book or in this run's window links it to its backing account. The next run whose window holds a transfer to or from it will link it."
-
 def listTransactionsForAccounts(
     monzoApi: monzo.Api[IO],
     accountsAndSince: List[(ReadAccount, ListTransactionsSince)],
@@ -360,6 +318,69 @@ def listTransactionsForAccounts(
         before
       ).map: transactions =>
         account -> transactions
+
+def listTransactions(
+    monzoApi: monzo.Api[IO],
+    accountId: monzo.AccountId,
+    since: ListTransactionsSince,
+    before: Instant
+): IO[List[monzo.Transaction]] =
+  val beforeForThisPage =
+    // See
+    // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
+    val maxPermittedBeforeForThisPage = since.start.plus:
+      Duration.ofHours:
+        8760
+    val mustPaginate = before.isAfter:
+      maxPermittedBeforeForThisPage
+    if mustPaginate then maxPermittedBeforeForThisPage else before
+  for
+    thisPage <- monzoApi
+      .listTransactions(
+        accountId,
+        since = Some(monzo.Since(since match
+          case ListTransactionsSince.Timestamp(instant) =>
+            instant.asSmithyTimestamp.formatDateTime
+
+          case ListTransactionsSince.IdAndTimestamp(id, _) =>
+            id.value)),
+        before = Some:
+          monzo.Before:
+            beforeForThisPage.asSmithyTimestamp
+        ,
+        limit = Some:
+          monzo.Limit:
+            100
+      )
+      .map(_.transactions)
+    otherPages <- thisPage.lastOption match
+      case None =>
+        val haveRequestedAllPages = beforeForThisPage == before
+        if haveRequestedAllPages
+        then
+          IO.pure:
+            List.empty
+        else
+          listTransactions(
+            monzoApi,
+            accountId,
+            since = ListTransactionsSince.Timestamp:
+              beforeForThisPage
+            ,
+            before
+          )
+
+      case Some(transaction) =>
+        listTransactions(
+          monzoApi,
+          accountId,
+          since = ListTransactionsSince.IdAndTimestamp(
+            transaction.id,
+            transaction.created
+          ),
+          before
+        )
+  yield thisPage ++ otherPages
 
 // Pots are backed by account objects that /accounts doesn't list. Their IDs
 // surface as pot_account_id in the metadata of pot-transfer transactions, and
@@ -437,6 +458,39 @@ def discoverPotAccounts(
     )
   (read = readFrom, unidentified = unidentified, clamped = clamped)
 
+def discoveredPotAccountIds(
+    accountsAndTransactions: List[(ReadAccount, List[monzo.Transaction])]
+): Set[monzo.AccountId] =
+  accountsAndTransactions
+    .flatMap: (_, transactions) =>
+      transactions.flatMap:
+        potAccountId
+    .toSet
+
+// Pot backing accounts carry no pot details of their own, but /pots lists
+// every pot keyed by pot ID, and two things link a backing account to one: a
+// transfer in the window (potLinks) and the book. Where both do, they agree,
+// and the window's is taken. A backing account neither links stays unnamed;
+// unless the book already carries a tagged account for it, import refuses to
+// run rather than mis-file.
+def potsByAccountId(
+    byAccount: List[(ReadAccount, List[monzo.Transaction])],
+    pots: List[monzo.Pot],
+    bookPots: Map[monzo.AccountId, monzo.Pot]
+): Map[monzo.AccountId, monzo.Pot] =
+  val potsById = pots
+    .map: pot =>
+      pot.id -> pot
+    .toMap
+  val windowPots = potLinks(byAccount).flatMap: (accountId, potId) =>
+    potsById.get(potId).map(accountId -> _)
+  val potAccountIds = byAccount
+    .collect:
+      case (ReadAccount.PotBacking(accountId), _) => accountId
+    .toSet
+  (bookPots ++ windowPots).filter: (accountId, _) =>
+    potAccountIds.contains(accountId)
+
 // Backing-account ID -> pot ID, from pot-transfer legs' metadata: the main
 // account's side carries pot_account_id alongside pot_id, and on the pot's own
 // side the account the leg was fetched from *is* the backing account. Only the
@@ -457,80 +511,26 @@ def potLinks(
               potAccountId(transaction).map(_ -> potId)
     .toMap
 
-def discoveredPotAccountIds(
-    accountsAndTransactions: List[(ReadAccount, List[monzo.Transaction])]
-): Set[monzo.AccountId] =
-  accountsAndTransactions
-    .flatMap: (_, transactions) =>
-      transactions.flatMap:
-        potAccountId
-    .toSet
+def potId(transaction: monzo.Transaction): Option[monzo.PotId] =
+  transaction.metadata.flatMap(_.potId)
 
 def potAccountId(transaction: monzo.Transaction): Option[monzo.AccountId] =
   transaction.metadata.flatMap(_.potAccountId)
 
-def potId(transaction: monzo.Transaction): Option[monzo.PotId] =
-  transaction.metadata.flatMap(_.potId)
-
-def listTransactions(
-    monzoApi: monzo.Api[IO],
-    accountId: monzo.AccountId,
-    since: ListTransactionsSince,
-    before: Instant
-): IO[List[monzo.Transaction]] =
-  val beforeForThisPage =
-    // See
-    // https://community.monzo.com/t/changes-when-listing-with-our-api/158676.
-    val maxPermittedBeforeForThisPage = since.start.plus:
-      Duration.ofHours:
-        8760
-    val mustPaginate = before.isAfter:
-      maxPermittedBeforeForThisPage
-    if mustPaginate then maxPermittedBeforeForThisPage else before
-  for
-    thisPage <- monzoApi
-      .listTransactions(
-        accountId,
-        since = Some(monzo.Since(since match
-          case ListTransactionsSince.Timestamp(instant) =>
-            instant.asSmithyTimestamp.formatDateTime
-
-          case ListTransactionsSince.IdAndTimestamp(id, _) =>
-            id.value)),
-        before = Some:
-          monzo.Before:
-            beforeForThisPage.asSmithyTimestamp
-        ,
-        limit = Some:
-          monzo.Limit:
-            100
-      )
-      .map(_.transactions)
-    otherPages <- thisPage.lastOption match
-      case None =>
-        val haveRequestedAllPages = beforeForThisPage == before
-        if haveRequestedAllPages
-        then
-          IO.pure:
-            List.empty
-        else
-          listTransactions(
-            monzoApi,
-            accountId,
-            since = ListTransactionsSince.Timestamp:
-              beforeForThisPage
-            ,
-            before
-          )
-
-      case Some(transaction) =>
-        listTransactions(
-          monzoApi,
-          accountId,
-          since = ListTransactionsSince.IdAndTimestamp(
-            transaction.id,
-            transaction.created
-          ),
-          before
-        )
-  yield thisPage ++ otherPages
+// A live pot holding money that nothing links to a backing account was not
+// read at all, and would otherwise go unnoticed: no error, just a pot whose
+// interest stops arriving. It happens to a pot whose book account predates
+// the book recording pot links, until its next transfer falls in a run's
+// window. An empty pot is left out, since there is nothing in it to miss.
+def warnUnlinkedPots(
+    pots: List[monzo.Pot],
+    linked: Map[monzo.AccountId, monzo.Pot]
+)(using verbosity: Verbosity): IO[Unit] =
+  val linkedIds = linked.values.map(_.id).toSet
+  pots
+    .filter: pot =>
+      !pot.deleted.value && pot.balance.exists(_.value.signum != 0) &&
+        !linkedIds.contains(pot.id)
+    .traverse_ : pot =>
+      warn:
+        s"Pot ${pot.name.value} wasn't read: nothing in the book or in this run's window links it to its backing account. The next run whose window holds a transfer to or from it will link it."

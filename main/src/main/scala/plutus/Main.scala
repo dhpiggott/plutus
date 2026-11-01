@@ -29,12 +29,6 @@ object Plutus
         _.as:
           ExitCode.Success
 
-enum Verbosity:
-  case ERROR, WARN, INFO, VERBOSE, TRACE
-
-lazy val verbosityOpts: Opts[Verbosity] =
-  errorOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
-
 lazy val inputOpts: Opts[fs2.io.file.Path] =
   Opts
     .option[java.nio.file.Path](
@@ -48,6 +42,12 @@ lazy val inputOpts: Opts[fs2.io.file.Path] =
       Opts:
         fs2.io.file.Path:
           "Accounts.gnucash"
+
+enum Verbosity:
+  case ERROR, WARN, INFO, VERBOSE, TRACE
+
+lazy val verbosityOpts: Opts[Verbosity] =
+  errorOpts orElse warnOpts orElse infoOpts orElse verboseOpts orElse traceOpts withDefault Verbosity.INFO
 
 lazy val errorOpts: Opts[Verbosity] =
   Opts

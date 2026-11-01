@@ -197,11 +197,6 @@ def cell(row: CsvRow[String], header: String): Either[String, String] =
     s"no $header column; this file's columns are ${row.headers.toList.flatMap(_.toList).mkString(", ")}"
   )
 
-// Absent and empty mean the same thing for the three optional columns: a
-// transaction with no category, no counterparty name or no note.
-def optionalCell(row: CsvRow[String], header: String): Option[String] =
-  row(header).filter(_.nonEmpty)
-
 // The app stamps Date and Time in UTC, though the file says so nowhere: a
 // summer transaction's Time reads an hour behind the clock time the app's own
 // feed shows for it (checked against a real export). Reading it in any other
@@ -246,3 +241,8 @@ def csvMinorUnits(amount: String): Either[String, BigInt] =
         minor.toBigInt,
         s"Amount has more decimal places than GBP has: $amount"
       )
+
+// Absent and empty mean the same thing for the three optional columns: a
+// transaction with no category, no counterparty name or no note.
+def optionalCell(row: CsvRow[String], header: String): Option[String] =
+  row(header).filter(_.nonEmpty)

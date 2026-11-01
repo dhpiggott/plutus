@@ -6,15 +6,6 @@ package plutus
 // source, because no source uses any of them: they are what a sink does with
 // what it was handed. See CLAUDE.md.
 
-// Skip £0 active-card checks and declined authorisations: neither is real
-// spend, so the OFX sink leaves them out of the file and the book sink leaves
-// them out of the book. Shared so both paths filter identically.
-def materialTransactions(
-    transactions: List[monzo.Transaction]
-): List[monzo.Transaction] =
-  transactions.filterNot: transaction =>
-    transaction.amount.value == 0 || transaction.declineReason.isDefined
-
 val gbpCurrencyCode = "GBP"
 
 def majorUnits(minorUnits: BigInt): BigDecimal =
@@ -28,6 +19,15 @@ def majorUnits(minorUnits: BigInt): BigDecimal =
 // beside it is what ofxTransactionSink refuses anything else by, and what the
 // CSV source's own scaling back to minor units rests on.
 val gbpMinorUnitsPerMajorUnit = 100
+
+// Skip £0 active-card checks and declined authorisations: neither is real
+// spend, so the OFX sink leaves them out of the file and the book sink leaves
+// them out of the book. Shared so both paths filter identically.
+def materialTransactions(
+    transactions: List[monzo.Transaction]
+): List[monzo.Transaction] =
+  transactions.filterNot: transaction =>
+    transaction.amount.value == 0 || transaction.declineReason.isDefined
 
 // The human-readable payee, preferring the merchant (card spend), then the
 // counterparty (transfers), then Monzo's own description as a last resort. The

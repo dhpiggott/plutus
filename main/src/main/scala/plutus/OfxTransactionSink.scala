@@ -80,49 +80,6 @@ def ofxTransactionSink(
   )
 yield ()
 
-def toOfx(
-    accountsIdsAndTransactions: List[
-      (monzo.AccountId, List[monzo.Transaction])
-    ]
-): ofx.Ofx =
-  ofx.Ofx:
-    ofx.BankMessageSetResponse:
-      accountsIdsAndTransactions.map: (accountId, transactions) =>
-        ofx.StatementTransactionsResponse:
-          ofx.StatementResponse(
-            ofx.BankAccountFrom:
-              ofx.AccountId:
-                accountId.value
-            ,
-            ofx.BankTransactionList:
-              transactions.map: transaction =>
-                ofx.StatementTransaction(
-                  datePosted = ofx.Datetime:
-                    transaction.created.value.asInstant
-                      .atOffset:
-                        ZoneOffset.UTC
-                      .format:
-                        ofxDateTimeFormatter
-                  ,
-                  transactionAmount = ofx.TransactionAmount:
-                    majorUnits(transaction.amount.value)
-                  ,
-                  financialInstitutionId = ofx.FinancialInstitutionId:
-                    transaction.id.value
-                  ,
-                  name = ofx.Name(
-                    payee(transaction)
-                  ),
-                  memo = Some:
-                    ofx.Memo:
-                      transaction.notes.value
-                )
-          )
-
-val ofxDateTimeFormatter: DateTimeFormatter =
-  DateTimeFormatter.ofPattern:
-    "yyyyMMddHHmmss.SSS"
-
 // Always over whatever file is already there: a run names the whole of the
 // window it renders, or one a book bounds, and a book-bounded file that was
 // never imported loses nothing by being replaced, since its rows are still
@@ -169,3 +126,46 @@ def writeOfx(
       .drain *>
       info:
         s"Wrote OFX to $output."
+
+def toOfx(
+    accountsIdsAndTransactions: List[
+      (monzo.AccountId, List[monzo.Transaction])
+    ]
+): ofx.Ofx =
+  ofx.Ofx:
+    ofx.BankMessageSetResponse:
+      accountsIdsAndTransactions.map: (accountId, transactions) =>
+        ofx.StatementTransactionsResponse:
+          ofx.StatementResponse(
+            ofx.BankAccountFrom:
+              ofx.AccountId:
+                accountId.value
+            ,
+            ofx.BankTransactionList:
+              transactions.map: transaction =>
+                ofx.StatementTransaction(
+                  datePosted = ofx.Datetime:
+                    transaction.created.value.asInstant
+                      .atOffset:
+                        ZoneOffset.UTC
+                      .format:
+                        ofxDateTimeFormatter
+                  ,
+                  transactionAmount = ofx.TransactionAmount:
+                    majorUnits(transaction.amount.value)
+                  ,
+                  financialInstitutionId = ofx.FinancialInstitutionId:
+                    transaction.id.value
+                  ,
+                  name = ofx.Name(
+                    payee(transaction)
+                  ),
+                  memo = Some:
+                    ofx.Memo:
+                      transaction.notes.value
+                )
+          )
+
+val ofxDateTimeFormatter: DateTimeFormatter =
+  DateTimeFormatter.ofPattern:
+    "yyyyMMddHHmmss.SSS"

@@ -273,7 +273,7 @@ object DefinitionOrder {
           seen: Set[Int],
           found: List[Int]
       ): List[Int] = todo match {
-        case Nil => found.reverse
+        case Nil        => found.reverse
         case id :: rest =>
           if (seen(id) || id == start) loop(rest, seen, found)
           else if (items(id).isStrict) loop(rest, seen + id, id :: found)
