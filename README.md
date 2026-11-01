@@ -176,7 +176,7 @@ sbt scalafmtCheckAll        # check sources
 sbt scalafmtAll             # apply to sources
 sbt scalafmtSbtCheck        # check build.sbt and project/
 sbt scalafmtSbt             # apply to build.sbt and project/
-sbt scalafixAll             # OrganizeImports and DefinitionOrder (add --check to verify instead of rewrite)
+sbt scalafixAll             # OrganizeImports and DefinitionOrder: sorts imports and moves definitions into their canonical order (add --check to verify instead of rewrite)
 ```
 
 ### Continuous integration
