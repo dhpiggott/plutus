@@ -9,16 +9,14 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# Temporary: applies DefinitionOrder and scalafmt on a Mac and pushes the
+# result back to this branch, since nothing builds in the cloud session.
+sbt --batch --no-colors scalafmtAll scalafixAll scalafmtAll || true
+git --no-pager diff --stat
 status=0
-sbt --batch --no-colors scalafixAll || status=$?
-echo "::group::first scalafixAll exited $status"
-echo "::endgroup::"
-echo "===== DIFF BEGIN ====="
-git --no-pager diff
-echo "===== DIFF END ====="
-git add -A
-sbt --batch --no-colors scalafixAll scalafmtCheckAll compile || status=$?
-echo "===== SECOND PASS DIFF BEGIN ====="
-git --no-pager diff
-echo "===== SECOND PASS DIFF END ====="
+.github/scripts/verify.sh || status=$?
+git config user.name "github-actions[bot]"
+git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+git commit -am "Apply DefinitionOrder and scalafmt (probe, verify exited $status)"
+git push origin "HEAD:$GITHUB_REF_NAME"
 exit "$status"
