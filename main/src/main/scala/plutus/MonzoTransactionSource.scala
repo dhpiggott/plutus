@@ -24,7 +24,12 @@ import java.time.Instant
 def monzoTransactionSource(book: BookStarts): TransactionSource =
   new TransactionSource:
     def fetch(now: Instant)(using verbosity: Verbosity): IO[Fetched] =
-      def listAccounts(monzoApi: monzo.Api[IO]) = for
+      def listAccounts(monzoApi: monzo.Api[IO]): IO[
+        (
+            earliestWindowStart: Instant,
+            plan: (accounts: List[monzo.Account], starts: AccountStarts)
+        )
+      ] = for
         _ <- info:
           "Listing accounts…"
         accounts <- monzoApi
