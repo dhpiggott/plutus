@@ -23,15 +23,6 @@ import java.time.ZoneOffset
 import java.time.temporal.ChronoUnit
 import scala.concurrent.duration.*
 
-given authorizationCodeQueryParamDecoder
-    : QueryParamDecoder[monzo.AuthorizationCode] =
-  QueryParamDecoder[String].map:
-    monzo.AuthorizationCode(_)
-
-given stateQueryParamDecoder: QueryParamDecoder[monzo.State] =
-  QueryParamDecoder[String].map:
-    monzo.State(_)
-
 // Shared Monzo session scaffolding for every command that talks to the API:
 // load state, build the HTTP client (whose trace-level logger redacts the
 // Authorization header — http4s's default — but prints full bodies, and the
@@ -417,8 +408,17 @@ yield createAccessTokenOutput
 object AuthorizationCodeQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.AuthorizationCode]("code")
 
+given authorizationCodeQueryParamDecoder
+    : QueryParamDecoder[monzo.AuthorizationCode] =
+  QueryParamDecoder[String].map:
+    monzo.AuthorizationCode(_)
+
 object StateQueryParamMatcher
     extends QueryParamDecoderMatcher[monzo.State]("state")
+
+given stateQueryParamDecoder: QueryParamDecoder[monzo.State] =
+  QueryParamDecoder[String].map:
+    monzo.State(_)
 
 def requestAuthorization(
     clientId: monzo.ClientId
