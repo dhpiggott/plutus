@@ -121,6 +121,16 @@ object DefinitionOrder {
 
     private val tokenStarts: Array[Int] = tokens.map(_.start).toArray
 
+    // What the compiler filled in, such as a given passed as a context
+    // argument, at the offset of the code it was filled in for. Without these
+    // a given used only implicitly would have no users at all.
+    private val inferredUses: List[(Int, Symbol)] =
+      doc.synthetics.toList.flatMap { synthetic =>
+        originsOf(synthetic).headOption.toList.flatMap { origin =>
+          symbolsIn(synthetic).map(origin -> _)
+        }
+      }
+
     private def appliesHere(rules: List[String]): Boolean =
       rules.isEmpty || rules.contains("DefinitionOrder")
 
@@ -538,11 +548,16 @@ object DefinitionOrder {
         items: Vector[Item],
         owners: Map[Symbol, Int]
     ): (List[Int], List[Int]) = {
-      val mentioned = items(id).stats
+      val stats = items(id).stats
+      val named = stats
         .flatMap(_.collect { case name: Name => name })
-        .sortBy(_.pos.start)
-        .flatMap { name =>
-          val symbol = name.symbol
+        .map(name => (name.pos.start, name.symbol))
+      val inferred = inferredUses.filter { case (offset, _) =>
+        stats.exists(stat => stat.pos.start <= offset && offset < stat.pos.end)
+      }
+      val mentioned = (named ++ inferred)
+        .sortBy(_._1)
+        .flatMap { case (_, symbol) =>
           val runs = !symbol.value.endsWith("#")
           ownerIn(owners, symbol).map(owner => (owner, runs))
         }
@@ -642,6 +657,29 @@ object DefinitionOrder {
 
     private def patternNames(pat: Pat): List[Name] =
       pat.collect { case Pat.Var(name) => name }
+  }
+
+  // Where in the source a synthetic was inferred, from the original code it
+  // wraps.
+  private def originsOf(tree: SemanticTree): List[Int] = tree match {
+    case OriginalTree(original)        => List(original.pos.start)
+    case OriginalSubTree(original)     => List(original.pos.start)
+    case ApplyTree(function, args)     => (function :: args).flatMap(originsOf)
+    case SelectTree(qualifier, _)      => originsOf(qualifier)
+    case TypeApplyTree(function, _)    => originsOf(function)
+    case FunctionTree(_, body)         => originsOf(body)
+    case MacroExpansionTree(before, _) => originsOf(before)
+    case _                             => Nil
+  }
+
+  private def symbolsIn(tree: SemanticTree): List[Symbol] = tree match {
+    case id: IdTree                    => List(id.symbol)
+    case SelectTree(qualifier, id)     => symbolsIn(qualifier) :+ id.symbol
+    case ApplyTree(function, args)     => (function :: args).flatMap(symbolsIn)
+    case TypeApplyTree(function, _)    => symbolsIn(function)
+    case FunctionTree(_, body)         => symbolsIn(body)
+    case MacroExpansionTree(before, _) => symbolsIn(before)
+    case _                             => Nil
   }
 
   private def extensionMembers(defn: Defn.ExtensionGroup): List[Stat] =
