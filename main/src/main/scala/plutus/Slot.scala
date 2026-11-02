@@ -109,25 +109,6 @@ final case class Slot(
 
 object Slot:
 
-  // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
-  // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
-  // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
-  // set_kvp_string_path). The other type tags (INT64=1, DOUBLE=2, NUMERIC=3,
-  // GUID=5, TIME64=6, GLIST=8, FRAME=9, GDATE=10) are unused.
-  val SlotTypeString: Long = 4
-
-  // GnuCash encodes a true boolean flag as a STRING slot whose value is "true";
-  // false is the slot's absence (set_kvp_boolean_path(false) removes it). So a
-  // false flag has no Slot to insert at all.
-  def stringSlot(objGuid: String, name: String, value: String): Slot =
-    Slot(
-      objGuid,
-      name,
-      SlotTypeString,
-      stringVal = Some(value),
-      int64Val = None
-    )
-
   def delete(objGuid: String, name: String)(using db: Database[IO]): IO[Unit] =
     db.execute(
       query = sql"""
@@ -147,16 +128,6 @@ object Slot:
       args = objGuid
     )
 
-  // The slot name behind both halves of the online-identity scheme: split
-  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
-  // OFX FITID convention) and account slots carrying a Monzo account ID (the
-  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
-  // export emits). One wrinkle: libofx builds the stored account value as
-  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
-  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
-  // lookups compare trimmed, honouring both shapes.
-  val OnlineId: String = "online_id"
-
   // Every online_id slot in the book as (trimmed value, obj_guid), in one
   // query: slots has no index on (name, string_val), so a lookup per value
   // would scan the whole table each time — a table that also holds every
@@ -173,13 +144,6 @@ object Slot:
       """.query(text *: text *: nil),
       args = OnlineId
     )
-
-  // Plutus's own account-level slot, beside the online_id tag on a pot's book
-  // account: the Monzo pot ID that backing account belongs to. Only a transfer
-  // links the two (see discoverPotAccounts), so recording the link here is what
-  // lets a later run find the pot's account from /pots alone. GnuCash keeps a
-  // slot it doesn't recognise, loading and saving it with the account's others.
-  val PotId: String = "monzo_pot_id"
 
   // Every recorded pot link as (pot ID, the same account's trimmed online_id
   // tag), so a caller can go from a pot to the backing account it is tagged
@@ -199,3 +163,39 @@ object Slot:
       """.query(text *: text *: nil),
       args = (OnlineId, PotId)
     )
+
+  // The slot name behind both halves of the online-identity scheme: split
+  // slots carrying a Monzo transaction ID (import dedup, mirroring GnuCash's
+  // OFX FITID convention) and account slots carrying a Monzo account ID (the
+  // association GnuCash's OFX importer stores, with the same ACCTID our OFX
+  // export emits). One wrinkle: libofx builds the stored account value as
+  // "BANKID BRANCHID ACCTID" with unconditional space separators, so
+  // GnuCash-written values arrive as "  acc_…"; Plutus writes the bare ID and
+  // lookups compare trimmed, honouring both shapes.
+  val OnlineId: String = "online_id"
+
+  // Plutus's own account-level slot, beside the online_id tag on a pot's book
+  // account: the Monzo pot ID that backing account belongs to. Only a transfer
+  // links the two (see discoverPotAccounts), so recording the link here is what
+  // lets a later run find the pot's account from /pots alone. GnuCash keeps a
+  // slot it doesn't recognise, loading and saving it with the account's others.
+  val PotId: String = "monzo_pot_id"
+
+  // GnuCash encodes a true boolean flag as a STRING slot whose value is "true";
+  // false is the slot's absence (set_kvp_boolean_path(false) removes it). So a
+  // false flag has no Slot to insert at all.
+  def stringSlot(objGuid: String, name: String, value: String): Slot =
+    Slot(
+      objGuid,
+      name,
+      SlotTypeString,
+      stringVal = Some(value),
+      int64Val = None
+    )
+
+  // KvpValueImpl::Type in GnuCash's libgnucash/engine/kvp-value.hpp. Plutus
+  // only writes STRING slots — the shape GnuCash uses for the hidden/placeholder
+  // booleans (xaccAccountSetHidden -> set_kvp_boolean_path ->
+  // set_kvp_string_path). The other type tags (INT64=1, DOUBLE=2, NUMERIC=3,
+  // GUID=5, TIME64=6, GLIST=8, FRAME=9, GDATE=10) are unused.
+  val SlotTypeString: Long = 4

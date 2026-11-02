@@ -87,12 +87,6 @@ object Keychain:
         s"Keychain SecItem update/add failed with status $status."
   yield ()
 
-  // Pattern-match guards need a stable val, and jextract emits these as
-  // static methods rather than constants. Renamed to avoid clashing with the
-  // imported methods.
-  private val success: Int = errSecSuccess()
-  private val notFound: Int = errSecItemNotFound()
-
   private def makeCFString(arena: Arena, s: String): MemorySegment =
     val bytes = s.getBytes(StandardCharsets.UTF_8)
     val buf = arena.allocate(bytes.length)
@@ -137,3 +131,10 @@ object Keychain:
       keyCallBacks = MemorySegment.NULL,
       valueCallBacks = MemorySegment.NULL
     )
+
+  // Pattern-match guards need a stable val, and jextract emits status codes
+  // as static methods rather than constants. Renamed to avoid clashing with
+  // the imported method; `success` below is the same.
+  private val notFound: Int = errSecItemNotFound()
+
+  private val success: Int = errSecSuccess()

@@ -455,6 +455,9 @@ def currencySymbol(mnemonic: String): String = mnemonic match
   case "GBP"    => "£"
   case mnemonic => mnemonic
 
+def formatConsoleTimestamp(instant: Instant): String =
+  instant.atOffset(ZoneOffset.UTC).format(consoleTimestamp)
+
 // The console's own timestamp, deliberately not the one the transactions table
 // is written with: the two happen to agree on a shape, and sharing a formatter
 // would mean a change to how GnuCash stores a date silently reshaped what a
@@ -463,6 +466,3 @@ def currencySymbol(mnemonic: String): String = mnemonic match
 // what was fetched.
 val consoleTimestamp: DateTimeFormatter =
   DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-
-def formatConsoleTimestamp(instant: Instant): String =
-  instant.atOffset(ZoneOffset.UTC).format(consoleTimestamp)

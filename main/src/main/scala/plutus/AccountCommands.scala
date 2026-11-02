@@ -24,18 +24,6 @@ lazy val archiveDryRunOpts: Opts[Boolean] =
     )
     .orFalse
 
-// Shared by all three commands rather than spelled out per command like
-// --dry-run above, whose help text differs by what each one would print: this
-// one says the same thing whichever command carries it.
-lazy val ignoreLockOpts: Opts[Boolean] =
-  Opts
-    .flag(
-      "ignore-lock",
-      help =
-        "Open the book even though GnuCash's gnclock table says another process has it open. Only for a lock left behind by a GnuCash that crashed — a live one will overwrite whatever this run writes."
-    )
-    .orFalse
-
 def archiveAccounts(
     input: fs2.io.file.Path,
     dryRun: Boolean,
@@ -101,6 +89,31 @@ def archiveAccounts(
       yield ()
   yield ()
 
+// The hidden accounts archive-accounts will move: the frontier of hidden
+// accounts below `root`, stopping at the first hidden account on each branch
+// (its children are implicitly hidden, so listing them too would archive a
+// subtree a node at a time) and skipping the Archive subroot, since the point
+// of the scan is to find what still needs moving into it.
+//
+// One recursive query and an in-memory walk, rather than a directChildren query
+// per account: the walk visits exactly the nodes that query returned, and a
+// book whose tree is mostly not hidden used to pay a round trip for each.
+def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
+    db: Database[IO]
+): IO[List[Account]] =
+  root.allChildren.map: descendants =>
+    val byParentGuid = descendants.groupBy(_.parentGuid)
+    // By name, as the directChildren query this replaces ordered them.
+    def frontier(account: Account): List[Account] =
+      byParentGuid
+        .getOrElse(Some(account.guid), Nil)
+        .sortBy(_.name)
+        .flatMap: child =>
+          if child.guid == archiveSubroot.guid then Nil
+          else if child.hidden then List(child)
+          else frontier(child)
+    frontier(root)
+
 lazy val restoreAccountOpts: Opts[IO[Unit]] = Opts.subcommand(
   name = "restore-account",
   help = "Restore archived account."
@@ -115,6 +128,18 @@ lazy val restoreDryRunOpts: Opts[Boolean] =
       "dry-run",
       help =
         "Print what would be restored without writing to the book and without taking a backup."
+    )
+    .orFalse
+
+// Shared by all three commands rather than spelled out per command like
+// --dry-run above, whose help text differs by what each one would print: this
+// one says the same thing whichever command carries it.
+lazy val ignoreLockOpts: Opts[Boolean] =
+  Opts
+    .flag(
+      "ignore-lock",
+      help =
+        "Open the book even though GnuCash's gnclock table says another process has it open. Only for a lock left behind by a GnuCash that crashed — a live one will overwrite whatever this run writes."
     )
     .orFalse
 
@@ -215,31 +240,6 @@ def restoreAccount(
           yield ()
       yield ()
   yield ()
-
-// The hidden accounts archive-accounts will move: the frontier of hidden
-// accounts below `root`, stopping at the first hidden account on each branch
-// (its children are implicitly hidden, so listing them too would archive a
-// subtree a node at a time) and skipping the Archive subroot, since the point
-// of the scan is to find what still needs moving into it.
-//
-// One recursive query and an in-memory walk, rather than a directChildren query
-// per account: the walk visits exactly the nodes that query returned, and a
-// book whose tree is mostly not hidden used to pay a round trip for each.
-def hiddenAccountsToArchive(root: Account, archiveSubroot: Account)(using
-    db: Database[IO]
-): IO[List[Account]] =
-  root.allChildren.map: descendants =>
-    val byParentGuid = descendants.groupBy(_.parentGuid)
-    // By name, as the directChildren query this replaces ordered them.
-    def frontier(account: Account): List[Account] =
-      byParentGuid
-        .getOrElse(Some(account.guid), Nil)
-        .sortBy(_.name)
-        .flatMap: child =>
-          if child.guid == archiveSubroot.guid then Nil
-          else if child.hidden then List(child)
-          else frontier(child)
-    frontier(root)
 
 // Handles the case where a mirror already exists at `mirrorParent` with the
 // same name as `original`. This happens when a descendant was already

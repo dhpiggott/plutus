@@ -49,17 +49,6 @@ lazy val toBookRunOpts: Opts[TransactionsRun] =
     (source, input, ignoreLock) =>
       dryRun => gnuCashTransactionSink(source, input, dryRun, ignoreLock)
 
-// The API only, since it has no window of its own to offer; a statement does,
-// and GnuCash's importer already skips what the book holds.
-lazy val ofxFromBookRunOpts: Opts[TransactionsRun] =
-  (monzoFromBookSourceOpts, toOfxPathOpts, bookPathOpts).tupled.map:
-    (source, output, book) =>
-      dryRun => ofxTransactionSinkFromBook(source, book, output, dryRun)
-
-lazy val ofxRunOpts: Opts[TransactionsRun] =
-  (csvSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
-    dryRun => ofxTransactionSink(source, output, dryRun, filed = Set.empty)
-
 // A source that hasn't yet been told where each account starts, because that
 // is the book's answer, read before the fetch. See BookStarts.
 type TransactionSourceFor = BookStarts => TransactionSource
@@ -67,6 +56,29 @@ type TransactionSourceFor = BookStarts => TransactionSource
 lazy val bookSourceOpts: Opts[TransactionSourceFor] =
   monzoFromBookSourceOpts orElse csvSourceOpts.map: source =>
     (_: BookStarts) => source
+
+// An optional-argument option (--to-book, or --to-book=PATH), so naming the
+// sink doesn't force a path on a run that wants the default. decline binds an
+// optional argument through the = form only, so the space-separated
+// --to-book PATH is a usage error rather than a path silently ignored.
+lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
+  Opts
+    .flagOption[java.nio.file.Path](
+      "to-book",
+      metavar = "path",
+      help =
+        "Write transactions into a GnuCash SQLite3 file. If no path is given defaults to Accounts.gnucash in the current directory; give one as --to-book=PATH."
+    )
+    .map:
+      _.fold(fs2.io.file.Path("Accounts.gnucash")):
+        fs2.io.file.Path.fromNioPath
+
+// The API only, since it has no window of its own to offer; a statement does,
+// and GnuCash's importer already skips what the book holds.
+lazy val ofxFromBookRunOpts: Opts[TransactionsRun] =
+  (monzoFromBookSourceOpts, toOfxPathOpts, bookPathOpts).tupled.map:
+    (source, output, book) =>
+      dryRun => ofxTransactionSinkFromBook(source, book, output, dryRun)
 
 lazy val monzoFromBookSourceOpts: Opts[TransactionSourceFor] =
   fromMonzoOpts.map: _ =>
@@ -78,6 +90,24 @@ lazy val fromMonzoOpts: Opts[Unit] =
     help =
       "Read transactions from the Monzo API. Requires authorisation on first use, and holds a refresh token in the Keychain from then on."
   )
+
+// Same as --to-book's path, but read-only: an OFX run reconciled against a
+// book never writes to it, so it takes no lock and no backup.
+lazy val bookPathOpts: Opts[fs2.io.file.Path] =
+  Opts
+    .flagOption[java.nio.file.Path](
+      "book",
+      metavar = "path",
+      help =
+        "With --from-monzo --to-ofx, start each account where a GnuCash SQLite3 file left off, as --to-book does, and leave out transactions already in it. The book is only read. If no path is given defaults to Accounts.gnucash in the current directory; give one as --book=PATH."
+    )
+    .map:
+      _.fold(fs2.io.file.Path("Accounts.gnucash")):
+        fs2.io.file.Path.fromNioPath
+
+lazy val ofxRunOpts: Opts[TransactionsRun] =
+  (csvSourceOpts, toOfxPathOpts).tupled.map: (source, output) =>
+    dryRun => ofxTransactionSink(source, output, dryRun, filed = Set.empty)
 
 // Pots only: the API reads a main account's whole history after a fresh
 // authorisation, but a pot's statement only 90 days back, so a pot's older
@@ -111,22 +141,6 @@ def accountStatement(
       Validated.invalidNel:
         s"Not an ACCOUNT_ID=PATH pair: $value."
 
-// An optional-argument option (--to-book, or --to-book=PATH), so naming the
-// sink doesn't force a path on a run that wants the default. decline binds an
-// optional argument through the = form only, so the space-separated
-// --to-book PATH is a usage error rather than a path silently ignored.
-lazy val toBookPathOpts: Opts[fs2.io.file.Path] =
-  Opts
-    .flagOption[java.nio.file.Path](
-      "to-book",
-      metavar = "path",
-      help =
-        "Write transactions into a GnuCash SQLite3 file. If no path is given defaults to Accounts.gnucash in the current directory; give one as --to-book=PATH."
-    )
-    .map:
-      _.fold(fs2.io.file.Path("Accounts.gnucash")):
-        fs2.io.file.Path.fromNioPath
-
 lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
   Opts
     .flagOption[java.nio.file.Path](
@@ -137,20 +151,6 @@ lazy val toOfxPathOpts: Opts[fs2.io.file.Path] =
     )
     .map:
       _.fold(fs2.io.file.Path("monzo.ofx")):
-        fs2.io.file.Path.fromNioPath
-
-// Same as --to-book's path, but read-only: an OFX run reconciled against a
-// book never writes to it, so it takes no lock and no backup.
-lazy val bookPathOpts: Opts[fs2.io.file.Path] =
-  Opts
-    .flagOption[java.nio.file.Path](
-      "book",
-      metavar = "path",
-      help =
-        "With --from-monzo --to-ofx, start each account where a GnuCash SQLite3 file left off, as --to-book does, and leave out transactions already in it. The book is only read. If no path is given defaults to Accounts.gnucash in the current directory; give one as --book=PATH."
-    )
-    .map:
-      _.fold(fs2.io.file.Path("Accounts.gnucash")):
         fs2.io.file.Path.fromNioPath
 
 lazy val transactionsDryRunOpts: Opts[Boolean] =

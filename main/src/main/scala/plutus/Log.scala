@@ -2,6 +2,9 @@ package plutus
 
 import cats.effect.*
 
+// Most to least severe, as Verbosity lists them. Nothing between these uses
+// another, so DefinitionOrder would otherwise put them in name order.
+// scalafix:off DefinitionOrder
 def error(message: => String)(using verbosity: Verbosity): IO[Unit] =
   log(Verbosity.ERROR):
     fansi.Color.Red:
@@ -26,6 +29,7 @@ def trace(message: => String)(using verbosity: Verbosity): IO[Unit] =
   log(Verbosity.TRACE):
     fansi.Color.White:
       message
+// scalafix:on DefinitionOrder
 
 // By name the whole way down, so a message costs nothing below its level: the
 // JSON dumps in the sources encode every transaction they were given, which is

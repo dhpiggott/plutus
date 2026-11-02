@@ -8,36 +8,6 @@ import scala.scalanative.unsigned.*
 
 object Sqlite:
 
-  def open(filename: String): Connection =
-    val fn = (filename + 0.toChar).getBytes
-    val dbPtr = stackalloc[Ptr[sqlite3]]()
-    val flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX
-    try guard(sqlite3_open_v2(fn.at(0), dbPtr, flags, null))
-    catch
-      case t: Throwable =>
-        if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
-        throw t
-    Connection(!dbPtr)
-
-  inline private def guard(rc: CInt): Unit =
-    if rc != SQLITE_OK then
-      throw RuntimeException(fromCString(sqlite3_errstr(rc)))
-
-  inline private def guard(db: Ptr[sqlite3])(rc: CInt): Unit =
-    if rc != SQLITE_OK then
-      throw RuntimeException(fromCString(sqlite3_errmsg(db)))
-
-  final class Connection private[Sqlite] (db: Ptr[sqlite3])
-      extends AutoCloseable:
-    def prepare(sql: String): Statement =
-      val sqlBytes = sql.getBytes
-      val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
-      guard(db):
-        sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
-      Statement(db, !stmtPtr)
-
-    def close(): Unit = guard(sqlite3_close(db))
-
   final class Statement private[Sqlite] (
       db: Ptr[sqlite3],
       stmt: Ptr[sqlite3_stmt]
@@ -46,20 +16,6 @@ object Sqlite:
     // SQLITE_STATIC destructor (passed as `null` below). The arrays must
     // outlive the statement's last `step()`; `reset()` clears them.
     private var bindRefs: List[Array[Byte]] = Nil
-
-    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
-
-    def bindLong(i: Int, value: Long): Unit =
-      guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(value)))
-
-    def bindDouble(i: Int, value: Double): Unit =
-      guard(db)(sqlite3_bind_double(stmt, i, value))
-
-    def bindText(i: Int, value: String): Unit =
-      val b = value.getBytes
-      bindRefs = b :: bindRefs
-      guard(db):
-        sqlite3_bind_text(stmt, i, b.at(0), b.length, null)
 
     def bindBlob(i: Int, value: Array[Byte]): Unit =
       bindRefs = value :: bindRefs
@@ -72,19 +28,21 @@ object Sqlite:
           null
         )
 
-    def step(): Boolean =
-      sqlite3_step(stmt) match
-        case SQLITE_ROW  => true
-        case SQLITE_DONE => false
-        case other       =>
-          guard(db)(other)
-          false
+    def bindDouble(i: Int, value: Double): Unit =
+      guard(db)(sqlite3_bind_double(stmt, i, value))
 
-    def reset(): Unit =
-      bindRefs = Nil
-      guard(db)(sqlite3_reset(stmt))
+    def bindLong(i: Int, value: Long): Unit =
+      guard(db)(sqlite3_bind_int64(stmt, i, sqlite_int64(value)))
 
-    def columnCount: Int = sqlite3_column_count(stmt)
+    def bindNull(i: Int): Unit = guard(db)(sqlite3_bind_null(stmt, i))
+
+    def bindText(i: Int, value: String): Unit =
+      val b = value.getBytes
+      bindRefs = b :: bindRefs
+      guard(db):
+        sqlite3_bind_text(stmt, i, b.at(0), b.length, null)
+
+    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
 
     def column(i: Int): Long | Double | String | Array[Byte] | Null =
       sqlite3_column_type(stmt, i) match
@@ -103,4 +61,46 @@ object Sqlite:
         case other =>
           throw IllegalStateException(s"Unknown SQLite column type $other")
 
-    def close(): Unit = guard(db)(sqlite3_finalize(stmt))
+    def columnCount: Int = sqlite3_column_count(stmt)
+
+    def reset(): Unit =
+      bindRefs = Nil
+      guard(db)(sqlite3_reset(stmt))
+
+    def step(): Boolean =
+      sqlite3_step(stmt) match
+        case SQLITE_ROW  => true
+        case SQLITE_DONE => false
+        case other       =>
+          guard(db)(other)
+          false
+
+  final class Connection private[Sqlite] (db: Ptr[sqlite3])
+      extends AutoCloseable:
+    def close(): Unit = guard(sqlite3_close(db))
+
+    def prepare(sql: String): Statement =
+      val sqlBytes = sql.getBytes
+      val stmtPtr = stackalloc[Ptr[sqlite3_stmt]]()
+      guard(db):
+        sqlite3_prepare_v2(db, sqlBytes.at(0), sqlBytes.length, stmtPtr, null)
+      Statement(db, !stmtPtr)
+
+  def open(filename: String): Connection =
+    val fn = (filename + 0.toChar).getBytes
+    val dbPtr = stackalloc[Ptr[sqlite3]]()
+    val flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX
+    try guard(sqlite3_open_v2(fn.at(0), dbPtr, flags, null))
+    catch
+      case t: Throwable =>
+        if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
+        throw t
+    Connection(!dbPtr)
+
+  inline private def guard(rc: CInt): Unit =
+    if rc != SQLITE_OK then
+      throw RuntimeException(fromCString(sqlite3_errstr(rc)))
+
+  inline private def guard(db: Ptr[sqlite3])(rc: CInt): Unit =
+    if rc != SQLITE_OK then
+      throw RuntimeException(fromCString(sqlite3_errmsg(db)))
