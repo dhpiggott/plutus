@@ -501,4 +501,4 @@ Global / concurrentRestrictions += Tags.limit(JextractDownload, 1)
 
 lazy val scala3Versions = Seq(scala3Version)
 
-lazy val scala3Version = "3.10.0"
+lazy val scala3Version = "3.10.1"
