@@ -14,7 +14,7 @@ object Sqlite:
     val flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX
     try guard(sqlite3_open_v2(fn.at(0), dbPtr, flags, null))
     catch
-      case t: Throwable =>
+      case t: RuntimeException =>
         if !dbPtr ne null then sqlite3_close(!dbPtr): Unit
         throw t
     Connection(!dbPtr)
