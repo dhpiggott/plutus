@@ -7,6 +7,12 @@ name := "plutus"
 
 scalaVersion := scala3Version
 
+// The root project has no sources, and scalafix would fail on it all the same:
+// it resolves every rule `.scalafix.conf` names before looking for files, and
+// `DefinitionOrder` is only on the modules' `ScalafixConfig` classpaths.
+Compile / scalafix / skip := true
+Test / scalafix / skip := true
+
 inThisBuild(
   Seq(
     semanticdbEnabled := true
@@ -14,6 +20,7 @@ inThisBuild(
 )
 
 lazy val keychain = projectMatrix
+  .dependsOn(scalafixRules % ScalafixConfig)
   .settings(
     libraryDependencies += "org.typelevel" %%% "cats-effect" % "3.7.1"
   )
@@ -210,6 +217,7 @@ lazy val keychain = projectMatrix
   )
 
 lazy val porcupine = projectMatrix
+  .dependsOn(scalafixRules % ScalafixConfig)
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-effect" % "3.7.1",
@@ -380,6 +388,7 @@ def requireJextractBindings(pkg: String) = Def.task {
 lazy val main = projectMatrix
   .enablePlugins(BuildInfoPlugin, Smithy4sCodegenPlugin)
   .dependsOn(keychain, porcupine)
+  .dependsOn(scalafixRules % ScalafixConfig)
   .settings(
     libraryDependencies ++= Seq(
       "co.fs2" %%% "fs2-io" % "3.14.0",
@@ -482,6 +491,72 @@ lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
   wrapper.setExecutable(true)
   wrapper
 }
+
+// The definition-order rule from CLAUDE.md's conventions, which
+// `.scalafix.conf` runs over every module. Scalafix loads a rule from the
+// `ScalafixConfig` classpath of the project it is checking, which is why each
+// module depends on this one in that configuration, and a rule has to be
+// compiled for the Scala 2.13 that scalafix itself runs on. Scalafix is
+// disabled here, since the rule isn't on this project's own `ScalafixConfig`
+// classpath, and so is SemanticDB, which only scalafix reads.
+lazy val scalafixRules = project
+  .in(file("scalafix-rules"))
+  .disablePlugins(ScalafixPlugin)
+  .settings(
+    scalaVersion := _root_.scalafix.sbt.BuildInfo.scala213,
+    semanticdbEnabled := false,
+    libraryDependencies +=
+      "ch.epfl.scala" %% "scalafix-core" % scalafixCoreVersion
+  )
+
+lazy val scalafixCoreVersion = _root_.scalafix.sbt.BuildInfo.scalafixVersion
+
+// DefinitionOrder's tests, run by scalafix's testkit: each file under
+// scalafix-tests/input is compiled with SemanticDB, run through the rule, and
+// compared with the file of the same name under scalafix-tests/output (or, if
+// there is none, expected to come out unchanged). The fixtures are written to
+// be out of order and to trip warnings, so scalafix, scalafmt (see
+// .scalafmt.conf) and fatal warnings all stay off them.
+lazy val scalafixInput = project
+  .in(file("scalafix-tests/input"))
+  .disablePlugins(ScalafixPlugin)
+  .settings(
+    scalaVersion := scala3Version,
+    scalacOptions ~= (_.filterNot(Set("-Werror", "-Xfatal-warnings")))
+  )
+
+lazy val scalafixOutput = project
+  .in(file("scalafix-tests/output"))
+  .disablePlugins(ScalafixPlugin)
+  .settings(
+    scalaVersion := scala3Version,
+    semanticdbEnabled := false,
+    scalacOptions ~= (_.filterNot(Set("-Werror", "-Xfatal-warnings")))
+  )
+
+lazy val scalafixTests = project
+  .in(file("scalafix-tests/unit"))
+  .enablePlugins(_root_.scalafix.sbt.ScalafixTestkitPlugin)
+  .dependsOn(scalafixRules)
+  .settings(
+    scalaVersion := _root_.scalafix.sbt.BuildInfo.scala213,
+    semanticdbEnabled := false,
+    Compile / scalafix / skip := true,
+    Test / scalafix / skip := true,
+    libraryDependencies +=
+      ("ch.epfl.scala" % "scalafix-testkit" % scalafixCoreVersion % Test)
+        .cross(CrossVersion.full),
+    scalafixTestkitOutputSourceDirectories :=
+      (scalafixOutput / Compile / unmanagedSourceDirectories).value,
+    scalafixTestkitInputSourceDirectories :=
+      (scalafixInput / Compile / unmanagedSourceDirectories).value,
+    scalafixTestkitInputClasspath :=
+      (scalafixInput / Compile / fullClasspath).value,
+    scalafixTestkitInputScalacOptions :=
+      (scalafixInput / Compile / scalacOptions).value,
+    scalafixTestkitInputScalaVersion :=
+      (scalafixInput / Compile / scalaVersion).value
+  )
 
 lazy val scala3Versions = Seq(scala3Version)
 

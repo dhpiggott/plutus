@@ -176,16 +176,16 @@ sbt scalafmtCheckAll        # check sources
 sbt scalafmtAll             # apply to sources
 sbt scalafmtSbtCheck        # check build.sbt and project/
 sbt scalafmtSbt             # apply to build.sbt and project/
-sbt scalafixAll             # OrganizeImports (add --check to verify instead of rewrite)
+sbt scalafixAll             # OrganizeImports and DefinitionOrder: sorts imports and moves definitions into their canonical order (add --check to verify instead of rewrite)
 ```
 
 ### Continuous integration
 
 ```
-.github/scripts/verify.sh   # scalafmtCheckAll, scalafmtSbtCheck, compile, scalafixAll --check
+.github/scripts/verify.sh   # scalafmtCheckAll, scalafmtSbtCheck, compile, scalafixTests/test, scalafixAll --check
 ```
 
-That is what CI runs before linking, and — there being no tests — it is the whole check. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
+That is what CI runs before linking, and it is the whole check: the only tests are the `DefinitionOrder` rule's. `.github/scripts/install-build-deps.sh` installs the Homebrew packages listed above; on a machine that already has them it does nothing.
 
 GitHub Actions runs two workflows. `ci.yml` runs on pushes to `main` and on pull requests: `verify.sh`, then a link of the native binary, since that is where the native row's link flags and any JDK class missing from Scala Native's javalib first show up. `probe.yml` is dispatched by hand against a branch and runs that branch's `.github/scripts/probe.sh` on a fully set-up runner, for questions only a macOS build can answer. Both run on macOS runners, because the SDK-generated FFI bindings mean neither platform row compiles on Linux. Their shared toolchain setup lives in `.github/actions/setup-build`. Dependency updates come from Scala Steward, run weekly from [dhpiggott/scala-steward](https://github.com/dhpiggott/scala-steward) and configured by `.scala-steward.conf`; Dependabot (`.github/dependabot.yml`) handles the Actions pins.
 
@@ -195,6 +195,8 @@ GitHub Actions runs two workflows. `ci.yml` runs on pushes to `main` and on pull
 | --- | --- | --- |
 | `keychain` | jvm + native | `object Keychain` (`load(account)` / `save(account, bytes)`) backed by the macOS Keychain. One row per platform under `src/main/scalajvm` and `src/main/scalanative`, reaching it through Java's Foreign Function & Memory API (jextract) and sn-bindgen respectively. |
 | `porcupine` | jvm + native | Inlined Porcupine fork: the cats-effect `Database` interface, on top of a per-platform `object Sqlite` (`Connection` / `Statement` over sqlite3) that sits alongside it under `src/main/scalajvm` and `src/main/scalanative`. |
+| `scalafix-rules` | jvm (Scala 2.13) | The `DefinitionOrder` scalafix rule behind the definition-order convention in `CLAUDE.md`. Every other module runs it through `scalafixAll`. |
+| `scalafix-tests` | jvm (Scala 3 fixtures, Scala 2.13 runner) | `DefinitionOrder`'s tests: input and expected-output fixtures, and the scalafix testkit suite that compares them. |
 | `main` | jvm + native | The CLI entry point. Hosts the smithy IDL (Monzo API, OFX, state-store state), the `Verbosity` enum + `fansi`-coloured `Log` façade, and wires `Keychain` + `Database` into `decline`'s `CommandIOApp`. |
 
 ## Status

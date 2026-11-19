@@ -16,14 +16,14 @@ import scala.scalanative.unsafe.*
 @extern
 object Globals:
 
+  var kCFBooleanTrue: CFBooleanRef = extern
+
+  var kSecAttrAccount: CFStringRef = extern
+
   var kSecClass: CFStringRef = extern
 
   var kSecClassGenericPassword: CFStringRef = extern
 
-  var kSecAttrAccount: CFStringRef = extern
-
-  var kSecValueData: CFStringRef = extern
-
   var kSecReturnData: CFStringRef = extern
 
-  var kCFBooleanTrue: CFBooleanRef = extern
+  var kSecValueData: CFStringRef = extern

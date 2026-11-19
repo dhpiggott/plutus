@@ -51,77 +51,6 @@ final case class Account(
       args = guid
     )
 
-  // Moves and renames share one updater. hidden has its own (updateHidden)
-  // because it also owns a KVP slot; placeholder is still set only at insert
-  // time and never toggled.
-  def update(parent: Account, name: String = this.name)(using
-      db: Database[IO]
-  ): IO[Account] =
-    db.execute(
-      query = sql"""
-        update accounts
-        set parent_guid = $text, name = $text
-        where guid = $text
-      """.command,
-      args = (parent.guid, name, guid)
-    ).as(
-      copy(
-        parentGuid = Some(parent.guid),
-        name = name
-      )
-    )
-
-  // GnuCash reads hidden from the KVP slot and treats the column as a cache
-  // (see selectAccountsWithFlags), and a false flag is the slot's absence —
-  // so clearing deletes the slot rather than writing "false".
-  def updateHidden(hidden: Boolean)(using db: Database[IO]): IO[Account] =
-    for
-      _ <- db.execute(
-        query = sql"""
-          update accounts
-          set hidden = $boolean
-          where guid = $text
-        """.command,
-        args = (hidden, guid)
-      )
-      _ <- Slot.delete(objGuid = guid, name = "hidden")
-      _ <- IO.whenA(hidden):
-        Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
-    yield copy(hidden = hidden)
-
-  // The other slot an account can carry, written the same way updateHidden
-  // writes its own: GnuCash's OFX importer records which external account a
-  // book account stands for in an account-level online_id slot, and Plutus
-  // writes the same one so the book itself carries the association (see
-  // Slot.OnlineId). What the value *means* is the caller's — every one this
-  // codebase writes is a Monzo account ID — which is why the Monzo types stop
-  // at the call site.
-  def tagOnlineId(value: String)(using db: Database[IO]): IO[Unit] =
-    Slot
-      .stringSlot(objGuid = guid, name = Slot.OnlineId, value = value)
-      .insert
-
-  // A pot's account also records which pot it backs (see Slot.PotId),
-  // overwriting any link already there rather than adding a second.
-  def tagPotId(value: String)(using db: Database[IO]): IO[Unit] =
-    Slot.stringSlot(objGuid = guid, name = Slot.PotId, value = value).upsert
-
-  // description is a plain accounts column, with no KVP slot behind it (unlike
-  // hidden and placeholder), so there is nothing to keep in step here. None
-  // writes null rather than the empty string, so a cleared account decodes
-  // back the same way as one that never carried a description.
-  def updateDescription(description: Option[String])(using
-      db: Database[IO]
-  ): IO[Account] =
-    db.execute(
-      query = sql"""
-        update accounts
-        set description = ${text.opt}
-        where guid = $text
-      """.command,
-      args = (description, guid)
-    ).as(copy(description = description))
-
   // Every row rather than db.option, only to say something useful when there
   // is more than one: db.option raises a bare "More than 1 row", and same-named
   // siblings are a state this codebase deliberately creates — resolveAssetAccount
@@ -157,38 +86,26 @@ final case class Account(
           "/"
     )
 
-  // The names between `ancestor` and this account, exclusive: the path a mirror
-  // of this account on the other side of the live/archive boundary has to
-  // reproduce. The import path knows its paths up front (they are code-defined);
-  // archive-accounts and restore-account start from an account instead and read
-  // theirs out of the book.
-  def pathInitBelow(ancestor: Account)(using
-      db: Database[IO]
-  ): IO[List[String]] =
-    path.flatMap: accounts =>
-      accounts.indexWhere(_.guid == ancestor.guid) match
-        case -1 =>
-          IO.raiseError:
-            Error(
-              s"${ancestor.name} is not an ancestor of $name."
-            )
-        case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
+  def delete(using db: Database[IO]): IO[Unit] =
+    for
+      // Drop all of the account's slots, not just hidden/placeholder: slots
+      // have no foreign key to accounts, so any left behind would be orphaned.
+      _ <- Slot.deleteAll(guid)
+      _ <- db.execute(
+        query = sql"""
+          delete from accounts
+          where guid = $text
+        """.command,
+        args = guid
+      )
+    yield ()
 
-  def path(using db: Database[IO]): IO[List[Account]] =
+  def directChildren(using db: Database[IO]): IO[List[Account]] =
     db.execute(
       query = sql"""
-        with recursive ancestors as (
-          select guid, parent_guid, 0 as depth
-          from accounts
-          where guid = $text
-          union all
-          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
-          from accounts
-          join ancestors on accounts.guid = ancestors.parent_guid
-        )
         ${Account.selectAccountsWithFlags}
-        join ancestors on ancestors.guid = accounts.guid
-        order by ancestors.depth desc
+        where accounts.parent_guid = $text
+        order by accounts.name
       """.query:
         Account.decoder
       ,
@@ -253,31 +170,114 @@ final case class Account(
           .insert
     yield ()
 
-  def delete(using db: Database[IO]): IO[Unit] =
-    for
-      // Drop all of the account's slots, not just hidden/placeholder: slots
-      // have no foreign key to accounts, so any left behind would be orphaned.
-      _ <- Slot.deleteAll(guid)
-      _ <- db.execute(
-        query = sql"""
-          delete from accounts
-          where guid = $text
-        """.command,
-        args = guid
-      )
-    yield ()
+  // The names between `ancestor` and this account, exclusive: the path a mirror
+  // of this account on the other side of the live/archive boundary has to
+  // reproduce. The import path knows its paths up front (they are code-defined);
+  // archive-accounts and restore-account start from an account instead and read
+  // theirs out of the book.
+  def pathInitBelow(ancestor: Account)(using
+      db: Database[IO]
+  ): IO[List[String]] =
+    path.flatMap: accounts =>
+      accounts.indexWhere(_.guid == ancestor.guid) match
+        case -1 =>
+          IO.raiseError:
+            Error(
+              s"${ancestor.name} is not an ancestor of $name."
+            )
+        case index => IO.pure(accounts.map(_.name).drop(index + 1).init)
 
-  def directChildren(using db: Database[IO]): IO[List[Account]] =
+  def path(using db: Database[IO]): IO[List[Account]] =
     db.execute(
       query = sql"""
+        with recursive ancestors as (
+          select guid, parent_guid, 0 as depth
+          from accounts
+          where guid = $text
+          union all
+          select accounts.guid, accounts.parent_guid, ancestors.depth + 1
+          from accounts
+          join ancestors on accounts.guid = ancestors.parent_guid
+        )
         ${Account.selectAccountsWithFlags}
-        where accounts.parent_guid = $text
-        order by accounts.name
+        join ancestors on ancestors.guid = accounts.guid
+        order by ancestors.depth desc
       """.query:
         Account.decoder
       ,
       args = guid
     )
+
+  // The other slot an account can carry, written the same way updateHidden
+  // writes its own: GnuCash's OFX importer records which external account a
+  // book account stands for in an account-level online_id slot, and Plutus
+  // writes the same one so the book itself carries the association (see
+  // Slot.OnlineId). What the value *means* is the caller's — every one this
+  // codebase writes is a Monzo account ID — which is why the Monzo types stop
+  // at the call site.
+  def tagOnlineId(value: String)(using db: Database[IO]): IO[Unit] =
+    Slot
+      .stringSlot(objGuid = guid, name = Slot.OnlineId, value = value)
+      .insert
+
+  // A pot's account also records which pot it backs (see Slot.PotId),
+  // overwriting any link already there rather than adding a second.
+  def tagPotId(value: String)(using db: Database[IO]): IO[Unit] =
+    Slot.stringSlot(objGuid = guid, name = Slot.PotId, value = value).upsert
+
+  // Moves and renames share one updater. hidden has its own (updateHidden)
+  // because it also owns a KVP slot; placeholder is still set only at insert
+  // time and never toggled.
+  def update(parent: Account, name: String = this.name)(using
+      db: Database[IO]
+  ): IO[Account] =
+    db.execute(
+      query = sql"""
+        update accounts
+        set parent_guid = $text, name = $text
+        where guid = $text
+      """.command,
+      args = (parent.guid, name, guid)
+    ).as(
+      copy(
+        parentGuid = Some(parent.guid),
+        name = name
+      )
+    )
+
+  // description is a plain accounts column, with no KVP slot behind it (unlike
+  // hidden and placeholder), so there is nothing to keep in step here. None
+  // writes null rather than the empty string, so a cleared account decodes
+  // back the same way as one that never carried a description.
+  def updateDescription(description: Option[String])(using
+      db: Database[IO]
+  ): IO[Account] =
+    db.execute(
+      query = sql"""
+        update accounts
+        set description = ${text.opt}
+        where guid = $text
+      """.command,
+      args = (description, guid)
+    ).as(copy(description = description))
+
+  // GnuCash reads hidden from the KVP slot and treats the column as a cache
+  // (see selectAccountsWithFlags), and a false flag is the slot's absence —
+  // so clearing deletes the slot rather than writing "false".
+  def updateHidden(hidden: Boolean)(using db: Database[IO]): IO[Account] =
+    for
+      _ <- db.execute(
+        query = sql"""
+          update accounts
+          set hidden = $boolean
+          where guid = $text
+        """.command,
+        args = (hidden, guid)
+      )
+      _ <- Slot.delete(objGuid = guid, name = "hidden")
+      _ <- IO.whenA(hidden):
+        Slot.stringSlot(objGuid = guid, name = "hidden", value = "true").insert
+    yield copy(hidden = hidden)
 
 object Account:
 
@@ -305,20 +305,6 @@ object Account:
           and accounts.name = 'Root Account'
       """.query:
         decoder
-
-  val decoder: Decoder[Account] =
-    (text *:
-      text *:
-      text *:
-      text.opt *:
-      integer *:
-      integer *:
-      text.opt *:
-      text.opt *:
-      text.opt *:
-      boolean *:
-      boolean *:
-      nil).pmap[Account]
 
   // hidden and placeholder live in KVP slots, not the eponymous accounts
   // columns — GnuCash reads the flags only from the slot and keeps the column
@@ -357,3 +343,17 @@ object Account:
         on placeholder_slot.obj_guid = accounts.guid
         and placeholder_slot.name = 'placeholder'
     """
+
+  val decoder: Decoder[Account] =
+    (text *:
+      text *:
+      text *:
+      text.opt *:
+      integer *:
+      integer *:
+      text.opt *:
+      text.opt *:
+      text.opt *:
+      boolean *:
+      boolean *:
+      nil).pmap[Account]

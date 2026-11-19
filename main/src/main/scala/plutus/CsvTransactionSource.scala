@@ -197,27 +197,12 @@ def cell(row: CsvRow[String], header: String): Either[String, String] =
     s"no $header column; this file's columns are ${row.headers.toList.flatMap(_.toList).mkString(", ")}"
   )
 
-// Absent and empty mean the same thing for the three optional columns: a
-// transaction with no category, no counterparty name or no note.
-def optionalCell(row: CsvRow[String], header: String): Option[String] =
-  row(header).filter(_.nonEmpty)
-
 // The app stamps Date and Time in UTC, though the file says so nowhere: a
 // summer transaction's Time reads an hour behind the clock time the app's own
 // feed shows for it (checked against a real export). Reading it in any other
 // zone would move a transaction made in the hour after midnight on to the
 // wrong calendar date, and the calendar date is what a GnuCash post_date is
 // normalised to (see neutralPostDate), so nothing offers to.
-//
-// One spelling each, because that is what the export writes. A fresh export
-// that writes another is a change to the file's shape, and a row it can't read
-// says so by name rather than being silently read a second way.
-lazy val csvDateFormat: DateTimeFormatter =
-  DateTimeFormatter.ofPattern("dd/MM/yyyy")
-
-lazy val csvTimeFormat: DateTimeFormatter =
-  DateTimeFormatter.ofPattern("HH:mm:ss")
-
 def csvCreated(
     date: String,
     time: String
@@ -229,6 +214,15 @@ def csvCreated(
     .catchOnly[DateTimeParseException](LocalTime.parse(time, csvTimeFormat))
     .leftMap(_ => s"Time isn't an HH:mm:ss time: $time")
 yield localDate.atTime(localTime).toInstant(ZoneOffset.UTC).asSmithyTimestamp
+
+// One spelling each, because that is what the export writes. A fresh export
+// that writes another is a change to the file's shape, and a row it can't read
+// says so by name rather than being silently read a second way.
+lazy val csvDateFormat: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("dd/MM/yyyy")
+
+lazy val csvTimeFormat: DateTimeFormatter =
+  DateTimeFormatter.ofPattern("HH:mm:ss")
 
 // The export writes an amount in major units with a decimal point, where the
 // API reports the minor units every consumer downstream expects, so the scale
@@ -247,3 +241,8 @@ def csvMinorUnits(amount: String): Either[String, BigInt] =
         minor.toBigInt,
         s"Amount has more decimal places than GBP has: $amount"
       )
+
+// Absent and empty mean the same thing for the three optional columns: a
+// transaction with no category, no counterparty name or no note.
+def optionalCell(row: CsvRow[String], header: String): Option[String] =
+  row(header).filter(_.nonEmpty)
