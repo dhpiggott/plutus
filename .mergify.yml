@@ -26,6 +26,13 @@ pull_request_rules:
   # which would leave the next conflict for a person to resolve. A rebase keeps
   # every commit authored by the bot; the rewritten commits are unsigned, which
   # the squash merge above makes harmless.
+  #
+  # A rebase is always pushed as a GitHub user, by default the PR's author, and
+  # Mergify can't act as another GitHub App's bot, so without bot_account every
+  # rebase here fails ("Mergify can't impersonate scala-steward-dhpiggott[bot]",
+  # #110). The account has to have signed in to the Mergify dashboard once and
+  # have write access. Pushing with a user's token is also what starts Build on
+  # the result, which a GITHUB_TOKEN push would not.
   - name: Bring update bots' PRs up to date with main
     conditions:
       - base=main
@@ -36,4 +43,5 @@ pull_request_rules:
       - -conflict
       - "#commits-behind>0"
     actions:
-      rebase: {}
+      rebase:
+        bot_account: dhpiggott
