@@ -26,6 +26,7 @@ lazy val keychain = projectMatrix
     // otherwise run on a row that has no use for its output.
     configure = _.enablePlugins(JextractPlugin)
       .settings(
+        jextractBinaryOneAtATime,
         // Emptied for Test, here and in the three other FFI rows: both
         // JextractPlugin and BindgenPlugin register their codegen under
         // `Compile` *and* `Test`, each reading `<config> / *Bindings`. Nothing
@@ -223,6 +224,7 @@ lazy val porcupine = projectMatrix
     axisValues = Seq.empty,
     configure = _.enablePlugins(JextractPlugin)
       .settings(
+        jextractBinaryOneAtATime,
         // Emptied for Test for the reason given in `keychain`.
         Test / jextractBindings := Seq.empty,
         jextractBindings += {
@@ -482,6 +484,20 @@ lazy val bindgenWithoutCrashRecovery = bindgenBinary := {
   wrapper.setExecutable(true)
   wrapper
 }
+
+// sbt-jextract defines `jextractBinary` on each row but downloads into one
+// build-wide cache directory, unpacking there unless a binary is already in
+// place, and nothing stops two rows doing it at once. On a cold cache both JVM
+// rows start the ~150MB download together, the second truncates the archive
+// the first is unpacking, and tar fails one of them (#110's first CI run, after
+// the Actions cache had expired). With one at a time, whichever row runs
+// second finds the binary the first unpacked and skips the download.
+lazy val jextractBinaryOneAtATime =
+  jextractBinary := jextractBinary.tag(JextractDownload).value
+
+lazy val JextractDownload = Tags.Tag("jextract-download")
+
+Global / concurrentRestrictions += Tags.limit(JextractDownload, 1)
 
 lazy val scala3Versions = Seq(scala3Version)
 
