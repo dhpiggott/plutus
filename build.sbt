@@ -214,7 +214,7 @@ lazy val porcupine = projectMatrix
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-effect" % "3.7.1",
-      "co.fs2" %%% "fs2-core" % "3.14.0",
+      "co.fs2" %%% "fs2-core" % "3.16.0",
       "org.scodec" %%% "scodec-bits" % "1.2.5"
     )
   )
@@ -384,7 +384,7 @@ lazy val main = projectMatrix
   .dependsOn(keychain, porcupine)
   .settings(
     libraryDependencies ++= Seq(
-      "co.fs2" %%% "fs2-io" % "3.14.0",
+      "co.fs2" %%% "fs2-io" % "3.16.0",
       "org.gnieh" %%% "fs2-data-csv" % "1.14.1",
       "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
@@ -392,8 +392,8 @@ lazy val main = projectMatrix
       "com.disneystreaming.smithy4s" %%% "smithy4s-xml" % smithy4sVersion.value,
       "com.lihaoyi" %%% "fansi" % "0.5.1",
       "com.monovore" %%% "decline-effect" % "2.6.2",
-      "org.http4s" %%% "http4s-ember-client" % "0.23.38",
-      "org.http4s" %%% "http4s-ember-server" % "0.23.38",
+      "org.http4s" %%% "http4s-ember-client" % "0.23.39",
+      "org.http4s" %%% "http4s-ember-server" % "0.23.39",
       "tech.neander" %%% "cue4s" % "0.0.13"
     ),
     buildInfoKeys := Seq[BuildInfoKey](
