@@ -214,7 +214,7 @@ lazy val porcupine = projectMatrix
   .settings(
     libraryDependencies ++= Seq(
       "org.typelevel" %%% "cats-effect" % "3.7.1",
-      "co.fs2" %%% "fs2-core" % "3.14.0",
+      "co.fs2" %%% "fs2-core" % "3.16.0",
       "org.scodec" %%% "scodec-bits" % "1.2.5"
     )
   )
@@ -384,7 +384,7 @@ lazy val main = projectMatrix
   .dependsOn(keychain, porcupine)
   .settings(
     libraryDependencies ++= Seq(
-      "co.fs2" %%% "fs2-io" % "3.14.0",
+      "co.fs2" %%% "fs2-io" % "3.16.0",
       "org.gnieh" %%% "fs2-data-csv" % "1.14.1",
       "com.disneystreaming.smithy4s" %%% "smithy4s-core" % smithy4sVersion.value,
       "com.disneystreaming.smithy4s" %%% "smithy4s-http4s" % smithy4sVersion.value,
